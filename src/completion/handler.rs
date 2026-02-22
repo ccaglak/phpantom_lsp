@@ -176,6 +176,14 @@ fn append_semicolon_to_insert_text(items: Vec<CompletionItem>) -> Vec<Completion
     items
         .into_iter()
         .map(|mut item| {
+            // Namespace segment items (MODULE kind) represent
+            // intermediate namespace paths the user can drill into.
+            // They should not receive a trailing semicolon because
+            // the user will continue typing after selecting one
+            // (e.g. `use App\Models\` → pick a class next).
+            if item.kind == Some(CompletionItemKind::MODULE) {
+                return item;
+            }
             if let Some(ref mut text) = item.insert_text
                 && !text.ends_with(';')
             {

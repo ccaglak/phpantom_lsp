@@ -1194,6 +1194,97 @@ impl Backend {
             });
         }
 
+        // ── Namespace segment items (FQN mode only) ─────────────────
+        // When the user is typing a namespace-qualified reference (e.g.
+        // `App\`, `\Illuminate\Database\`), inject the distinct
+        // next-level namespace segments as MODULE-kind items so the
+        // user can drill into the namespace tree incrementally instead
+        // of being overwhelmed by hundreds of deeply-nested classes.
+        if is_fqn_prefix {
+            // Everything up to and including the last `\` in the
+            // normalized (no leading `\`) prefix.  For `App\Models\U`
+            // this is `App\Models\`; for `App\` it is `App\`.
+            let ns_prefix_end = normalized.rfind('\\').map(|p| p + 1).unwrap_or(0);
+
+            // Only inject segments when the prefix actually contains a
+            // backslash.  A bare name like `User` in UseImport context
+            // has `is_fqn_prefix` true but no namespace to browse.
+            if ns_prefix_end > 0 {
+                let ns_prefix_lower = normalized[..ns_prefix_end].to_lowercase();
+                // Partial text after the last `\` that the user is
+                // still typing (e.g. `U` from `App\Models\U`).  Used
+                // to filter segments whose short name doesn't match.
+                let after_ns_lower = normalized[ns_prefix_end..].to_lowercase();
+
+                let mut seen_segments: HashSet<String> = HashSet::new();
+
+                for fqn in &seen_fqns {
+                    let fqn_lower = fqn.to_lowercase();
+                    if !fqn_lower.starts_with(&ns_prefix_lower) {
+                        continue;
+                    }
+                    // Portion of the FQN after the namespace prefix.
+                    // PHP namespaces are ASCII so byte offsets match.
+                    let rest = &fqn[ns_prefix_end..];
+                    if let Some(next_bs) = rest.find('\\') {
+                        let segment_short = &rest[..next_bs];
+                        // Filter: the segment's short name must start
+                        // with whatever the user typed after the last `\`.
+                        if !after_ns_lower.is_empty()
+                            && !segment_short.to_lowercase().starts_with(&after_ns_lower)
+                        {
+                            continue;
+                        }
+                        let segment = fqn[..ns_prefix_end + next_bs].to_string();
+                        seen_segments.insert(segment);
+                    }
+                }
+
+                for segment in &seen_segments {
+                    let short = segment.rsplit('\\').next().unwrap_or(segment);
+
+                    // Compute insert text and label the same way
+                    // class_completion_texts does for FQN mode.
+                    let (label, insert_ns) = if let Some(ns) = effective_namespace {
+                        let ns_with_slash = format!("{}\\", ns);
+                        if let Some(relative) = segment.strip_prefix(&ns_with_slash) {
+                            (relative.to_string(), relative.to_string())
+                        } else if has_leading_backslash {
+                            (segment.clone(), format!("\\{}", segment))
+                        } else {
+                            (segment.clone(), segment.clone())
+                        }
+                    } else if has_leading_backslash {
+                        (segment.clone(), format!("\\{}", segment))
+                    } else {
+                        (segment.clone(), segment.clone())
+                    };
+
+                    let filter = if has_leading_backslash {
+                        format!("\\{}", segment)
+                    } else {
+                        segment.clone()
+                    };
+
+                    items.push(CompletionItem {
+                        label,
+                        kind: Some(CompletionItemKind::MODULE),
+                        detail: Some(format!("namespace {}", segment)),
+                        insert_text: Some(insert_ns.clone()),
+                        filter_text: Some(filter),
+                        sort_text: Some(format!("0!_{}", short.to_lowercase())),
+                        text_edit: fqn_replace_range.map(|range| {
+                            CompletionTextEdit::Edit(TextEdit {
+                                range,
+                                new_text: insert_ns,
+                            })
+                        }),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+        }
+
         // Cap the result set so the client isn't overwhelmed.
         // Sort by sort_text first so that higher-priority items
         // (use-imports, same-namespace, user project classes) survive

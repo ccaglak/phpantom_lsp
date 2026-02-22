@@ -3618,3 +3618,823 @@ async fn test_fqn_mode_user_typed_leading_backslash_unaffected() {
         insert
     );
 }
+
+// ─── Namespace segment completion ───────────────────────────────────────
+
+/// Helper: extract MODULE-kind items from a completion list.
+fn module_items(items: &[CompletionItem]) -> Vec<&CompletionItem> {
+    items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::MODULE))
+        .collect()
+}
+
+#[tokio::test]
+async fn test_namespace_segments_in_use_import() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/User.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+            ),
+            (
+                "src/Models/Post.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class Post {}\n",),
+            ),
+            (
+                "src/Services/AuthService.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App\\Services;\n",
+                    "class AuthService {}\n",
+                ),
+            ),
+        ],
+    );
+
+    // Open files so they're in ast_map.
+    for relpath in &[
+        "src/Models/User.php",
+        "src/Models/Post.php",
+        "src/Services/AuthService.php",
+    ] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    let uri = Url::parse("file:///use_ns_segment.php").unwrap();
+    // Typing `use App\` — cursor at column 8.
+    let text = concat!("<?php\n", "use App\\\n",);
+
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"App\\Models"),
+        "Should suggest App\\Models namespace segment, got: {:?}",
+        module_labels
+    );
+    assert!(
+        module_labels.contains(&"App\\Services"),
+        "Should suggest App\\Services namespace segment, got: {:?}",
+        module_labels
+    );
+
+    // Segments should have MODULE kind.
+    for item in &modules {
+        assert_eq!(item.kind, Some(CompletionItemKind::MODULE));
+    }
+
+    // Segments should have detail like "namespace App\Models".
+    let models_item = modules.iter().find(|i| i.label == "App\\Models").unwrap();
+    assert_eq!(models_item.detail.as_deref(), Some("namespace App\\Models"),);
+
+    // Classes should also still be present.
+    let classes = class_items(&items);
+    assert!(
+        classes
+            .iter()
+            .any(|i| i.detail.as_deref() == Some("App\\Models\\User")),
+        "Classes should still appear alongside namespace segments"
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_sort_above_classes() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/User.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+            ),
+            (
+                "src/Helper.php",
+                concat!("<?php\n", "namespace App;\n", "class Helper {}\n",),
+            ),
+        ],
+    );
+
+    for relpath in &["src/Models/User.php", "src/Helper.php"] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    let uri = Url::parse("file:///sort_test.php").unwrap();
+    let text = concat!("<?php\n", "use App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+
+    let models_segment = items
+        .iter()
+        .find(|i| i.label == "App\\Models" && i.kind == Some(CompletionItemKind::MODULE))
+        .expect("Should have App\\Models segment");
+
+    let helper_class = items
+        .iter()
+        .find(|i| i.detail.as_deref() == Some("App\\Helper"))
+        .expect("Should have App\\Helper class");
+
+    // Namespace segments sort before class items.
+    assert!(
+        models_segment.sort_text < helper_class.sort_text,
+        "Namespace segment sort_text ({:?}) should be before class sort_text ({:?})",
+        models_segment.sort_text,
+        helper_class.sort_text
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_no_semicolon_in_use_context() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/User.php",
+            concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+        )],
+    );
+
+    let user_uri = Url::parse(&format!(
+        "file://{}",
+        _dir.path().join("src/Models/User.php").display()
+    ))
+    .unwrap();
+    let user_content = fs::read_to_string(_dir.path().join("src/Models/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: user_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: user_content,
+            },
+        })
+        .await;
+
+    let uri = Url::parse("file:///use_ns_semi.php").unwrap();
+    let text = concat!("<?php\n", "use App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+
+    let modules = module_items(&items);
+    assert!(
+        !modules.is_empty(),
+        "Should have at least one namespace segment"
+    );
+
+    for item in &modules {
+        let insert = item.insert_text.as_deref().unwrap_or(&item.label);
+        assert!(
+            !insert.ends_with(';'),
+            "Namespace segments in use context should NOT end with ';', got: {:?}",
+            insert
+        );
+    }
+
+    // Classes in use context should still have semicolons.
+    let classes = class_items(&items);
+    for item in &classes {
+        let insert = item.insert_text.as_deref().unwrap_or(&item.label);
+        assert!(
+            insert.ends_with(';'),
+            "Classes in use context should end with ';', got: {:?}",
+            insert
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_namespace_segments_with_leading_backslash() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/User.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+            ),
+            (
+                "src/Services/Auth.php",
+                concat!("<?php\n", "namespace App\\Services;\n", "class Auth {}\n",),
+            ),
+        ],
+    );
+
+    for relpath in &["src/Models/User.php", "src/Services/Auth.php"] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    let uri = Url::parse("file:///leading_bs.php").unwrap();
+    // `\App\` — cursor at column 9 (`new \App\`).
+    let text = concat!("<?php\n", "new \\App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 9).await;
+
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"App\\Models"),
+        "Should suggest App\\Models with leading backslash, got: {:?}",
+        module_labels
+    );
+
+    // Insert text should include leading `\`.
+    let models_item = modules.iter().find(|i| i.label == "App\\Models").unwrap();
+    let insert = models_item.insert_text.as_deref().unwrap();
+    assert_eq!(
+        insert, "\\App\\Models",
+        "Insert text should include leading backslash"
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_in_type_hint() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/User.php",
+            concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+        )],
+    );
+
+    let user_uri = Url::parse(&format!(
+        "file://{}",
+        _dir.path().join("src/Models/User.php").display()
+    ))
+    .unwrap();
+    let user_content = fs::read_to_string(_dir.path().join("src/Models/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: user_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: user_content,
+            },
+        })
+        .await;
+
+    let uri = Url::parse("file:///typehint_ns.php").unwrap();
+    // Type hint context: `function foo(\App\`
+    let text = concat!("<?php\n", "function foo(\\App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 18).await;
+
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"App\\Models"),
+        "Should suggest namespace segments in type hint context, got: {:?}",
+        module_labels
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_filtered_by_partial() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/User.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+            ),
+            (
+                "src/Services/Auth.php",
+                concat!("<?php\n", "namespace App\\Services;\n", "class Auth {}\n",),
+            ),
+        ],
+    );
+
+    for relpath in &["src/Models/User.php", "src/Services/Auth.php"] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    let uri = Url::parse("file:///filter_ns.php").unwrap();
+    // `use App\M` — partial "M" should filter to Models, not Services.
+    let text = concat!("<?php\n", "use App\\M\n",);
+    let items = complete_at(&backend, &uri, text, 1, 9).await;
+
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"App\\Models"),
+        "App\\Models should match partial 'M', got: {:?}",
+        module_labels
+    );
+    assert!(
+        !module_labels.contains(&"App\\Services"),
+        "App\\Services should NOT match partial 'M', got: {:?}",
+        module_labels
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_deep_nesting() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Http/Controllers/Admin/UserController.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App\\Http\\Controllers\\Admin;\n",
+                    "class UserController {}\n",
+                ),
+            ),
+            (
+                "src/Http/Controllers/Api/AuthController.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App\\Http\\Controllers\\Api;\n",
+                    "class AuthController {}\n",
+                ),
+            ),
+            (
+                "src/Http/Middleware/AuthMiddleware.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App\\Http\\Middleware;\n",
+                    "class AuthMiddleware {}\n",
+                ),
+            ),
+        ],
+    );
+
+    for relpath in &[
+        "src/Http/Controllers/Admin/UserController.php",
+        "src/Http/Controllers/Api/AuthController.php",
+        "src/Http/Middleware/AuthMiddleware.php",
+    ] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    // First level: `use App\` should show `App\Http`.
+    let uri = Url::parse("file:///deep_ns1.php").unwrap();
+    let text = concat!("<?php\n", "use App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        module_labels.contains(&"App\\Http"),
+        "First level should show App\\Http, got: {:?}",
+        module_labels
+    );
+
+    // Second level: `use App\Http\` should show Controllers and Middleware.
+    let uri2 = Url::parse("file:///deep_ns2.php").unwrap();
+    let text2 = concat!("<?php\n", "use App\\Http\\\n",);
+    let items2 = complete_at(&backend, &uri2, text2, 1, 13).await;
+    let modules2 = module_items(&items2);
+    let module_labels2: Vec<&str> = modules2.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        module_labels2.contains(&"App\\Http\\Controllers"),
+        "Second level should show App\\Http\\Controllers, got: {:?}",
+        module_labels2
+    );
+    assert!(
+        module_labels2.contains(&"App\\Http\\Middleware"),
+        "Second level should show App\\Http\\Middleware, got: {:?}",
+        module_labels2
+    );
+
+    // Third level: `use App\Http\Controllers\` should show Admin and Api.
+    let uri3 = Url::parse("file:///deep_ns3.php").unwrap();
+    let text3 = concat!("<?php\n", "use App\\Http\\Controllers\\\n",);
+    let items3 = complete_at(&backend, &uri3, text3, 1, 25).await;
+    let modules3 = module_items(&items3);
+    let module_labels3: Vec<&str> = modules3.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        module_labels3.contains(&"App\\Http\\Controllers\\Admin"),
+        "Third level should show Admin, got: {:?}",
+        module_labels3
+    );
+    assert!(
+        module_labels3.contains(&"App\\Http\\Controllers\\Api"),
+        "Third level should show Api, got: {:?}",
+        module_labels3
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_same_namespace_simplifies() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/User.php",
+            concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+        )],
+    );
+
+    let user_uri = Url::parse(&format!(
+        "file://{}",
+        _dir.path().join("src/Models/User.php").display()
+    ))
+    .unwrap();
+    let user_content = fs::read_to_string(_dir.path().join("src/Models/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: user_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: user_content,
+            },
+        })
+        .await;
+
+    // The cursor file is in the `App` namespace, so `App\Models` should
+    // be simplified to just `Models`.
+    let uri = Url::parse("file:///same_ns_segment.php").unwrap();
+    let text = concat!("<?php\n", "namespace App;\n", "new App\\M\n",);
+    let items = complete_at(&backend, &uri, text, 2, 9).await;
+
+    let modules = module_items(&items);
+    let models_segment = modules
+        .iter()
+        .find(|i| i.detail.as_deref() == Some("namespace App\\Models"));
+
+    assert!(
+        models_segment.is_some(),
+        "Should have App\\Models namespace segment, got modules: {:?}",
+        modules
+            .iter()
+            .map(|i| (&i.label, &i.detail))
+            .collect::<Vec<_>>()
+    );
+
+    let seg = models_segment.unwrap();
+    assert_eq!(
+        seg.label, "Models",
+        "Label should be simplified to relative name within same namespace"
+    );
+    assert_eq!(
+        seg.insert_text.as_deref(),
+        Some("Models"),
+        "Insert text should be the relative name"
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_from_stubs() {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert("Ds\\Map", "<?php\nnamespace Ds;\nclass Map {}\n");
+    stubs.insert("Ds\\Set", "<?php\nnamespace Ds;\nclass Set {}\n");
+    let backend = Backend::new_test_with_stubs(stubs);
+
+    let uri = Url::parse("file:///stub_ns.php").unwrap();
+    let text = concat!("<?php\n", "use Ds\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 7).await;
+
+    // Should have Ds\Map and Ds\Set as classes.
+    let classes = class_items(&items);
+    assert!(
+        classes
+            .iter()
+            .any(|i| i.detail.as_deref() == Some("Ds\\Map")),
+        "Should have Ds\\Map class"
+    );
+    assert!(
+        classes
+            .iter()
+            .any(|i| i.detail.as_deref() == Some("Ds\\Set")),
+        "Should have Ds\\Set class"
+    );
+
+    // No namespace segments — Ds\Map and Ds\Set are leaf classes
+    // with no deeper nesting.
+    let modules = module_items(&items);
+    assert!(
+        modules.is_empty(),
+        "Should have no namespace segments for flat namespace, got: {:?}",
+        modules.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_from_stubs_with_nesting() {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert(
+        "Cassandra\\Exception\\AlreadyExistsException",
+        "<?php\nnamespace Cassandra\\Exception;\nclass AlreadyExistsException {}\n",
+    );
+    stubs.insert(
+        "Cassandra\\Cluster",
+        "<?php\nnamespace Cassandra;\nclass Cluster {}\n",
+    );
+    let backend = Backend::new_test_with_stubs(stubs);
+
+    let uri = Url::parse("file:///stub_nested_ns.php").unwrap();
+    let text = concat!("<?php\n", "use Cassandra\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 14).await;
+
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"Cassandra\\Exception"),
+        "Should suggest Cassandra\\Exception namespace segment, got: {:?}",
+        module_labels
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_text_edit_replaces_full_prefix() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/User.php",
+            concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+        )],
+    );
+
+    let user_uri = Url::parse(&format!(
+        "file://{}",
+        _dir.path().join("src/Models/User.php").display()
+    ))
+    .unwrap();
+    let user_content = fs::read_to_string(_dir.path().join("src/Models/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: user_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: user_content,
+            },
+        })
+        .await;
+
+    let uri = Url::parse("file:///textedit_ns.php").unwrap();
+    // `use App\M` — 9 characters on line 1
+    let text = concat!("<?php\n", "use App\\M\n",);
+    let items = complete_at(&backend, &uri, text, 1, 9).await;
+
+    let modules = module_items(&items);
+    let models_item = modules
+        .iter()
+        .find(|i| i.label == "App\\Models")
+        .expect("Should have App\\Models segment");
+
+    // The text_edit should replace the full `App\M` prefix.
+    if let Some(CompletionTextEdit::Edit(ref edit)) = models_item.text_edit {
+        assert_eq!(edit.range.start.line, 1);
+        assert_eq!(
+            edit.range.start.character, 4,
+            "text_edit should start at the beginning of 'App\\M' (after 'use ')"
+        );
+        assert_eq!(edit.range.end.line, 1);
+        assert_eq!(edit.range.end.character, 9);
+        assert_eq!(edit.new_text, "App\\Models");
+    } else {
+        panic!(
+            "Namespace segment should have a text_edit, got: {:?}",
+            models_item.text_edit
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_namespace_segments_not_injected_for_bare_name() {
+    let backend = create_test_backend_with_stubs();
+
+    let uri = Url::parse("file:///bare_name.php").unwrap();
+    // Typing `use DateT` — no backslash in the typed prefix.
+    // Even though UseImport forces is_fqn_prefix, no segments
+    // should appear because there's no namespace to browse.
+    let text = concat!("<?php\n", "use DateT\n",);
+    let items = complete_at(&backend, &uri, text, 1, 9).await;
+
+    let modules = module_items(&items);
+    assert!(
+        modules.is_empty(),
+        "Bare name without backslash should not produce namespace segments, got: {:?}",
+        modules.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_in_new_context() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[(
+            "src/Models/User.php",
+            concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+        )],
+    );
+
+    let user_uri = Url::parse(&format!(
+        "file://{}",
+        _dir.path().join("src/Models/User.php").display()
+    ))
+    .unwrap();
+    let user_content = fs::read_to_string(_dir.path().join("src/Models/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: user_uri,
+                language_id: "php".to_string(),
+                version: 1,
+                text: user_content,
+            },
+        })
+        .await;
+
+    let uri = Url::parse("file:///new_ns.php").unwrap();
+    let text = concat!("<?php\n", "new App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+
+    let modules = module_items(&items);
+    let module_labels: Vec<&str> = modules.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        module_labels.contains(&"App\\Models"),
+        "Namespace segments should appear in `new` context, got: {:?}",
+        module_labels
+    );
+
+    // Segments should NOT have snippet format (no parentheses).
+    let models_item = modules.iter().find(|i| i.label == "App\\Models").unwrap();
+    assert!(
+        models_item.insert_text_format.is_none()
+            || models_item.insert_text_format == Some(InsertTextFormat::PLAIN_TEXT),
+        "Namespace segments should not have snippet format"
+    );
+}
+
+#[tokio::test]
+async fn test_namespace_segments_deduplicated() {
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            (
+                "src/Models/User.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class User {}\n",),
+            ),
+            (
+                "src/Models/Post.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class Post {}\n",),
+            ),
+            (
+                "src/Models/Comment.php",
+                concat!("<?php\n", "namespace App\\Models;\n", "class Comment {}\n",),
+            ),
+        ],
+    );
+
+    for relpath in &[
+        "src/Models/User.php",
+        "src/Models/Post.php",
+        "src/Models/Comment.php",
+    ] {
+        let file_uri =
+            Url::parse(&format!("file://{}", _dir.path().join(relpath).display())).unwrap();
+        let content = fs::read_to_string(_dir.path().join(relpath)).unwrap();
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: file_uri,
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: content,
+                },
+            })
+            .await;
+    }
+
+    let uri = Url::parse("file:///dedup_ns.php").unwrap();
+    let text = concat!("<?php\n", "use App\\\n",);
+    let items = complete_at(&backend, &uri, text, 1, 8).await;
+
+    let modules = module_items(&items);
+    let models_count = modules.iter().filter(|i| i.label == "App\\Models").count();
+
+    assert_eq!(
+        models_count, 1,
+        "App\\Models should appear exactly once, got {} occurrences",
+        models_count
+    );
+}

@@ -12,20 +12,6 @@ long-tail polish.
 
 ### Competitive parity (close the gap with PHPStorm / Intelephense)
 
-#### 32. No namespace-segment completion in `use` import statements
-
-When typing `use App\Models\`, the class name completion path offers
-full class FQNs that match the prefix. It does not offer intermediate
-namespace segments as standalone suggestions (e.g. offering `Models\`
-as a navigable segment when typing `use App\`).
-
-Most PHP LSPs show namespace segments as folder-like completions so the
-user can incrementally drill into the namespace tree. PHPantom jumps
-straight to full class names, which works but can be overwhelming in
-large projects with deep namespace hierarchies.
-
----
-
 #### 21. No reverse jump: implementation → interface method declaration
 
 Go-to-implementation lets you jump from an interface method to its concrete

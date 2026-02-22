@@ -33,6 +33,16 @@ use Demo\UserProfile as Profile;
 // pq\Exception. The auto-import should insert `\pq\Exception` at the usage site
 // instead of adding `use pq\Exception;` (which would conflict).
 
+// ── Namespace Segment Completion ────────────────────────────────────────────
+// When typing a namespace-qualified reference (in use statements, type hints,
+// new expressions, or anywhere with a backslash), completion shows the
+// next-level namespace segments as navigable items alongside matching classes.
+// This lets you drill into deep namespace trees incrementally.
+//
+// Try: erase the class name after `use Demo\` or `new \Demo\` and trigger
+// completion to see namespace segments (marked with a module/folder icon)
+// appear above class names in the list.
+
 // ── Instance Completion ─────────────────────────────────────────────────────
 
 $user = new User('Alice', 'alice@example.com');
