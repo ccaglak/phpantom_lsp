@@ -49,6 +49,7 @@ PHPantom focuses on completion and go-to-definition and aims to do them really w
 
 PHPantom understands Composer projects out of the box:
 
+- **Autoloader-accurate results.** Completions and go-to-definition only surface classes that Composer's autoloader can actually load, avoiding false positives from internal, inaccessible, or duplicate vendor classes. The classmap is the source of truth, so you see exactly what your application can use.
 - **PSR-4 autoloading.** Resolves classes across files on demand.
 - **Classmap and file autoloading.** `autoload_classmap.php` and `autoload_files.php`.
 - **Embedded PHP stubs** from [phpstorm-stubs](https://github.com/JetBrains/phpstorm-stubs) bundled in the binary, no runtime downloads needed.
