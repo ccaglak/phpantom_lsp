@@ -3,8 +3,7 @@
 //! Synthesizes virtual members for classes that extend
 //! `Illuminate\Database\Eloquent\Model`.  This is the highest-priority
 //! virtual member provider: its contributions beat `@method` /
-//! `@property` tags (PHPDocProvider) and `@mixin` members
-//! (MixinProvider).
+//! `@property` / `@mixin` members (PHPDocProvider).
 //!
 //! Currently implements:
 //!

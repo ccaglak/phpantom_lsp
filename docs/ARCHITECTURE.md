@@ -25,8 +25,7 @@ src/
 ├── inheritance.rs          # Base class inheritance merging (traits, parent chain)
 ├── virtual_members/
 │   ├── mod.rs              # VirtualMemberProvider trait, VirtualMembers struct, merge logic
-│   ├── phpdoc.rs           # PHPDocProvider (@method, @property, @property-read, @property-write)
-│   └── mixin.rs            # MixinProvider (@mixin class member forwarding)
+│   └── phpdoc.rs           # PHPDocProvider (@method, @property, @property-read, @property-write, @mixin)
 ├── subject_extraction.rs   # Shared helpers for extracting subjects before ->, ?->, ::
 ├── util.rs                 # Position conversion, class lookup, logging
 ├── parser/
@@ -227,11 +226,8 @@ ClassInfo (own members)
 ├── 1. Merge used traits (via `use TraitName;`)
 │   └── Recursively follows trait composition and parent_class chains
 │
-├── 2. Walk the extends chain (parent_class)
-│   └── For each parent: merge its traits, then its public/protected members
-│
-└── 3. Merge @mixin classes (lowest precedence)
-    └── Resolved with full inheritance, only public members
+└── 2. Walk the extends chain (parent_class)
+    └── For each parent: merge its traits, then its public/protected members
 ```
 
 ### Virtual Member Providers
@@ -259,22 +255,19 @@ resolve_class_fully(class)
 Provider priority order (highest first):
 
 1. **Framework provider** (e.g. Laravel): richest type info
-2. **PHPDoc provider**: `@method`, `@property`, `@property-read`, `@property-write`
-3. **Mixin provider**: `@mixin` class members
+2. **PHPDoc provider**: `@method`, `@property`, `@property-read`, `@property-write`, `@mixin`
 
-Three providers are currently registered in `default_providers()`:
+Two providers are currently registered in `default_providers()`:
 
 - **`LaravelModelProvider`** (`virtual_members/laravel.rs`): synthesizes virtual members for classes extending `Illuminate\Database\Eloquent\Model`. Currently produces relationship properties: methods returning known relationship types (`HasMany`, `HasOne`, `BelongsTo`, etc.) generate a virtual property with the same name, typed from the relationship's generic parameters (e.g. `HasMany<Post, $this>` produces a `$posts` property typed as `\Illuminate\Database\Eloquent\Collection<Post>`). Highest priority among virtual member providers.
-- **`PHPDocProvider`** (`virtual_members/phpdoc.rs`): parses `@method`, `@property`, `@property-read`, and `@property-write` tags from the class-level docblock stored in `ClassInfo.class_docblock`. These tags are not parsed eagerly during AST extraction; instead, the raw docblock string is preserved and parsed lazily when `provide` is called.
-- **`MixinProvider`** (`virtual_members/mixin.rs`): loads classes listed in `@mixin` tags and returns their public members. Recurses into mixin-of-mixin chains up to `MAX_MIXIN_DEPTH`.
+- **`PHPDocProvider`** (`virtual_members/phpdoc.rs`): parses `@method`, `@property`, `@property-read`, `@property-write`, and `@mixin` tags from the class-level docblock stored in `ClassInfo.class_docblock`. Explicit `@method` / `@property` tags are not parsed eagerly during AST extraction; instead, the raw docblock string is preserved and parsed lazily when `provide` is called. For `@mixin` tags, the provider loads the referenced classes and merges their public members. Within the provider, explicit tags take precedence over mixin members. Recurses into mixin-of-mixin chains up to `MAX_MIXIN_DEPTH`.
 
 ### Precedence Rules
 
 - **Class own members** always win.
 - **Trait members** override inherited members but not own members.
 - **Parent members** fill in anything not already present.
-- **Mixin members** have the lowest precedence within base resolution.
-- **Virtual members** from providers sit below all real declared members (own, trait, parent). Higher-priority providers shadow lower-priority ones.
+- **Virtual members** from providers sit below all real declared members (own, trait, parent). Higher-priority providers shadow lower-priority ones. Within the PHPDoc provider, `@method` / `@property` tags beat `@mixin` members.
 - **Private members** are never inherited from parents (but trait private members are copied, matching PHP semantics).
 
 ### Interface Inheritance in Traits/Used Interfaces

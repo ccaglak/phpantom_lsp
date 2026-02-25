@@ -8,7 +8,7 @@
 ///   class own > traits > parent chain
 ///
 /// `@mixin` members are handled separately by
-/// [`MixinProvider`](crate::virtual_members::mixin::MixinProvider) in
+/// [`PHPDocProvider`](crate::virtual_members::phpdoc::PHPDocProvider) in
 /// the virtual member provider layer.
 ///
 /// This module also supports **generic type substitution**: when a child

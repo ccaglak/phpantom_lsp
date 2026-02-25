@@ -2,18 +2,18 @@
 //!
 //! Virtual members are methods and properties that do not exist as real
 //! PHP declarations but are surfaced by magic methods (`__call`, `__get`,
-//! `__set`, etc.) or framework conventions.  Three sources produce virtual
+//! `__set`, etc.) or framework conventions.  Two sources produce virtual
 //! members today:
 //!
 //! 1. **PHPDoc tags** (`@method`, `@property`, `@property-read`,
-//!    `@property-write`) — document magic members on a class.
-//! 2. **Mixins** (`@mixin ClassName`) — proxy all public members of
-//!    another class via magic methods.
-//! 3. **Framework providers** (e.g. Laravel) — synthesize members from
+//!    `@property-write`, `@mixin`) — document magic members on a class.
+//!    Within this provider, explicit `@method` / `@property` tags take
+//!    precedence over members inherited from `@mixin` classes.
+//! 2. **Framework providers** (e.g. Laravel) — synthesize members from
 //!    framework-specific patterns (relationship properties, scope methods,
 //!    Builder-as-static forwarding).
 //!
-//! All three are unified behind the [`VirtualMemberProvider`] trait.
+//! Both are unified behind the [`VirtualMemberProvider`] trait.
 //! Providers are queried in priority order after base resolution
 //! (own members + traits + parent chain) is complete.  A member
 //! contributed by a higher-priority provider is never overwritten by a
@@ -28,12 +28,10 @@
 //! 3. Parent chain members (real implementations)
 //! 4. Virtual member providers (in priority order):
 //!    a. Framework provider  — richest type info
-//!    b. PHPDoc provider     — @method, @property tags
-//!    c. Mixin provider      — @mixin
+//!    b. PHPDoc provider     — @method, @property, @mixin
 //! ```
 
 pub mod laravel;
-pub mod mixin;
 pub mod phpdoc;
 
 use crate::Backend;
@@ -157,16 +155,13 @@ pub fn apply_virtual_members(
 /// provider is never overwritten by a later one.
 ///
 /// 1. Laravel provider (highest priority — richest type info)
-/// 2. PHPDoc provider (`@method` / `@property` tags)
-/// 3. Mixin provider (`@mixin`, lowest priority)
+/// 2. PHPDoc provider (`@method` / `@property` / `@mixin` tags)
 pub fn default_providers() -> Vec<Box<dyn VirtualMemberProvider>> {
     vec![
         // Laravel provider — relationship properties, scopes, Builder forwarding.
         Box::new(laravel::LaravelModelProvider),
-        // PHPDoc provider — @method / @property tags, higher priority than mixin.
+        // PHPDoc provider — @method / @property / @mixin tags.
         Box::new(phpdoc::PHPDocProvider),
-        // Mixin provider — lowest priority among virtual member providers.
-        Box::new(mixin::MixinProvider),
     ]
 }
 
@@ -652,12 +647,12 @@ mod tests {
     }
 
     #[test]
-    fn default_providers_has_laravel_phpdoc_and_mixin() {
+    fn default_providers_has_laravel_and_phpdoc() {
         let providers = default_providers();
         assert_eq!(
             providers.len(),
-            3,
-            "should have LaravelModelProvider, PHPDocProvider, and MixinProvider registered"
+            2,
+            "should have LaravelModelProvider and PHPDocProvider registered"
         );
     }
 
