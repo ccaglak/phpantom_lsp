@@ -1057,6 +1057,50 @@ impl Backend {
 
         match found {
             Some(cls) => {
+                // ── Custom Eloquent collection swapping ────────────────
+                // When the resolved class is the standard Eloquent
+                // Collection and one of the generic type args is a model
+                // with a `custom_collection` declared (via
+                // `#[CollectedBy]` or `@use HasCollection<X>`), swap to
+                // the custom collection class so that its own methods
+                // (e.g. `topRated()`) appear in completions.
+                //
+                // This handles the common chain pattern:
+                //   Model::where(...)->get()
+                // where Builder's `get()` returns
+                //   `\Illuminate\Database\Eloquent\Collection<int, TModel>`
+                // and TModel has been substituted to the concrete model.
+                //
+                // We compare against `base_clean` (the FQN extracted from
+                // the type hint) rather than `cls.file_namespace` because
+                // `file_namespace` is not always populated when classes are
+                // loaded via PSR-4 / classmap.
+                let is_eloquent_collection = {
+                    let bc = base_clean.strip_prefix('\\').unwrap_or(&base_clean);
+                    bc == crate::types::ELOQUENT_COLLECTION_FQN
+                };
+                let cls = if is_eloquent_collection && !generic_args.is_empty() {
+                    // The last generic arg is typically the model type.
+                    let model_arg = generic_args.last().unwrap();
+                    let model_clean = model_arg.strip_prefix('\\').unwrap_or(model_arg);
+                    let model_class = find_class_by_name(all_classes, model_clean)
+                        .cloned()
+                        .or_else(|| class_loader(model_clean));
+                    if let Some(ref mc) = model_class
+                        && let Some(ref coll_name) = mc.custom_collection
+                    {
+                        let coll_clean = coll_name.strip_prefix('\\').unwrap_or(coll_name);
+                        find_class_by_name(all_classes, coll_clean)
+                            .cloned()
+                            .or_else(|| class_loader(coll_clean))
+                            .unwrap_or(cls)
+                    } else {
+                        cls
+                    }
+                } else {
+                    cls
+                };
+
                 // Apply generic substitution if the type hint carried
                 // generic arguments and the class has template parameters.
                 // Resolve the class fully first (including trait methods,

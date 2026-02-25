@@ -10,8 +10,10 @@ const COMPOSER_JSON: &str = r#"{
     "autoload": {
         "psr-4": {
             "App\\Models\\": "src/Models/",
+            "App\\Collections\\": "src/Collections/",
             "App\\Concerns\\": "src/Concerns/",
             "Illuminate\\Database\\Eloquent\\": "vendor/illuminate/Eloquent/",
+            "Illuminate\\Database\\Eloquent\\Attributes\\": "vendor/illuminate/Eloquent/Attributes/",
             "Illuminate\\Database\\Eloquent\\Relations\\": "vendor/illuminate/Eloquent/Relations/",
             "Illuminate\\Database\\Query\\": "vendor/illuminate/Query/",
             "Illuminate\\Database\\Concerns\\": "vendor/illuminate/Concerns/"
@@ -156,6 +158,21 @@ trait BuildsQueries {
 }
 ";
 
+const COLLECTED_BY_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Attributes;
+class CollectedBy {}
+";
+
+const HAS_COLLECTION_PHP: &str = "\
+<?php
+namespace Illuminate\\Database\\Eloquent;
+/**
+ * @template TCollection of \\Illuminate\\Database\\Eloquent\\Collection
+ */
+trait HasCollection {}
+";
+
 /// Standard set of framework stub files that every test needs.
 fn framework_stubs() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -202,6 +219,14 @@ fn framework_stubs() -> Vec<(&'static str, &'static str)> {
         (
             "vendor/illuminate/Eloquent/Relations/HasManyThrough.php",
             HAS_MANY_THROUGH_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/Attributes/CollectedBy.php",
+            COLLECTED_BY_PHP,
+        ),
+        (
+            "vendor/illuminate/Eloquent/HasCollection.php",
+            HAS_COLLECTION_PHP,
         ),
     ]
 }
@@ -3168,4 +3193,534 @@ async fn test_static_chain_first_then_relationship_does_not_loop() {
         }
         _ => panic!("Expected CompletionResponse::Array"),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Custom collection support
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── #[CollectedBy] attribute ───────────────────────────────────────────────
+
+/// When a model uses `#[CollectedBy(CustomCollection::class)]`, Builder
+/// methods like `get()` should return the custom collection class instead
+/// of `\Illuminate\Database\Eloquent\Collection`.
+#[tokio::test]
+async fn test_collected_by_attribute_builder_get_returns_custom_collection() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class ReviewCollection extends Collection {
+    /** @return array<TKey, TModel> */
+    public function topRated(): array { return []; }
+}
+";
+    let review_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+use App\\Collections\\ReviewCollection;
+#[CollectedBy(ReviewCollection::class)]
+class Review extends Model {
+    public function getTitle(): string { return ''; }
+    public function test() {
+        $reviews = Review::where('active', true)->get();
+        $reviews->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "src/Collections/ReviewCollection.php",
+            custom_collection_php,
+        ),
+        ("src/Models/Review.php", review_php),
+    ]);
+
+    // "$reviews->" at line 10, character 18
+    let items = complete_at(&backend, &dir, "src/Models/Review.php", review_php, 10, 18).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"topRated"),
+        "Custom collection from #[CollectedBy] should have topRated(), got: {:?}",
+        methods
+    );
+    // Standard Collection methods should still be available via inheritance.
+    assert!(
+        methods.contains(&"count"),
+        "Custom collection should inherit count(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Custom collection should inherit first(), got: {:?}",
+        methods
+    );
+}
+
+/// Chaining through a custom collection's `first()` should return
+/// the model type, not the collection.
+#[tokio::test]
+async fn test_collected_by_attribute_first_returns_model() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class ReviewCollection extends Collection {}
+";
+    let review_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+use App\\Collections\\ReviewCollection;
+#[CollectedBy(ReviewCollection::class)]
+class Review extends Model {
+    public function getTitle(): string { return ''; }
+    public function test() {
+        $review = Review::where('active', true)->first();
+        $review->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "src/Collections/ReviewCollection.php",
+            custom_collection_php,
+        ),
+        ("src/Models/Review.php", review_php),
+    ]);
+
+    // "$review->" at line 10, character 17
+    let items = complete_at(&backend, &dir, "src/Models/Review.php", review_php, 10, 17).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getTitle"),
+        "first() should still return a Review instance with getTitle(), got: {:?}",
+        methods
+    );
+}
+
+// ─── @use HasCollection<X> docblock annotation ──────────────────────────────
+
+/// When a model uses `/** @use HasCollection<CustomCollection> */ use HasCollection;`,
+/// Builder methods like `get()` should return the custom collection class.
+#[tokio::test]
+async fn test_has_collection_trait_builder_get_returns_custom_collection() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class InvoiceCollection extends Collection {
+    /** @return float */
+    public function totalAmount(): float { return 0.0; }
+}
+";
+    let invoice_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\HasCollection;
+use App\\Collections\\InvoiceCollection;
+class Invoice extends Model {
+    /** @use HasCollection<InvoiceCollection> */
+    use HasCollection;
+    public function getNumber(): string { return ''; }
+    public function test() {
+        $invoices = Invoice::where('paid', true)->get();
+        $invoices->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "src/Collections/InvoiceCollection.php",
+            custom_collection_php,
+        ),
+        ("src/Models/Invoice.php", invoice_php),
+    ]);
+
+    // "$invoices->" at line 11, character 19
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Invoice.php",
+        invoice_php,
+        11,
+        19,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"totalAmount"),
+        "Custom collection from @use HasCollection<> should have totalAmount(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"count"),
+        "Custom collection should inherit count(), got: {:?}",
+        methods
+    );
+}
+
+/// HasCollection<X> first() should still return the model, not the collection.
+#[tokio::test]
+async fn test_has_collection_trait_first_returns_model() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class InvoiceCollection extends Collection {}
+";
+    let invoice_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\HasCollection;
+use App\\Collections\\InvoiceCollection;
+class Invoice extends Model {
+    /** @use HasCollection<InvoiceCollection> */
+    use HasCollection;
+    public function getNumber(): string { return ''; }
+    public function test() {
+        $inv = Invoice::where('paid', true)->first();
+        $inv->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "src/Collections/InvoiceCollection.php",
+            custom_collection_php,
+        ),
+        ("src/Models/Invoice.php", invoice_php),
+    ]);
+
+    // "$inv->" at line 11, character 14
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Invoice.php",
+        invoice_php,
+        11,
+        14,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getNumber"),
+        "first() should return an Invoice with getNumber(), got: {:?}",
+        methods
+    );
+}
+
+// ─── Custom collection on relationship properties ───────────────────────────
+
+/// When a model with a custom collection has a HasMany relationship,
+/// the virtual relationship property should use the custom collection type.
+#[tokio::test]
+async fn test_collected_by_relationship_property_uses_custom_collection() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class ReviewCollection extends Collection {
+    /** @return array */
+    public function topRated(): array { return []; }
+}
+";
+    let review_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+use App\\Collections\\ReviewCollection;
+#[CollectedBy(ReviewCollection::class)]
+class Review extends Model {
+    public function getTitle(): string { return ''; }
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Review, $this> */
+    public function childReviews(): mixed { return $this->hasMany(Review::class); }
+}
+";
+    let product_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+use App\\Collections\\ReviewCollection;
+#[CollectedBy(ReviewCollection::class)]
+class Product extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Review, $this> */
+    public function reviews(): mixed { return $this->hasMany(Review::class); }
+    public function test() {
+        $product = new Product();
+        $product->reviews->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "src/Collections/ReviewCollection.php",
+            custom_collection_php,
+        ),
+        ("src/Models/Review.php", review_php),
+        ("src/Models/Product.php", product_php),
+    ]);
+
+    // "$product->reviews->" at line 11, character 28
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Models/Product.php",
+        product_php,
+        11,
+        28,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    // The relationship type is on Product (which has #[CollectedBy]), so
+    // the collection type for the HasMany relationship property should
+    // use the custom collection.
+    assert!(
+        methods.contains(&"topRated"),
+        "HasMany relationship property should use custom collection with topRated(), got: {:?}",
+        methods
+    );
+}
+
+// ─── Model without custom collection still uses standard Collection ─────────
+
+/// A model without #[CollectedBy] or HasCollection should still use
+/// the standard Eloquent Collection.
+#[tokio::test]
+async fn test_model_without_custom_collection_uses_standard_collection() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function getName(): string { return ''; }
+    public function test() {
+        $users = User::where('active', true)->get();
+        $users->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$users->" at line 7, character 16
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 16).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"count"),
+        "Standard Collection should have count(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Standard Collection should have first(), got: {:?}",
+        methods
+    );
+}
+
+// ─── #[CollectedBy] with FQN ────────────────────────────────────────────────
+
+/// The attribute argument can be a fully-qualified name.
+#[tokio::test]
+async fn test_collected_by_fqn_argument() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class OrderCollection extends Collection {
+    /** @return float */
+    public function grandTotal(): float { return 0.0; }
+}
+";
+    let order_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+#[CollectedBy(\\App\\Collections\\OrderCollection::class)]
+class Order extends Model {
+    public function test() {
+        $orders = Order::where('status', 'paid')->get();
+        $orders->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/OrderCollection.php", custom_collection_php),
+        ("src/Models/Order.php", order_php),
+    ]);
+
+    // "$orders->" at line 8, character 17
+    let items = complete_at(&backend, &dir, "src/Models/Order.php", order_php, 8, 17).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"grandTotal"),
+        "FQN #[CollectedBy] should resolve custom collection with grandTotal(), got: {:?}",
+        methods
+    );
+}
+
+// ─── Same-file test with plain backend ──────────────────────────────────────
+
+/// Custom collection via @use HasCollection<X> in a single file with inline stubs.
+#[tokio::test]
+async fn test_custom_collection_same_file_plain_backend() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///custom_coll.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "namespace Illuminate\\Database\\Eloquent {\n",
+        "    abstract class Model {\n",
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Builder<static> */\n",
+        "        public static function query() {}\n",
+        "    }\n",
+        "    /**\n",
+        "     * @template TModel of \\Illuminate\\Database\\Eloquent\\Model\n",
+        "     * @mixin \\Illuminate\\Database\\Query\\Builder\n",
+        "     */\n",
+        "    class Builder {\n",
+        "        /** @return $this */\n",
+        "        public function where($column, $value = null) {}\n",
+        "        /** @return \\Illuminate\\Database\\Eloquent\\Collection<int, TModel> */\n",
+        "        public function get() {}\n",
+        "    }\n",
+        "    /**\n",
+        "     * @template TKey of array-key\n",
+        "     * @template TModel\n",
+        "     */\n",
+        "    class Collection {\n",
+        "        /** @return TModel|null */\n",
+        "        public function first(): mixed {}\n",
+        "        public function count(): int {}\n",
+        "    }\n",
+        "}\n",
+        "namespace Illuminate\\Database\\Eloquent\\Attributes {\n",
+        "    class CollectedBy {}\n",
+        "}\n",
+        "namespace Illuminate\\Database\\Eloquent\\Relations {\n",
+        "    class HasMany {}\n",
+        "    class HasOne {}\n",
+        "}\n",
+        "namespace Illuminate\\Database\\Query {\n",
+        "    class Builder {}\n",
+        "}\n",
+        "namespace Illuminate\\Database\\Eloquent {\n",
+        "    /** @template TCollection */\n",
+        "    trait HasCollection {}\n",
+        "}\n",
+        "namespace App\\Collections {\n",
+        "    /**\n",
+        "     * @template TKey of array-key\n",
+        "     * @template TModel\n",
+        "     * @extends \\Illuminate\\Database\\Eloquent\\Collection<TKey, TModel>\n",
+        "     */\n",
+        "    class TaskCollection extends \\Illuminate\\Database\\Eloquent\\Collection {\n",
+        "        /** @return array */\n",
+        "        public function overdue(): array { return []; }\n",
+        "    }\n",
+        "}\n",
+        "namespace App\\Models {\n",
+        "    use Illuminate\\Database\\Eloquent\\Model;\n",
+        "    use Illuminate\\Database\\Eloquent\\HasCollection;\n",
+        "    use App\\Collections\\TaskCollection;\n",
+        "    class Task extends Model {\n",
+        "        /** @use HasCollection<TaskCollection> */\n",
+        "        use HasCollection;\n",
+        "        public function getTitle(): string { return ''; }\n",
+        "        public function demo() {\n",
+        "            $tasks = Task::where('done', false)->get();\n",
+        "            $tasks->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 61,
+                    character: 20,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        _ => Vec::new(),
+    };
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"overdue"),
+        "Same-file custom collection should have overdue(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"count"),
+        "Same-file custom collection should inherit count(), got: {:?}",
+        methods
+    );
 }

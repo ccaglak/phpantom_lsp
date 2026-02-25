@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use mago_span::HasSpan;
+use mago_syntax::ast::attribute::AttributeList;
 use mago_syntax::ast::class_like::method::MethodBody;
 use mago_syntax::ast::class_like::trait_use::{
     TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification,
 };
+use mago_syntax::ast::sequence::Sequence;
 /// Class, interface, trait, and enum extraction.
 ///
 /// Each class-like declaration is tagged with a [`ClassLikeKind`] so that
@@ -93,6 +95,65 @@ fn extract_class_docblock<'a>(
     }
 }
 
+/// Extract the custom collection class name from a `#[CollectedBy(X::class)]` attribute.
+///
+/// Scans the class's attribute lists for an attribute whose short name is
+/// `CollectedBy` and extracts the first argument's text with `::class` stripped.
+/// Returns `None` if no such attribute exists.
+fn extract_collected_by_attribute(
+    attribute_lists: &Sequence<'_, AttributeList<'_>>,
+    content: &str,
+) -> Option<String> {
+    for attr_list in attribute_lists.iter() {
+        for attr in attr_list.attributes.iter() {
+            let short = attr.name.last_segment();
+            if short != "CollectedBy" {
+                continue;
+            }
+            let arg_list = attr.argument_list.as_ref()?;
+            let first_arg = arg_list.arguments.first()?;
+            let span = first_arg.span();
+            let start = span.start.offset as usize;
+            let end = span.end.offset as usize;
+            let text = content.get(start..end)?;
+            let class_name = text.trim_end_matches("::class").trim();
+            if !class_name.is_empty() {
+                return Some(class_name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Determine the custom collection class for an Eloquent model.
+///
+/// Checks two sources in priority order:
+///
+/// 1. `#[CollectedBy(CustomCollection::class)]` attribute on the class.
+/// 2. `/** @use HasCollection<CustomCollection> */` in `use_generics`.
+///
+/// The attribute takes priority because it is the newer Laravel API.
+fn extract_custom_collection(
+    attribute_lists: &Sequence<'_, AttributeList<'_>>,
+    use_generics: &[(String, Vec<String>)],
+    content: &str,
+) -> Option<String> {
+    // 1. Try the #[CollectedBy] attribute first.
+    if let Some(name) = extract_collected_by_attribute(attribute_lists, content) {
+        return Some(name);
+    }
+
+    // 2. Fall back to @use HasCollection<X>.
+    for (trait_name, args) in use_generics {
+        let short = trait_name.rsplit('\\').next().unwrap_or(trait_name);
+        if short == "HasCollection" && !args.is_empty() {
+            return Some(args[0].clone());
+        }
+    }
+
+    None
+}
+
 impl Backend {
     /// Recursively walk statements and extract class information.
     /// This handles classes at the top level as well as classes nested
@@ -141,6 +202,10 @@ impl Backend {
                     let start_offset = class.left_brace.start.offset;
                     let end_offset = class.right_brace.end.offset;
 
+                    let content = doc_ctx.map(|c| c.content).unwrap_or("");
+                    let custom_collection =
+                        extract_custom_collection(&class.attribute_lists, &use_generics, content);
+
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Class,
                         name: class_name,
@@ -166,6 +231,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        custom_collection,
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -236,6 +302,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        custom_collection: None,
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -288,6 +355,7 @@ impl Backend {
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        custom_collection: None,
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -358,6 +426,7 @@ impl Backend {
                         trait_aliases: vec![],
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
+                        custom_collection: None,
                     });
 
                     // Walk method bodies for anonymous classes.
@@ -440,6 +509,7 @@ impl Backend {
             trait_aliases,
             class_docblock: None,
             file_namespace: None,
+            custom_collection: None,
         }
     }
 

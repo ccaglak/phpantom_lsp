@@ -238,6 +238,7 @@ mod tests {
             trait_aliases: Vec::new(),
             class_docblock: None,
             file_namespace: None,
+            custom_collection: None,
         }
     }
 

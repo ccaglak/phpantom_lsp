@@ -520,6 +520,20 @@ pub struct ClassInfo {
     /// namespace blocks (e.g. `Illuminate\Database\Eloquent\Builder` vs
     /// `Illuminate\Database\Query\Builder`).
     pub file_namespace: Option<String>,
+    /// Custom collection class for Eloquent models.
+    ///
+    /// Detected from two Laravel mechanisms:
+    ///
+    /// 1. The `#[CollectedBy(CustomCollection::class)]` attribute on the
+    ///    model class.
+    /// 2. The `/** @use HasCollection<CustomCollection> */` docblock
+    ///    annotation on a `use HasCollection;` trait usage.
+    ///
+    /// When set, the `LaravelModelProvider` replaces
+    /// `\Illuminate\Database\Eloquent\Collection` with this class in
+    /// relationship property types and Builder-forwarded return types
+    /// (e.g. `get()`, `all()`).
+    pub custom_collection: Option<String>,
 }
 
 // ─── ClassInfo helpers ──────────────────────────────────────────────────────
@@ -562,6 +576,14 @@ pub(crate) struct FileContext {
     /// The file's declared namespace, if any (from `namespace_map`).
     pub namespace: Option<String>,
 }
+
+// ─── Eloquent Constants ─────────────────────────────────────────────────────
+
+/// The fully-qualified name of the Eloquent Collection class.
+///
+/// Used by the `LaravelModelProvider` to detect and replace collection
+/// return types when a model declares a custom collection class.
+pub const ELOQUENT_COLLECTION_FQN: &str = "Illuminate\\Database\\Eloquent\\Collection";
 
 // ─── Recursion Depth Limits ─────────────────────────────────────────────────
 //

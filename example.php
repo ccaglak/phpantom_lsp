@@ -889,6 +889,32 @@ class BlogAuthor extends \Illuminate\Database\Eloquent\Model
 }
 
 
+// ── Custom Eloquent Collections ─────────────────────────────────────────────
+// Models with #[CollectedBy(CustomCollection::class)] or
+// /** @use HasCollection<CustomCollection> */ use HasCollection;
+// resolve to the custom collection class instead of the standard
+// Illuminate\Database\Eloquent\Collection. This means custom methods
+// like topRated() and averageRating() appear in completions after ->get().
+
+class CustomCollectionDemo
+{
+    public function demo(): void
+    {
+        // Builder chain → custom collection (via #[CollectedBy] on Review)
+        $reviews = Review::where('published', true)->get();
+        $reviews->topRated();        // custom method from ReviewCollection
+        $reviews->averageRating();   // custom method from ReviewCollection
+        $reviews->count();           // inherited from standard Collection
+        $reviews->first();           // inherited — returns Review|null
+
+        // Relationship properties also use the custom collection
+        $review = new Review();
+        $review->replies->topRated();       // HasMany<Review> → ReviewCollection
+        $review->replies->averageRating();  // ReviewCollection method
+    }
+}
+
+
 // ── Match Class-String Forwarding to Conditional Return Types ───────────────
 // When a variable holds a ::class value from a match expression and is then
 // passed to a function/method with @template T + @param class-string<T> +
@@ -2600,6 +2626,32 @@ class BlogTag extends \Illuminate\Database\Eloquent\Model
     public function getLabel(): string { return ''; }
 }
 
+// ── Custom Eloquent Collection Demo Models ──────────────────────────────────
+
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends \Illuminate\Database\Eloquent\Collection<TKey, TModel>
+ */
+class ReviewCollection extends \Illuminate\Database\Eloquent\Collection
+{
+    /** @return array<TKey, TModel> */
+    public function topRated(): array { return []; }
+
+    /** @return float */
+    public function averageRating(): float { return 0.0; }
+}
+
+#[\Illuminate\Database\Eloquent\Attributes\CollectedBy(ReviewCollection::class)]
+class Review extends \Illuminate\Database\Eloquent\Model
+{
+    public function getTitle(): string { return ''; }
+    public function getRating(): int { return 0; }
+
+    /** @return \Illuminate\Database\Eloquent\Relations\HasMany<Review, $this> */
+    public function replies(): mixed { return $this->hasMany(Review::class); }
+}
+
 } // end namespace Demo
 
 // ── Illuminate Stubs ────────────────────────────────────────────────────────
@@ -2654,6 +2706,15 @@ namespace Illuminate\Database\Eloquent\Relations {
     class MorphTo {}
     class MorphToMany {}
     class HasManyThrough {}
+}
+
+namespace Illuminate\Database\Eloquent\Attributes {
+    class CollectedBy {}
+}
+
+namespace Illuminate\Database\Eloquent {
+    /** @template TCollection */
+    trait HasCollection {}
 }
 
 namespace Illuminate\Database\Concerns {

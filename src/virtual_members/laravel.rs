@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use crate::Backend;
 use crate::docblock::types::parse_generic_args;
 use crate::inheritance::apply_substitution;
+use crate::types::ELOQUENT_COLLECTION_FQN;
 use crate::types::{ClassInfo, MAX_INHERITANCE_DEPTH, MethodInfo, PropertyInfo, Visibility};
 
 use super::{VirtualMemberProvider, VirtualMembers};
@@ -189,18 +190,25 @@ fn extract_related_type(return_type: &str) -> Option<String> {
 }
 
 /// Build the virtual property type for a relationship.
+/// Build the property type string for a relationship.
 ///
 /// - Singular relationships → the related type as-is (nullable).
-/// - Collection relationships → `\Illuminate\Database\Eloquent\Collection<TRelated>`.
+/// - Collection relationships → the custom collection class (if set) or
+///   `\Illuminate\Database\Eloquent\Collection`, parameterised with `<TRelated>`.
 /// - MorphTo → `\Illuminate\Database\Eloquent\Model`.
-fn build_property_type(kind: RelationshipKind, related_type: Option<&str>) -> Option<String> {
+fn build_property_type(
+    kind: RelationshipKind,
+    related_type: Option<&str>,
+    custom_collection: Option<&str>,
+) -> Option<String> {
     match kind {
         RelationshipKind::Singular => related_type.map(|t| t.to_string()),
         RelationshipKind::Collection => {
             let inner = related_type.unwrap_or("\\Illuminate\\Database\\Eloquent\\Model");
-            Some(format!(
-                "\\Illuminate\\Database\\Eloquent\\Collection<{inner}>"
-            ))
+            let collection_class = custom_collection
+                .map(|c| format!("\\{}", c.strip_prefix('\\').unwrap_or(c)))
+                .unwrap_or_else(|| format!("\\{ELOQUENT_COLLECTION_FQN}"));
+            Some(format!("{collection_class}<{inner}>"))
         }
         RelationshipKind::MorphTo => Some("\\Illuminate\\Database\\Eloquent\\Model".to_string()),
     }
@@ -304,6 +312,23 @@ fn build_scope_methods(method: &MethodInfo) -> [MethodInfo; 2] {
 /// - Template parameters (e.g. `TModel`) → the concrete model class name.
 ///
 /// Methods whose name starts with `__` (magic methods) are skipped.
+/// Replace `\Illuminate\Database\Eloquent\Collection` with a custom
+/// collection class in a type string, preserving generic parameters.
+fn replace_eloquent_collection(type_str: &str, custom_collection: &str) -> String {
+    let fqn_prefixed = format!("\\{ELOQUENT_COLLECTION_FQN}");
+    let bare_fqn = ELOQUENT_COLLECTION_FQN;
+    let replacement = if custom_collection.starts_with('\\') {
+        custom_collection.to_string()
+    } else {
+        format!("\\{custom_collection}")
+    };
+
+    // Replace both `\Illuminate\...\Collection` and `Illuminate\...\Collection`
+    // (with and without leading backslash).
+    let result = type_str.replace(&fqn_prefixed, &replacement);
+    result.replace(bare_fqn, replacement.trim_start_matches('\\'))
+}
+
 fn build_builder_forwarded_methods(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
@@ -368,6 +393,13 @@ fn build_builder_forwarded_methods(
             }
         }
 
+        // Replace Eloquent Collection with custom collection class.
+        if let Some(ref coll) = class.custom_collection
+            && let Some(ref mut ret) = forwarded.return_type
+        {
+            *ret = replace_eloquent_collection(ret, coll);
+        }
+
         methods.push(forwarded);
     }
 
@@ -415,7 +447,11 @@ impl VirtualMemberProvider for LaravelModelProvider {
             };
 
             let related_type = extract_related_type(return_type);
-            let type_hint = build_property_type(kind, related_type.as_deref());
+            let type_hint = build_property_type(
+                kind,
+                related_type.as_deref(),
+                class.custom_collection.as_deref(),
+            );
 
             if type_hint.is_some() {
                 properties.push(PropertyInfo {
@@ -475,6 +511,7 @@ mod tests {
             trait_aliases: Vec::new(),
             class_docblock: None,
             file_namespace: None,
+            custom_collection: None,
         }
     }
 
@@ -716,28 +753,35 @@ mod tests {
     #[test]
     fn singular_with_related() {
         assert_eq!(
-            build_property_type(RelationshipKind::Singular, Some("Profile")),
-            Some("Profile".to_string())
+            build_property_type(RelationshipKind::Singular, Some("App\\Models\\Post"), None),
+            Some("App\\Models\\Post".to_string())
         );
     }
 
     #[test]
     fn singular_without_related() {
-        assert_eq!(build_property_type(RelationshipKind::Singular, None), None);
+        assert_eq!(
+            build_property_type(RelationshipKind::Singular, None, None),
+            None
+        );
     }
 
     #[test]
     fn collection_with_related() {
         assert_eq!(
-            build_property_type(RelationshipKind::Collection, Some("Post")),
-            Some("\\Illuminate\\Database\\Eloquent\\Collection<Post>".to_string())
+            build_property_type(
+                RelationshipKind::Collection,
+                Some("App\\Models\\Post"),
+                None
+            ),
+            Some("\\Illuminate\\Database\\Eloquent\\Collection<App\\Models\\Post>".to_string())
         );
     }
 
     #[test]
     fn collection_without_related_uses_model() {
         assert_eq!(
-            build_property_type(RelationshipKind::Collection, None),
+            build_property_type(RelationshipKind::Collection, None, None),
             Some(
                 "\\Illuminate\\Database\\Eloquent\\Collection<\\Illuminate\\Database\\Eloquent\\Model>"
                     .to_string()
@@ -748,8 +792,89 @@ mod tests {
     #[test]
     fn morph_to_always_returns_model() {
         assert_eq!(
-            build_property_type(RelationshipKind::MorphTo, None),
+            build_property_type(RelationshipKind::MorphTo, Some("App\\Models\\Foo"), None),
             Some("\\Illuminate\\Database\\Eloquent\\Model".to_string())
+        );
+    }
+
+    #[test]
+    fn collection_with_custom_collection() {
+        assert_eq!(
+            build_property_type(
+                RelationshipKind::Collection,
+                Some("App\\Models\\Post"),
+                Some("App\\Collections\\PostCollection")
+            ),
+            Some("\\App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn collection_custom_collection_with_leading_backslash() {
+        assert_eq!(
+            build_property_type(
+                RelationshipKind::Collection,
+                Some("App\\Models\\Post"),
+                Some("\\App\\Collections\\PostCollection")
+            ),
+            Some("\\App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
+        );
+    }
+
+    #[test]
+    fn singular_ignores_custom_collection() {
+        assert_eq!(
+            build_property_type(
+                RelationshipKind::Singular,
+                Some("App\\Models\\Post"),
+                Some("App\\Collections\\PostCollection")
+            ),
+            Some("App\\Models\\Post".to_string())
+        );
+    }
+
+    #[test]
+    fn morph_to_ignores_custom_collection() {
+        assert_eq!(
+            build_property_type(
+                RelationshipKind::MorphTo,
+                Some("App\\Models\\Foo"),
+                Some("App\\Collections\\FooCollection")
+            ),
+            Some("\\Illuminate\\Database\\Eloquent\\Model".to_string())
+        );
+    }
+
+    #[test]
+    fn replace_eloquent_collection_in_return_type() {
+        let result = replace_eloquent_collection(
+            "\\Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>",
+            "App\\Collections\\UserCollection",
+        );
+        assert_eq!(
+            result,
+            "\\App\\Collections\\UserCollection<int, App\\Models\\User>"
+        );
+    }
+
+    #[test]
+    fn replace_eloquent_collection_preserves_other_types() {
+        let result = replace_eloquent_collection(
+            "\\Illuminate\\Support\\Collection<int, string>",
+            "App\\Collections\\UserCollection",
+        );
+        assert_eq!(result, "\\Illuminate\\Support\\Collection<int, string>");
+    }
+
+    #[test]
+    fn replace_eloquent_collection_in_union() {
+        let result = replace_eloquent_collection(
+            "\\Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>|null",
+            "App\\Collections\\UserCollection",
+        );
+        assert_eq!(
+            result,
+            "\\App\\Collections\\UserCollection<int, App\\Models\\User>|null"
         );
     }
 

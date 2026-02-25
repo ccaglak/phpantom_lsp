@@ -379,6 +379,12 @@ impl Backend {
                 .map(|m| Self::resolve_name(m, use_map, namespace))
                 .collect();
 
+            // Resolve custom collection class name to FQN
+            if let Some(ref coll) = class.custom_collection {
+                let resolved = Self::resolve_name(coll, use_map, namespace);
+                class.custom_collection = Some(resolved);
+            }
+
             // Resolve type arguments in @extends, @implements, and @use
             // generics so that after generic substitution, return types
             // and property types are fully-qualified and can be resolved
