@@ -498,11 +498,7 @@ async fn test_goto_definition_builder_forwarded_via_variable_assignment() {
     // go-to-definition on orderBy when $q is assigned from User::where()
     // (the actual builder-forwarded virtual method). This relies on
     // variable resolution resolving the virtual static method's return type.
-    // orderBy is on Query\Builder.
-    //
-    // NOTE: This is a known gap — variable resolution for builder-forwarded
-    // static methods requires resolve_class_fully inside the variable
-    // resolution path. If this test fails, it documents the current limitation.
+    // orderBy is on Query\Builder, reached via Eloquent\Builder's @mixin.
     let user_php = "\
 <?php
 namespace App\\Models;
@@ -520,19 +516,119 @@ class User extends Model {
     // Line 6 (0-indexed), "orderBy" starts at character 12
     let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 6, 14).await;
 
-    // This currently fails because variable resolution for the RHS
-    // `User::where(...)` needs to fully resolve User (including virtual
-    // builder-forwarded methods) to find `where()`.
-    // When this is fixed, flip to assert result.is_some() and check URI.
-    if let Some(response) = result {
-        let uri = definition_uri(&response);
-        assert!(
-            uri.as_str().contains("Builder.php"),
-            "Should jump to a Builder.php file, got: {}",
-            uri.as_str()
-        );
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $q->orderBy() (where $q = User::where()) should resolve"
+    );
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Query/Builder.php"),
+        "Should jump to Query/Builder.php (where orderBy is declared), got: {}",
+        uri.as_str()
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_builder_forwarded_via_variable_get() {
+    // go-to-definition on get() when $q is assigned from User::where().
+    // get() is on Eloquent\Builder.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function test() {
+        $q = User::where('active', true);
+        $q->get();
     }
-    // If result is None, the test still passes — it documents the gap.
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // Cursor on "get" in `$q->get();`
+    // Line 6 (0-indexed), "get" starts at character 12
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 6, 13).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $q->get() (where $q = User::where()) should resolve"
+    );
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Eloquent/Builder.php"),
+        "Should jump to Eloquent/Builder.php (where get is declared), got: {}",
+        uri.as_str()
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_builder_forwarded_via_variable_first() {
+    // go-to-definition on first() when $q is assigned from User::where().
+    // first() is on the BuildsQueries trait.
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function test() {
+        $q = User::where('active', true);
+        $q->first();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // Cursor on "first" in `$q->first();`
+    // Line 6 (0-indexed), "first" starts at character 12
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 6, 13).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $q->first() (where $q = User::where()) should resolve"
+    );
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("BuildsQueries.php"),
+        "Should jump to BuildsQueries.php (where first is declared), got: {}",
+        uri.as_str()
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_builder_forwarded_via_variable_chained_assignment() {
+    // go-to-definition on get() when $q is assigned from a chained
+    // builder call: User::where(...)->orderBy(...).
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function test() {
+        $q = User::where('active', true)->orderBy('name');
+        $q->get();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // Cursor on "get" in `$q->get();`
+    // Line 6 (0-indexed), "get" starts at character 12
+    let result = goto_definition_at(&backend, &dir, "src/Models/User.php", user_php, 6, 13).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on $q->get() (where $q = User::where()->orderBy()) should resolve"
+    );
+    let response = result.unwrap();
+    let uri = definition_uri(&response);
+    assert!(
+        uri.as_str().contains("Eloquent/Builder.php"),
+        "Should jump to Eloquent/Builder.php (where get is declared), got: {}",
+        uri.as_str()
+    );
 }
 
 #[tokio::test]

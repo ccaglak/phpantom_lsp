@@ -90,6 +90,7 @@ impl Backend {
     ) -> Option<Location> {
         let lines: Vec<&str> = content.lines().collect();
         let cursor_line = position.line as usize;
+        let cursor_col = position.character as usize;
 
         // If the cursor line itself defines the variable (e.g. `as $b` in
         // a foreach, or `$var = …`), the user is already at a definition
@@ -108,20 +109,31 @@ impl Backend {
         if cursor_line < lines.len()
             && let Some(def_col) = Self::line_defines_variable(lines[cursor_line], var_name)
         {
-            let cursor_col = position.character as usize;
-            // The defining occurrence spans [def_col .. def_col + len).
+            // The defining occurrence spans [def_col .. def_col + len].
             // If the cursor falls within that span, the user is on the
             // LHS definition — return None so the caller can try
             // type-hint resolution.  Otherwise the cursor is on a
             // different occurrence of the same variable on the RHS;
             // let the backward scan below find the original definition.
             let def_end = def_col + var_name.len();
-            if cursor_col >= def_col && cursor_col < def_end {
+            if cursor_col >= def_col && cursor_col <= def_end {
                 return None;
             }
         }
 
-        let search_end = cursor_line;
+        // Include the cursor line in the backward scan so that
+        // same-line definitions are found.  This is essential for arrow
+        // functions where the parameter and its usage share one line:
+        //   `fn(Order $o) => $o->getItems()`
+        // Without this, `$o` on the RHS would skip the parameter and
+        // jump to an unrelated `$o` earlier in the file.
+        //
+        // On the cursor line we only accept *non-assignment* definitions
+        // (parameters, foreach, catch, static/global) whose defining
+        // occurrence starts before the cursor column.  Assignments like
+        // `$value = $value->value` are skipped so the scan continues
+        // backward to the original definition (e.g. a parameter).
+        let search_end = cursor_line + 1;
 
         for line_idx in (0..search_end).rev() {
             let line = lines[line_idx];
@@ -132,6 +144,21 @@ impl Backend {
             }
 
             if let Some(col) = Self::line_defines_variable(line, var_name) {
+                // On the cursor line, apply two guards:
+                // 1. The definition must start before the cursor so we
+                //    don't match the usage the cursor is sitting on.
+                // 2. Only accept non-assignment definitions (parameters,
+                //    foreach, catch, static/global).  Assignments on the
+                //    same line should be skipped so `$value = $value->x`
+                //    finds the original declaration on an earlier line.
+                if line_idx == cursor_line {
+                    if col >= cursor_col {
+                        continue;
+                    }
+                    if Self::line_defines_variable_as_assignment(line, var_name, col) {
+                        continue;
+                    }
+                }
                 let target_uri = Url::parse(uri).ok()?;
                 return Some(Location {
                     uri: target_uri,
@@ -174,6 +201,25 @@ impl Backend {
             start = abs + 1;
         }
         None
+    }
+
+    /// Returns `true` when the definition at `def_col` is a plain
+    /// assignment (`$var = …`), as opposed to a parameter, foreach,
+    /// catch, or static/global declaration.
+    ///
+    /// Used on the cursor line to decide whether to accept a same-line
+    /// definition or continue scanning backward.  Arrow function
+    /// parameters (`fn(Order $o) => $o->`) should resolve to the
+    /// same-line parameter, but `$value = $value->value` should skip
+    /// past the LHS assignment to find the original declaration.
+    fn line_defines_variable_as_assignment(line: &str, var_name: &str, def_col: usize) -> bool {
+        let after_var = def_col + var_name.len();
+        if after_var > line.len() {
+            return false;
+        }
+        let rest = &line[after_var..];
+        let rest_trimmed = rest.trim_start();
+        rest_trimmed.starts_with('=') && !rest_trimmed.starts_with("==")
     }
 
     /// Heuristically decide whether `line` *defines* (assigns / declares)

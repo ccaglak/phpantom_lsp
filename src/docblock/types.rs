@@ -973,6 +973,103 @@ pub fn extract_callable_return_type(type_str: &str) -> Option<String> {
     Some(ret_tok.to_string())
 }
 
+/// Extract the parameter types from a `callable(…): …` or `Closure(…): …` type string.
+///
+/// Returns a `Vec` of the individual parameter type strings.  When the
+/// callable has no parameters (e.g. `callable(): void`) an empty `Vec` is
+/// returned.  Returns `None` when `type_str` is not a callable/Closure type
+/// with a parameter list.
+///
+/// # Examples
+///
+/// ```text
+/// callable(User, int): void       → Some(["User", "int"])
+/// Closure(TValue): mixed          → Some(["TValue"])
+/// callable(): void                → Some([])
+/// callable(Collection<int, User>): void → Some(["Collection<int, User>"])
+/// Closure                         → None
+/// string                          → None
+/// ```
+pub fn extract_callable_param_types(type_str: &str) -> Option<Vec<String>> {
+    let s = type_str.strip_prefix('\\').unwrap_or(type_str);
+    let s = s.strip_prefix('?').unwrap_or(s);
+
+    // Must start with `Closure` or `callable`.
+    let rest = if let Some(r) = s.strip_prefix("Closure") {
+        r
+    } else if let Some(r) = s.strip_prefix("callable") {
+        r
+    } else {
+        return None;
+    };
+
+    // Must have a parameter list starting with `(`.
+    let rest = rest.strip_prefix('(')?;
+
+    // Find the matching closing `)`, tracking nested parens/angles/braces.
+    let mut paren_depth = 1i32;
+    let mut angle_depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut close_pos = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '(' => paren_depth += 1,
+            ')' => {
+                paren_depth -= 1;
+                if paren_depth == 0 {
+                    close_pos = Some(i);
+                    break;
+                }
+            }
+            '<' => angle_depth += 1,
+            '>' if angle_depth > 0 => angle_depth -= 1,
+            '{' => brace_depth += 1,
+            '}' if brace_depth > 0 => brace_depth -= 1,
+            _ => {}
+        }
+    }
+
+    let close = close_pos?;
+    let params_str = rest[..close].trim();
+
+    if params_str.is_empty() {
+        return Some(vec![]);
+    }
+
+    // Split on `,` at depth 0 (respecting `<…>`, `{…}`, `(…)` nesting).
+    let mut result = Vec::new();
+    let mut current_start = 0usize;
+    let mut paren_d = 0i32;
+    let mut angle_d = 0i32;
+    let mut brace_d = 0i32;
+
+    for (i, c) in params_str.char_indices() {
+        match c {
+            '(' => paren_d += 1,
+            ')' => paren_d -= 1,
+            '<' => angle_d += 1,
+            '>' if angle_d > 0 => angle_d -= 1,
+            '{' => brace_d += 1,
+            '}' if brace_d > 0 => brace_d -= 1,
+            ',' if paren_d == 0 && angle_d == 0 && brace_d == 0 => {
+                let param = params_str[current_start..i].trim();
+                if !param.is_empty() {
+                    result.push(param.to_string());
+                }
+                current_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    // Last (or only) parameter.
+    let last = params_str[current_start..].trim();
+    if !last.is_empty() {
+        result.push(last.to_string());
+    }
+
+    Some(result)
+}
+
 /// Return `true` if `type_str` is an object shape type (e.g. `object{name: string}`).
 pub fn is_object_shape(type_str: &str) -> bool {
     let s = type_str.strip_prefix('\\').unwrap_or(type_str);

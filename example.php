@@ -1746,6 +1746,35 @@ class ArrayAccessDemo
 }
 
 
+// ── Closure Parameter Inference ─────────────────────────────────────────────
+
+class ClosureParamInferenceDemo
+{
+    /** @var FluentCollection<int, User> */
+    public FluentCollection $users;
+
+    public function mapArrowFunction(): void
+    {
+        // $u is inferred as User from map's callable(TValue, TKey) signature.
+        $this->users->map(fn($u) => $u->getEmail());
+    }
+
+    public function eachClosure(): void
+    {
+        // $user is inferred as User from each's callable(TValue, TKey) signature.
+        $this->users->each(function ($user) {
+            $user->getEmail();            // resolves to User
+        });
+    }
+
+    public function explicitTypeWins(): void
+    {
+        // Explicit type hint takes precedence over inference.
+        $this->users->map(fn(Order $o) => $o->getItems());
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
@@ -2547,6 +2576,14 @@ class FluentCollection
      * @return static<TKey, TMapValue>
      */
     public function map(callable $callback)
+    {
+    }
+
+    /**
+     * @param  callable(TValue, TKey): void  $callback
+     * @return static<TKey, TValue>
+     */
+    public function each(callable $callback)
     {
     }
 

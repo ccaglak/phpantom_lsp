@@ -2042,3 +2042,217 @@ async fn test_goto_definition_lhs_variable_same_line_still_returns_none() {
         "LHS $value is a definition site with scalar type — should return None"
     );
 }
+
+// ─── Arrow Function Parameter Go-to-Definition ─────────────────────────────
+
+/// When the cursor is on the RHS usage of an arrow function parameter
+/// (e.g. `$o` in `fn(Order $o) => $o->getItems()`), go-to-definition
+/// should jump to the parameter on the same line, not to some unrelated
+/// `$o` earlier in the file.
+#[tokio::test]
+async fn test_goto_definition_arrow_fn_rhs_param_jumps_to_same_line_param() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_fn_rhs.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                          // 0
+        "class Order {\n",                                                  // 1
+        "    public function getItems(): array {}\n",                       // 2
+        "}\n",                                                              // 3
+        "class Demo {\n",                                                   // 4
+        "    public Order $o;\n",                                           // 5
+        "    public function run(): void {\n",                              // 6
+        "        $list = array_map(fn(Order $o) => $o->getItems(), []);\n", // 7
+        "    }\n",                                                          // 8
+        "}\n",                                                              // 9
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Line 7: `        $list = array_map(fn(Order $o) => $o->getItems(), []);`
+    //                                                    ^^ cursor on RHS $o
+    // Count columns: `        $list = array_map(fn(Order $o) => $o->getItems(), []);`
+    //   "        " = 8, "$list" = 5, " = " = 3, "array_map(" = 10, "fn(" = 3,
+    //   "Order " = 6, "$o" = 2, ") => " = 5, "$o" = starts at col 42
+    // The parameter `$o` is at col 33, the RHS `$o` is at col 42.
+    // Let's find the exact columns by counting:
+    //   0         1         2         3         4
+    //   0123456789012345678901234567890123456789012345
+    //           $list = array_map(fn(Order $o) => $o->getItems(), []);
+    // `        ` = 8 chars
+    // `$list` at 8-12
+    // ` = ` at 13-15
+    // `array_map(` at 16-25
+    // `fn(` at 26-28
+    // `Order` at 29-33
+    // ` ` at 34
+    // `$o` at 35-36
+    // `) => ` at 37-41
+    // `$o` at 42-43
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 7,
+                character: 43, // on the `o` of the RHS `$o`
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "RHS $o should resolve to the arrow function parameter"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(
+                location.range.start.line, 7,
+                "RHS $o should jump to the parameter on the same line 7"
+            );
+            assert_eq!(
+                location.range.start.character, 35,
+                "Should point to the parameter $o at column 35"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// When the cursor is on the LHS (definition site) of an arrow function
+/// parameter (`$o` in `fn(Order $o) =>`), go-to-definition should resolve
+/// the type hint and jump to the `Order` class.
+#[tokio::test]
+async fn test_goto_definition_arrow_fn_lhs_param_jumps_to_type_hint() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_fn_lhs.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                          // 0
+        "class Order {\n",                                                  // 1
+        "    public function getItems(): array {}\n",                       // 2
+        "}\n",                                                              // 3
+        "class Demo {\n",                                                   // 4
+        "    public function run(): void {\n",                              // 5
+        "        $list = array_map(fn(Order $o) => $o->getItems(), []);\n", // 6
+        "    }\n",                                                          // 7
+        "}\n",                                                              // 8
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Line 6: `        $list = array_map(fn(Order $o) => $o->getItems(), []);`
+    // The parameter `$o` is at col 35-36.  Cursor on the defining `$o`.
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 6,
+                character: 36, // on the `o` of the LHS `$o` (the parameter definition)
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "LHS $o at definition site should resolve type hint to Order class"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(
+                location.range.start.line, 1,
+                "Should jump to Order class definition on line 1"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Arrow function parameter with no type hint: RHS usage should still
+/// jump to the parameter definition on the same line, and the LHS
+/// should return None (no type hint to resolve).
+#[tokio::test]
+async fn test_goto_definition_arrow_fn_untyped_param_rhs_jumps_to_param() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///arrow_fn_untyped.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                            // 0
+        "class Demo {\n",                                     // 1
+        "    public function run(): void {\n",                // 2
+        "        $list = array_map(fn($x) => $x + 1, []);\n", // 3
+        "    }\n",                                            // 4
+        "}\n",                                                // 5
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Line 3: `        $list = array_map(fn($x) => $x + 1, []);`
+    //   "        " = 8, "$list" = 5, " = " = 3, "array_map(" = 10, "fn(" = 3
+    //   "$x" at 29-30, ") => " = 5, "$x" at 36-37
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 3,
+                character: 37, // on the `x` of the RHS `$x`
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "RHS $x should resolve to the arrow function parameter"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(
+                location.range.start.line, 3,
+                "RHS $x should jump to the parameter on the same line"
+            );
+            assert_eq!(
+                location.range.start.character, 29,
+                "Should point to the parameter $x at column 29"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}

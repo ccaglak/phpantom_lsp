@@ -756,6 +756,70 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
         return result;
     }
 
+    // Handle callable/Closure signatures: `callable(TValue): RetType` or
+    // `Closure(A, B): C`.  Recurse into the parameter types and the
+    // return type so that template parameters are properly substituted.
+    {
+        let callable_prefix = if s.starts_with("callable(") {
+            Some("callable")
+        } else if s.starts_with("Closure(") {
+            Some("Closure")
+        } else if s.starts_with("\\Closure(") {
+            Some("\\Closure")
+        } else {
+            None
+        };
+        if let Some(prefix) = callable_prefix {
+            let after_prefix = &s[prefix.len()..]; // starts with '('
+            let inner = &after_prefix[1..]; // skip '('
+
+            // Find the matching ')' respecting nesting.
+            let mut depth = 1i32;
+            let mut close_pos = None;
+            for (i, c) in inner.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_pos = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(close) = close_pos {
+                let params_str = &inner[..close];
+                let after_paren = &inner[close + 1..];
+
+                // Substitute each comma-separated parameter type.
+                let resolved_params = if params_str.trim().is_empty() {
+                    String::new()
+                } else {
+                    let param_parts = split_generic_args(params_str);
+                    let resolved: Vec<String> = param_parts
+                        .iter()
+                        .map(|p| apply_substitution(p, subs))
+                        .collect();
+                    resolved.join(", ")
+                };
+
+                // Check for a return type after `): RetType`.
+                let rest_trimmed = after_paren.trim_start();
+                if let Some(after_colon) = rest_trimmed.strip_prefix(':') {
+                    let ret_type = after_colon.trim_start();
+                    if !ret_type.is_empty() {
+                        let resolved_ret = apply_substitution(ret_type, subs);
+                        return format!("{prefix}({resolved_params}): {resolved_ret}");
+                    }
+                }
+                return format!("{prefix}({resolved_params}){after_paren}");
+            }
+        }
+    }
+
     // Handle array shorthand: `TValue[]`.
     if let Some(base) = s.strip_suffix("[]") {
         let resolved = apply_substitution(base, subs);
@@ -1026,6 +1090,96 @@ mod tests {
         assert_eq!(
             apply_substitution("(T&Countable)", &subs),
             "(User&Countable)"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_params() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "User".to_string());
+
+        assert_eq!(
+            apply_substitution("callable(TValue): void", &subs),
+            "callable(User): void"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_multiple_params() {
+        let mut subs = HashMap::new();
+        subs.insert("TKey".to_string(), "int".to_string());
+        subs.insert("TValue".to_string(), "User".to_string());
+
+        assert_eq!(
+            apply_substitution("callable(TKey, TValue): mixed", &subs),
+            "callable(int, User): mixed"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_return_type() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "Order".to_string());
+
+        assert_eq!(
+            apply_substitution("callable(string): TValue", &subs),
+            "callable(string): Order"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_closure_syntax() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "Product".to_string());
+
+        assert_eq!(
+            apply_substitution("Closure(TValue): bool", &subs),
+            "Closure(Product): bool"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_empty_params() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "User".to_string());
+
+        assert_eq!(
+            apply_substitution("callable(): TValue", &subs),
+            "callable(): User"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_no_match() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "User".to_string());
+
+        // No template params inside callable — returned unchanged.
+        assert_eq!(
+            apply_substitution("callable(string): void", &subs),
+            "callable(string): void"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_callable_generic_param() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "User".to_string());
+
+        assert_eq!(
+            apply_substitution("callable(Collection<int, TValue>): void", &subs),
+            "callable(Collection<int, User>): void"
+        );
+    }
+
+    #[test]
+    fn test_apply_substitution_fqn_closure() {
+        let mut subs = HashMap::new();
+        subs.insert("TValue".to_string(), "Item".to_string());
+
+        assert_eq!(
+            apply_substitution("\\Closure(TValue): void", &subs),
+            "\\Closure(Item): void"
         );
     }
 

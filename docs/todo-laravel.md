@@ -1,6 +1,6 @@
 # PHPantom — Laravel Support: Remaining Work
 
-> Last updated: 2025-07-21
+> Last updated: 2026-02-26
 
 This document tracks bugs, known gaps, and missing features in
 PHPantom's Laravel Eloquent support. For the general architecture and
@@ -9,18 +9,6 @@ virtual member provider design, see `ARCHITECTURE.md`.
 ---
 
 ## Missing features
-
-### 1. Variable assignment from builder-forwarded static method in GTD
-
-`$q = User::where(...)` then `$q->orderBy()` does not fully resolve for
-go-to-definition because the variable resolution path
-(`resolve_rhs_static_call`) finds `where()` on the raw `Task` class via
-`resolve_method_return_types_with_args`, which calls
-`resolve_class_fully` internally. The issue is that the returned Builder
-type's methods are resolved, but go-to-definition then cannot trace back
-to the declaring class in a Builder loaded through the chain. This
-works for completion (which only needs the type) but not for GTD (which
-needs the source location).
 
 ### 2. Closure parameter inference in collection pipelines
 
@@ -44,21 +32,24 @@ Builder at resolution time without preserving the original declaration
 site. The GTD fallback `find_scope_on_builder_model` may not be
 triggering for the `with()` return path.
 
-### 4. Multi-line chain after `with()` breaks completion and GTD
+### 4. Blank line inside a method chain breaks collapse logic
 
-When the chain after `with()` is split across lines, neither completion
-nor go-to-definition works:
+When a blank line separates parts of a fluent chain,
+`collapse_continuation_lines` stops walking backwards at the empty line
+and never reaches the base expression:
 
 ```php
 Brand::with('english')
+
     ->paginate(); // neither GTD nor completion works
 ```
 
-The single-line equivalent resolves fine. This is a variant of the
-multi-line closure argument issue (now fixed): `collapse_continuation_lines`
-joins lines that start with `->`, but the base line `Brand::with('english')`
-is not being found when the chain spans lines in this specific pattern.
-Likely a cursor-position or line-counting edge case in the collapse logic.
+The same chain without the blank line works fine. The backward walk in
+`collapse_continuation_lines` treats any line that does not start with
+`->` or `?->` as the base. An empty line matches that condition, so the
+collapsed result is just `->paginate()` with no subject. Fixing this
+requires skipping blank (whitespace-only) lines during the backward
+walk.
 
 ---
 

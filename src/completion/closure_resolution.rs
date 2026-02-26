@@ -6,12 +6,24 @@
 /// module contains the recursive AST walkers that detect whether the
 /// cursor falls inside such a construct and, if so, resolve the target
 /// variable from its typed parameters.
+///
+/// ## Callable parameter inference
+///
+/// When a closure or arrow function is passed as an argument to a method
+/// or function call, and its parameters have no explicit type hints, the
+/// resolver attempts to infer the parameter types from the called
+/// method/function's signature.  For example, in
+/// `$users->map(fn($u) => $u->name)`, the resolver looks up the `map`
+/// method on the resolved type of `$users`, finds that its parameter is
+/// typed as `callable(TValue): mixed` (with `TValue` already substituted
+/// through generic resolution), and infers `$u` as the concrete element
+/// type.
 use mago_span::HasSpan;
 use mago_syntax::ast::sequence::TokenSeparatedSequence;
 use mago_syntax::ast::*;
 
 use crate::Backend;
-use crate::types::ClassInfo;
+use crate::types::{AccessKind, ClassInfo};
 
 use super::resolver::VarResolutionCtx;
 
@@ -321,6 +333,11 @@ impl Backend {
     }
 
     /// Check call-expression arguments for closures containing the cursor.
+    ///
+    /// When the cursor is inside a closure/arrow-function that is a direct
+    /// argument to a method or function call, this function additionally
+    /// attempts to infer types for untyped closure parameters from the
+    /// called method/function's callable parameter signature.
     fn try_resolve_in_closure_call<'b>(
         call: &'b Call<'b>,
         ctx: &VarResolutionCtx<'_>,
@@ -328,19 +345,97 @@ impl Backend {
     ) -> bool {
         match call {
             Call::Function(fc) => {
+                // Try with callable parameter inference from the function signature.
+                if let Some(func_name) = Self::extract_function_name_from_call(fc)
+                    && Self::try_resolve_closure_in_call_args(
+                        &fc.argument_list.arguments,
+                        ctx,
+                        results,
+                        |arg_idx| {
+                            Self::infer_callable_params_from_function(&func_name, arg_idx, ctx)
+                        },
+                    )
+                {
+                    return true;
+                }
                 Self::try_resolve_in_closure_args(&fc.argument_list.arguments, ctx, results)
             }
             Call::Method(mc) => {
-                Self::try_resolve_in_closure_expr(mc.object, ctx, results)
-                    || Self::try_resolve_in_closure_args(&mc.argument_list.arguments, ctx, results)
+                if Self::try_resolve_in_closure_expr(mc.object, ctx, results) {
+                    return true;
+                }
+                // Try with callable parameter inference from the method signature.
+                if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
+                    let method_name = ident.value.to_string();
+                    let obj_span = mc.object.span();
+                    if Self::try_resolve_closure_in_call_args(
+                        &mc.argument_list.arguments,
+                        ctx,
+                        results,
+                        |arg_idx| {
+                            Self::infer_callable_params_from_receiver(
+                                obj_span.start.offset,
+                                obj_span.end.offset,
+                                &method_name,
+                                arg_idx,
+                                ctx,
+                            )
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+                Self::try_resolve_in_closure_args(&mc.argument_list.arguments, ctx, results)
             }
             Call::NullSafeMethod(mc) => {
-                Self::try_resolve_in_closure_expr(mc.object, ctx, results)
-                    || Self::try_resolve_in_closure_args(&mc.argument_list.arguments, ctx, results)
+                if Self::try_resolve_in_closure_expr(mc.object, ctx, results) {
+                    return true;
+                }
+                if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
+                    let method_name = ident.value.to_string();
+                    let obj_span = mc.object.span();
+                    if Self::try_resolve_closure_in_call_args(
+                        &mc.argument_list.arguments,
+                        ctx,
+                        results,
+                        |arg_idx| {
+                            Self::infer_callable_params_from_receiver(
+                                obj_span.start.offset,
+                                obj_span.end.offset,
+                                &method_name,
+                                arg_idx,
+                                ctx,
+                            )
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+                Self::try_resolve_in_closure_args(&mc.argument_list.arguments, ctx, results)
             }
             Call::StaticMethod(sc) => {
-                Self::try_resolve_in_closure_expr(sc.class, ctx, results)
-                    || Self::try_resolve_in_closure_args(&sc.argument_list.arguments, ctx, results)
+                if Self::try_resolve_in_closure_expr(sc.class, ctx, results) {
+                    return true;
+                }
+                if let ClassLikeMemberSelector::Identifier(ident) = &sc.method {
+                    let method_name = ident.value.to_string();
+                    if Self::try_resolve_closure_in_call_args(
+                        &sc.argument_list.arguments,
+                        ctx,
+                        results,
+                        |arg_idx| {
+                            Self::infer_callable_params_from_static_receiver(
+                                sc.class,
+                                &method_name,
+                                arg_idx,
+                                ctx,
+                            )
+                        },
+                    ) {
+                        return true;
+                    }
+                }
+                Self::try_resolve_in_closure_args(&sc.argument_list.arguments, ctx, results)
             }
         }
     }
@@ -363,6 +458,104 @@ impl Backend {
         false
     }
 
+    /// Try to resolve a closure/arrow-function inside a call's argument
+    /// list, using callable parameter inference from the called
+    /// method/function's signature.
+    ///
+    /// `infer_fn` is called with the argument index to produce the
+    /// inferred callable parameter types (if any).  Returns `true` when
+    /// a closure containing the cursor was found and resolved.
+    fn try_resolve_closure_in_call_args<'b, F>(
+        arguments: &'b TokenSeparatedSequence<'b, Argument<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+        results: &mut Vec<ClassInfo>,
+        infer_fn: F,
+    ) -> bool
+    where
+        F: Fn(usize) -> Vec<String>,
+    {
+        for (arg_idx, arg) in arguments.iter().enumerate() {
+            let arg_expr = match arg {
+                Argument::Positional(pos) => pos.value,
+                Argument::Named(named) => named.value,
+            };
+            let sp = arg_expr.span();
+            if ctx.cursor_offset < sp.start.offset || ctx.cursor_offset > sp.end.offset {
+                continue;
+            }
+            // The cursor is inside this argument.  Check if it is a
+            // closure or arrow function directly.
+            match arg_expr {
+                Expression::Closure(closure) => {
+                    let body_start = closure.body.left_brace.start.offset;
+                    let body_end = closure.body.right_brace.end.offset;
+                    if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
+                        // Only invoke `infer_fn` when the variable we are
+                        // resolving is actually one of the closure's own
+                        // parameters.  Calling `infer_fn` triggers
+                        // receiver-type resolution which re-enters the
+                        // variable-resolution / closure-detection path.
+                        // If the target variable is NOT a closure param,
+                        // the inference result would be unused anyway, so
+                        // skipping it avoids an infinite recursion cycle.
+                        let is_closure_param = closure
+                            .parameter_list
+                            .parameters
+                            .iter()
+                            .any(|p| *p.variable.name == *ctx.var_name);
+                        if is_closure_param {
+                            let inferred = infer_fn(arg_idx);
+                            Self::resolve_closure_params_with_inferred(
+                                &closure.parameter_list,
+                                ctx,
+                                results,
+                                &inferred,
+                            );
+                        } else {
+                            Self::resolve_closure_params(&closure.parameter_list, ctx, results);
+                        }
+                        Self::walk_statements_for_assignments(
+                            closure.body.statements.iter(),
+                            ctx,
+                            results,
+                            false,
+                        );
+                        return true;
+                    }
+                }
+                Expression::ArrowFunction(arrow) => {
+                    let arrow_body_span = arrow.expression.span();
+                    if ctx.cursor_offset >= arrow.arrow.start.offset
+                        && ctx.cursor_offset <= arrow_body_span.end.offset
+                    {
+                        let is_closure_param = arrow
+                            .parameter_list
+                            .parameters
+                            .iter()
+                            .any(|p| *p.variable.name == *ctx.var_name);
+                        if is_closure_param {
+                            let inferred = infer_fn(arg_idx);
+                            Self::resolve_closure_params_with_inferred(
+                                &arrow.parameter_list,
+                                ctx,
+                                results,
+                                &inferred,
+                            );
+                        } else {
+                            Self::resolve_closure_params(&arrow.parameter_list, ctx, results);
+                        }
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            // Not a direct closure — fall through so the normal recursive
+            // walker handles nested closures (without inference).
+            return false;
+        }
+        false
+    }
+
     /// Resolve a variable's type from a closure / arrow-function
     /// parameter list.  If the variable matches a typed parameter,
     /// the resolved classes replace whatever is currently in `results`.
@@ -371,13 +564,42 @@ impl Backend {
         ctx: &VarResolutionCtx<'_>,
         results: &mut Vec<ClassInfo>,
     ) {
-        for param in parameter_list.parameters.iter() {
+        Self::resolve_closure_params_with_inferred(parameter_list, ctx, results, &[]);
+    }
+
+    /// Like [`resolve_closure_params`] but accepts a list of inferred
+    /// parameter types from the enclosing callable signature.  When a
+    /// closure parameter has no explicit type hint, the corresponding
+    /// entry in `inferred_types` (matched by positional index) is used
+    /// as a fallback.
+    fn resolve_closure_params_with_inferred(
+        parameter_list: &FunctionLikeParameterList<'_>,
+        ctx: &VarResolutionCtx<'_>,
+        results: &mut Vec<ClassInfo>,
+        inferred_types: &[String],
+    ) {
+        for (idx, param) in parameter_list.parameters.iter().enumerate() {
             let pname = param.variable.name.to_string();
             if pname == ctx.var_name {
+                // 1. Try the explicit type hint first.
                 if let Some(hint) = &param.hint {
                     let type_str = Self::extract_hint_string(hint);
                     let resolved = Self::type_hint_to_classes(
                         &type_str,
+                        &ctx.current_class.name,
+                        ctx.all_classes,
+                        ctx.class_loader,
+                    );
+                    if !resolved.is_empty() {
+                        *results = resolved;
+                        break;
+                    }
+                }
+                // 2. Fall back to the inferred type from the callable
+                //    signature of the enclosing method/function call.
+                if let Some(inferred) = inferred_types.get(idx) {
+                    let resolved = Self::type_hint_to_classes(
+                        inferred,
                         &ctx.current_class.name,
                         ctx.all_classes,
                         ctx.class_loader,
@@ -389,5 +611,139 @@ impl Backend {
                 break;
             }
         }
+    }
+
+    // ── Callable parameter inference helpers ────────────────────────────
+
+    /// Extract the function name from a `FunctionCall` AST node.
+    fn extract_function_name_from_call(fc: &FunctionCall<'_>) -> Option<String> {
+        match fc.function {
+            Expression::Identifier(ident) => Some(ident.value().to_string()),
+            _ => None,
+        }
+    }
+
+    /// Infer callable parameter types for a closure passed at position
+    /// `arg_idx` to a standalone function call.
+    fn infer_callable_params_from_function(
+        func_name: &str,
+        arg_idx: usize,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        let rctx = ctx.as_resolution_ctx();
+        let func_info = if let Some(fl) = rctx.function_loader {
+            fl(func_name)
+        } else {
+            None
+        };
+        if let Some(fi) = func_info {
+            Self::extract_callable_params_at(&fi.parameters, arg_idx, ctx)
+        } else {
+            vec![]
+        }
+    }
+
+    /// Infer callable parameter types for a closure passed at position
+    /// `arg_idx` to an instance method call whose receiver expression
+    /// spans `[obj_start, obj_end)` in the source text.
+    fn infer_callable_params_from_receiver(
+        obj_start: u32,
+        obj_end: u32,
+        method_name: &str,
+        arg_idx: usize,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        let start = obj_start as usize;
+        let end = obj_end as usize;
+        if end > ctx.content.len() {
+            return vec![];
+        }
+        let obj_text = ctx.content[start..end].trim();
+        let rctx = ctx.as_resolution_ctx();
+        let receiver_classes = Self::resolve_target_classes(obj_text, AccessKind::Arrow, &rctx);
+
+        Self::find_callable_params_on_classes(&receiver_classes, method_name, arg_idx, ctx)
+    }
+
+    /// Infer callable parameter types for a closure passed at position
+    /// `arg_idx` to a static method call.
+    fn infer_callable_params_from_static_receiver(
+        class_expr: &Expression<'_>,
+        method_name: &str,
+        arg_idx: usize,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        let class_name = match class_expr {
+            Expression::Self_(_) => Some(ctx.current_class.name.clone()),
+            Expression::Static(_) => Some(ctx.current_class.name.clone()),
+            Expression::Identifier(ident) => Some(ident.value().to_string()),
+            Expression::Parent(_) => ctx.current_class.parent_class.clone(),
+            _ => None,
+        };
+        let owner = class_name.and_then(|name| {
+            ctx.all_classes
+                .iter()
+                .find(|c| c.name == name)
+                .cloned()
+                .or_else(|| (ctx.class_loader)(&name))
+        });
+        if let Some(ref cls) = owner {
+            let resolved = Self::resolve_class_fully(cls, ctx.class_loader);
+            Self::find_callable_params_on_method(&resolved, method_name, arg_idx, ctx)
+        } else {
+            vec![]
+        }
+    }
+
+    /// Search for the method `method_name` on each of `classes` and
+    /// extract callable parameter types at `arg_idx`.
+    fn find_callable_params_on_classes(
+        classes: &[ClassInfo],
+        method_name: &str,
+        arg_idx: usize,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        for cls in classes {
+            let resolved = Self::resolve_class_fully(cls, ctx.class_loader);
+            let result = Self::find_callable_params_on_method(&resolved, method_name, arg_idx, ctx);
+            if !result.is_empty() {
+                return result;
+            }
+        }
+        vec![]
+    }
+
+    /// Look up method `method_name` on `class` and extract callable
+    /// parameter types from the parameter at position `arg_idx`.
+    fn find_callable_params_on_method(
+        class: &ClassInfo,
+        method_name: &str,
+        arg_idx: usize,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        let method = class.methods.iter().find(|m| m.name == method_name);
+        if let Some(m) = method {
+            Self::extract_callable_params_at(&m.parameters, arg_idx, ctx)
+        } else {
+            vec![]
+        }
+    }
+
+    /// Given a list of method/function parameters, look at the parameter
+    /// at `arg_idx`.  If its type hint is a `callable(…)` or
+    /// `Closure(…)`, extract and return the callable's parameter types.
+    fn extract_callable_params_at(
+        params: &[crate::types::ParameterInfo],
+        arg_idx: usize,
+        _ctx: &VarResolutionCtx<'_>,
+    ) -> Vec<String> {
+        let param = params.get(arg_idx);
+        if let Some(p) = param
+            && let Some(ref hint) = p.type_hint
+            && let Some(types) = crate::docblock::extract_callable_param_types(hint)
+        {
+            return types;
+        }
+        vec![]
     }
 }

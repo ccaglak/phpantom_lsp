@@ -1412,7 +1412,7 @@ impl Backend {
             match member {
                 ClassLikeMember::Method(method) => {
                     let name = method.name.value.to_string();
-                    let parameters = Self::extract_parameters(&method.parameter_list);
+                    let mut parameters = Self::extract_parameters(&method.parameter_list);
                     let native_return_type = method
                         .return_type_hint
                         .as_ref()
@@ -1545,6 +1545,30 @@ impl Backend {
                     } else {
                         return_type
                     };
+
+                    // Merge `@param` docblock types into parameter type
+                    // hints so that callable signatures like
+                    // `callable(User): void` are preserved.  This mirrors
+                    // the promoted-property logic already used for
+                    // constructor parameters.
+                    if let Some(ctx) = doc_ctx
+                        && let Some(doc_text) =
+                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, method)
+                    {
+                        for param in &mut parameters {
+                            let param_doc_type =
+                                docblock::extract_param_raw_type(doc_text, &param.name);
+                            if let Some(ref doc_type) = param_doc_type {
+                                let effective = docblock::resolve_effective_type(
+                                    param.type_hint.as_deref(),
+                                    Some(doc_type),
+                                );
+                                if effective.is_some() {
+                                    param.type_hint = effective;
+                                }
+                            }
+                        }
+                    }
 
                     methods.push(MethodInfo {
                         name,

@@ -629,12 +629,20 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
     // Strip nullable wrapper from the native hint for analysis.
     let clean_native = strip_nullable(native_type);
 
-    // `array` and `iterable` are broad container types that docblocks
-    // commonly refine (e.g. `array` → `list<User>`, `iterable` →
-    // `Collection<int, Order>`).  Allow override for these even though
-    // they appear in SCALAR_TYPES.
+    // `array`, `iterable`, `callable`, and `Closure` are broad types
+    // that docblocks commonly refine (e.g. `array` → `list<User>`,
+    // `iterable` → `Collection<int, Order>`,
+    // `callable` → `callable(Task): void`).
+    // Allow override for these even though they appear in SCALAR_TYPES
+    // (or are simple class names in the case of `Closure`).
     let native_lower = clean_native.to_ascii_lowercase();
-    if native_lower == "array" || native_lower == "iterable" {
+    if native_lower == "array" || native_lower == "iterable" || native_lower == "callable" {
+        return true;
+    }
+    // `\Closure` / `Closure` is a class, not scalar, but docblocks
+    // often refine it with a callable signature like `Closure(int): bool`.
+    let native_base = clean_native.strip_prefix('\\').unwrap_or(clean_native);
+    if native_base == "Closure" {
         return true;
     }
 
