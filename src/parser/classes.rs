@@ -27,6 +27,7 @@ use mago_syntax::ast::*;
 
 use crate::Backend;
 use crate::docblock;
+use crate::docblock::types::parse_generic_args;
 use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
 
@@ -128,15 +129,18 @@ fn extract_collected_by_attribute(
 
 /// Determine the custom collection class for an Eloquent model.
 ///
-/// Checks two sources in priority order:
+/// Checks three sources in priority order:
 ///
 /// 1. `#[CollectedBy(CustomCollection::class)]` attribute on the class.
 /// 2. `/** @use HasCollection<CustomCollection> */` in `use_generics`.
+/// 3. A `newCollection()` method override whose return type names the
+///    custom collection class.
 ///
 /// The attribute takes priority because it is the newer Laravel API.
 fn extract_custom_collection(
     attribute_lists: &Sequence<'_, AttributeList<'_>>,
     use_generics: &[(String, Vec<String>)],
+    methods: &[MethodInfo],
     content: &str,
 ) -> Option<String> {
     // 1. Try the #[CollectedBy] attribute first.
@@ -152,7 +156,45 @@ fn extract_custom_collection(
         }
     }
 
-    None
+    // 3. Fall back to newCollection() return type override.
+    extract_custom_collection_from_new_collection(methods)
+}
+
+/// Extract the custom collection class from a `newCollection()` method
+/// override.
+///
+/// Laravel models can override `newCollection()` to return a custom
+/// collection class.  If the method's return type is not the standard
+/// `Illuminate\Database\Eloquent\Collection` (or its short name
+/// `Collection`), it is treated as a custom collection class.
+///
+/// Returns `None` if no `newCollection` method exists, if it has no
+/// return type, or if the return type is the standard Eloquent
+/// Collection.
+fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Option<String> {
+    let method = methods.iter().find(|m| m.name == "newCollection")?;
+    let return_type = method.return_type.as_deref()?;
+
+    // Strip generic parameters (e.g. `TaskCollection<int, static>` → `TaskCollection`).
+    let (base, _) = parse_generic_args(return_type);
+
+    // Compare without leading backslash for the standard Collection check,
+    // but preserve the original form so that `resolve_name` in
+    // `resolve_parent_class_names` can correctly handle both FQN
+    // (`\App\Collections\X`) and short names (`X`) via the use map.
+    let stripped = base.strip_prefix('\\').unwrap_or(base);
+
+    // Ignore the standard Eloquent Collection — that's the default, not
+    // a custom override.
+    if stripped == "Illuminate\\Database\\Eloquent\\Collection" || stripped == "Collection" {
+        return None;
+    }
+
+    if stripped.is_empty() {
+        return None;
+    }
+
+    Some(base.to_string())
 }
 
 /// Try to infer an Eloquent relationship return type from a method's body.
@@ -233,8 +275,12 @@ impl Backend {
                     let end_offset = class.right_brace.end.offset;
 
                     let content = doc_ctx.map(|c| c.content).unwrap_or("");
-                    let custom_collection =
-                        extract_custom_collection(&class.attribute_lists, &use_generics, content);
+                    let custom_collection = extract_custom_collection(
+                        &class.attribute_lists,
+                        &use_generics,
+                        &methods,
+                        content,
+                    );
 
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Class,

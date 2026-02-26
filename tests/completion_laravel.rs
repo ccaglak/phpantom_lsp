@@ -4786,3 +4786,315 @@ class UserService {
         props
     );
 }
+
+// ─── newCollection() override detection ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_new_collection_override_builder_get_returns_custom_collection() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class TaskCollection extends Collection {
+    /** @return array<TKey, TModel> */
+    public function pending(): array { return []; }
+}
+";
+    let task_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Collections\\TaskCollection;
+class Task extends Model {
+    /** @return TaskCollection<int, static> */
+    public function newCollection(array $models = []): TaskCollection
+    {
+        return new TaskCollection($models);
+    }
+    public function getTitle(): string { return ''; }
+    public function test() {
+        $tasks = Task::where('active', true)->get();
+        $tasks->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/TaskCollection.php", custom_collection_php),
+        ("src/Models/Task.php", task_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Task.php", task_php, 13, 16).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"pending"),
+        "Custom collection from newCollection() should have pending(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"count"),
+        "Custom collection should inherit count(), got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_new_collection_override_first_returns_model() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class TaskCollection extends Collection {}
+";
+    let task_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Collections\\TaskCollection;
+class Task extends Model {
+    /** @return TaskCollection<int, static> */
+    public function newCollection(array $models = []): TaskCollection
+    {
+        return new TaskCollection($models);
+    }
+    public function getTitle(): string { return ''; }
+    public function test() {
+        $task = Task::where('active', true)->first();
+        $task->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/TaskCollection.php", custom_collection_php),
+        ("src/Models/Task.php", task_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Task.php", task_php, 13, 15).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getTitle"),
+        "first() on model with newCollection() should still return model, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_new_collection_override_relationship_property_uses_custom_collection() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class TaskCollection extends Collection {
+    /** @return array<TKey, TModel> */
+    public function pending(): array { return []; }
+}
+";
+    let task_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use App\\Collections\\TaskCollection;
+class Task extends Model {
+    /** @return TaskCollection<int, static> */
+    public function newCollection(array $models = []): TaskCollection
+    {
+        return new TaskCollection($models);
+    }
+    public function getTitle(): string { return ''; }
+}
+";
+    let project_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Project extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Task, $this> */
+    public function tasks(): mixed { return $this->hasMany(Task::class); }
+    public function test() {
+        $project = new Project();
+        $project->tasks->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/TaskCollection.php", custom_collection_php),
+        ("src/Models/Task.php", task_php),
+        ("src/Models/Project.php", project_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Project.php", project_php, 8, 25).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"pending"),
+        "Relationship property should use related model's newCollection() custom collection, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_collected_by_takes_priority_over_new_collection() {
+    let collection_a_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class CollectionA extends Collection {
+    public function fromAttribute(): string { return ''; }
+}
+";
+    let collection_b_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class CollectionB extends Collection {
+    public function fromMethod(): string { return ''; }
+}
+";
+    let widget_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
+use App\\Collections\\CollectionA;
+use App\\Collections\\CollectionB;
+#[CollectedBy(CollectionA::class)]
+class Widget extends Model {
+    /** @return CollectionB<int, static> */
+    public function newCollection(array $models = []): CollectionB
+    {
+        return new CollectionB($models);
+    }
+    public function test() {
+        $widgets = Widget::where('active', true)->get();
+        $widgets->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/CollectionA.php", collection_a_php),
+        ("src/Collections/CollectionB.php", collection_b_php),
+        ("src/Models/Widget.php", widget_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Widget.php", widget_php, 15, 18).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"fromAttribute"),
+        "#[CollectedBy] should take priority over newCollection(), got: {:?}",
+        methods
+    );
+    assert!(
+        !methods.contains(&"fromMethod"),
+        "newCollection() should NOT be used when #[CollectedBy] is present, got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_new_collection_standard_return_type_ignored() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Collection;
+class User extends Model {
+    public function newCollection(array $models = []): Collection
+    {
+        return new Collection($models);
+    }
+    public function getName(): string { return ''; }
+    public function test() {
+        $users = User::where('active', true)->get();
+        $users->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 12, 16).await;
+    let methods = method_names(&items);
+
+    // Standard Collection methods should be present (it's the default collection).
+    assert!(
+        methods.contains(&"count"),
+        "Standard collection should still have count(), got: {:?}",
+        methods
+    );
+    // No custom method should appear — newCollection returning Collection is not custom.
+    assert!(
+        !methods.iter().any(|m| m == &"pending"),
+        "No custom methods should appear when newCollection returns standard Collection"
+    );
+}
+
+#[tokio::test]
+async fn test_new_collection_fqn_return_type() {
+    let custom_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class EventCollection extends Collection {
+    public function upcoming(): array { return []; }
+}
+";
+    let event_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class Event extends Model {
+    public function newCollection(array $models = []): \\App\\Collections\\EventCollection
+    {
+        return new \\App\\Collections\\EventCollection($models);
+    }
+    public function test() {
+        $events = Event::where('upcoming', true)->get();
+        $events->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Collections/EventCollection.php", custom_collection_php),
+        ("src/Models/Event.php", event_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/Event.php", event_php, 10, 17).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"upcoming"),
+        "FQN return type on newCollection() should be detected, got: {:?}",
+        methods
+    );
+}

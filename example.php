@@ -932,9 +932,10 @@ class BodyInferredRelationshipDemo extends \Illuminate\Database\Eloquent\Model
 
 
 // ── Custom Eloquent Collections ─────────────────────────────────────────────
-// Models with #[CollectedBy(CustomCollection::class)] or
-// /** @use HasCollection<CustomCollection> */ use HasCollection;
-// resolve to the custom collection class instead of the standard
+// Models with #[CollectedBy(CustomCollection::class)],
+// /** @use HasCollection<CustomCollection> */ use HasCollection;, or a
+// newCollection() method override returning the custom class all resolve to
+// the custom collection class instead of the standard
 // Illuminate\Database\Eloquent\Collection. This means custom methods
 // like topRated() and averageRating() appear in completions after ->get().
 

@@ -1,6 +1,6 @@
 # PHPantom — Laravel Support: Remaining Work
 
-> Last updated: 2025-07-19
+> Last updated: 2025-07-20
 
 This document tracks bugs, known gaps, and missing features in
 PHPantom's Laravel Eloquent support. For the general architecture and
@@ -37,11 +37,11 @@ for classes that extend `Illuminate\Database\Eloquent\Model`:
    trait methods (`first()`, `firstOrFail()`, `sole()`) work through
    `@use` generics.
 
-4. **Custom Eloquent collections.** `#[CollectedBy]` and
-   `@use HasCollection<X>` are detected. Custom collection methods
-   appear after `->get()`, after static `Model::get()`, and on
-   collection-type relationship properties. The attribute takes priority
-   over the trait.
+4. **Custom Eloquent collections.** Three detection mechanisms:
+   `#[CollectedBy]`, `@use HasCollection<X>`, and `newCollection()`
+   method override. Custom collection methods appear after `->get()`,
+   after static `Model::get()`, and on collection-type relationship
+   properties. Priority order: attribute > trait > method override.
 
 5. **Go-to-definition.** Jumps to `Builder::where()`,
    `Query\Builder::orderBy()`, `BuildsQueries::first()`, and scope
@@ -55,7 +55,7 @@ for classes that extend `Illuminate\Database\Eloquent\Model`:
    `avatarUrl()` → `avatar_url`). Legacy accessors use the method's
    return type; modern accessors use `mixed`.
 
-Test coverage: 154 unit tests in `laravel.rs`, 75 integration tests in
+Test coverage: 154 unit tests in `laravel.rs`, 85 integration tests in
 `completion_laravel.rs`, 15 integration tests in `definition_laravel.rs`.
 
 ---
@@ -100,17 +100,7 @@ to PHP types. Common mappings: `datetime` → `Carbon\Carbon`,
 `Illuminate\Support\Collection`, custom cast classes → inspect
 their `get()` return type.
 
-### 3. `newCollection()` override detection
-
-Laravel supports overriding `newCollection()` on a model to return a
-custom collection class. Currently only `#[CollectedBy]` and
-`@use HasCollection<X>` are detected.
-
-**Implementation sketch:** In `extract_custom_collection`, additionally
-check if the class has a method named `newCollection` and inspect its
-return type annotation for the custom collection class name.
-
-### 4. Factory support
+### 3. Factory support
 
 `User::factory()->create()` is ubiquitous in Laravel test code. The
 `factory()` static method returns a `HasFactory` trait method that
@@ -124,14 +114,14 @@ produces a factory instance. Resolving the chain requires:
 This is medium complexity because it involves a naming convention
 (model name → factory name) and cross-file resolution.
 
-### 5. Closure parameter inference in collection pipelines
+### 4. Closure parameter inference in collection pipelines
 
 `$users->map(fn($u) => $u->...)` does not infer `$u` as the
 collection's element type. This is a general generics/callable
 inference problem, not Laravel-specific, but Laravel collection
 pipelines are the most common place users encounter it.
 
-### 6. Query scope chaining on Builder instances
+### 5. Query scope chaining on Builder instances
 
 Inside a scope method body, `$query->verified()` (calling another
 scope) does not offer scope method completions. Scope methods are
