@@ -3445,7 +3445,7 @@ class Invoice extends Model {
 /// the virtual relationship property should use the custom collection type.
 #[tokio::test]
 async fn test_collected_by_relationship_property_uses_custom_collection() {
-    let custom_collection_php = "\
+    let review_collection_php = "\
 <?php
 namespace App\\Collections;
 use Illuminate\\Database\\Eloquent\\Collection;
@@ -3457,6 +3457,20 @@ use Illuminate\\Database\\Eloquent\\Collection;
 class ReviewCollection extends Collection {
     /** @return array */
     public function topRated(): array { return []; }
+}
+";
+    let product_collection_php = "\
+<?php
+namespace App\\Collections;
+use Illuminate\\Database\\Eloquent\\Collection;
+/**
+ * @template TKey of array-key
+ * @template TModel
+ * @extends Collection<TKey, TModel>
+ */
+class ProductCollection extends Collection {
+    /** @return array */
+    public function bestSellers(): array { return []; }
 }
 ";
     let review_php = "\
@@ -3477,8 +3491,8 @@ class Review extends Model {
 namespace App\\Models;
 use Illuminate\\Database\\Eloquent\\Model;
 use Illuminate\\Database\\Eloquent\\Attributes\\CollectedBy;
-use App\\Collections\\ReviewCollection;
-#[CollectedBy(ReviewCollection::class)]
+use App\\Collections\\ProductCollection;
+#[CollectedBy(ProductCollection::class)]
 class Product extends Model {
     /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Review, $this> */
     public function reviews(): mixed { return $this->hasMany(Review::class); }
@@ -3491,7 +3505,11 @@ class Product extends Model {
     let (backend, dir) = make_workspace(&[
         (
             "src/Collections/ReviewCollection.php",
-            custom_collection_php,
+            review_collection_php,
+        ),
+        (
+            "src/Collections/ProductCollection.php",
+            product_collection_php,
         ),
         ("src/Models/Review.php", review_php),
         ("src/Models/Product.php", product_php),
@@ -3509,12 +3527,18 @@ class Product extends Model {
     .await;
     let methods = method_names(&items);
 
-    // The relationship type is on Product (which has #[CollectedBy]), so
-    // the collection type for the HasMany relationship property should
-    // use the custom collection.
+    // The relationship property `$product->reviews` is a HasMany<Review>,
+    // so it should use the *related* model's (Review's) custom collection
+    // (ReviewCollection), NOT the owning model's (Product's) collection
+    // (ProductCollection).
     assert!(
         methods.contains(&"topRated"),
-        "HasMany relationship property should use custom collection with topRated(), got: {:?}",
+        "HasMany relationship property should use the related model's ReviewCollection (topRated()), got: {:?}",
+        methods
+    );
+    assert!(
+        !methods.contains(&"bestSellers"),
+        "HasMany relationship property should NOT use the owning model's ProductCollection (bestSellers()), got: {:?}",
         methods
     );
 }
@@ -3722,5 +3746,275 @@ async fn test_custom_collection_same_file_plain_backend() {
         methods.contains(&"count"),
         "Same-file custom collection should inherit count(), got: {:?}",
         methods
+    );
+}
+
+// ─── Legacy accessor virtual properties ─────────────────────────────────────
+
+/// A model with `getFullNameAttribute(): string` should produce a virtual
+/// property `$full_name` typed as `string`.
+#[tokio::test]
+async fn test_legacy_accessor_produces_virtual_property() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function getFullNameAttribute(): string { return ''; }
+    public function test() {
+        $u = new User();
+        $u->full_name->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    // "$u->full_name->" — full_name resolves to string, so string methods
+    // won't show, but we can verify the property appears in $u-> completions.
+    // Instead, complete at "$u->" to check that full_name is in the list.
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 12).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"full_name"),
+        "Legacy accessor getFullNameAttribute should produce property full_name, got: {:?}",
+        props
+    );
+}
+
+/// Multiple legacy accessors coexist with regular methods and relationship properties.
+#[tokio::test]
+async fn test_legacy_accessor_multiple() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function getFirstNameAttribute(): string { return ''; }
+    public function getLastNameAttribute(): string { return ''; }
+    public function getIsAdminAttribute(): bool { return false; }
+    public function greet(): string { return ''; }
+    public function test() {
+        $u = new User();
+        $u->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 12).await;
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"first_name"),
+        "Should have first_name property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"last_name"),
+        "Should have last_name property, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_admin"),
+        "Should have is_admin property, got: {:?}",
+        props
+    );
+    assert!(
+        methods.contains(&"greet"),
+        "Regular method greet() should still appear, got: {:?}",
+        methods
+    );
+}
+
+/// `getAttribute()` is a real Eloquent method and must NOT be treated as a
+/// legacy accessor.
+#[tokio::test]
+async fn test_get_attribute_not_treated_as_accessor() {
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    public function getAttribute(string $key): mixed { return null; }
+    public function test() {
+        $u = new User();
+        $u->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/User.php", user_php)]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 7, 12).await;
+    let props = property_names(&items);
+
+    // getAttribute() has no middle portion, so it should not produce a property.
+    // The only properties should be from the Model base (none in our stub).
+    assert!(
+        !props.iter().any(|p| p.is_empty()),
+        "getAttribute should not produce an empty-named property, got: {:?}",
+        props
+    );
+}
+
+// ─── Modern accessor virtual properties (Laravel 9+) ────────────────────────
+
+/// A model with `fullName(): Attribute` should produce a virtual property
+/// `$full_name` typed as `mixed`.
+#[tokio::test]
+async fn test_modern_accessor_produces_virtual_property() {
+    let attribute_php = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Casts;
+class Attribute {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Casts\\Attribute;
+class User extends Model {
+    protected function fullName(): Attribute {
+        return Attribute::make(get: fn() => 'hello');
+    }
+    public function test() {
+        $u = new User();
+        $u->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "vendor/illuminate/Eloquent/Casts/Attribute.php",
+            attribute_php,
+        ),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 10, 12).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"full_name"),
+        "Modern accessor fullName() returning Attribute should produce property full_name, got: {:?}",
+        props
+    );
+}
+
+/// Modern and legacy accessors can coexist on the same model alongside
+/// relationships and scopes.
+#[tokio::test]
+async fn test_accessors_coexist_with_scopes_and_relationships() {
+    let attribute_php = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Casts;
+class Attribute {}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+use Illuminate\\Database\\Eloquent\\Casts\\Attribute;
+class User extends Model {
+    public function getDisplayNameAttribute(): string { return ''; }
+    protected function isVerified(): Attribute {
+        return Attribute::make(get: fn() => true);
+    }
+    public function scopeActive(Builder $query): void {}
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasMany<User, $this> */
+    public function friends(): mixed { return $this->hasMany(User::class); }
+    public function test() {
+        $u = new User();
+        $u->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "vendor/illuminate/Eloquent/Casts/Attribute.php",
+            attribute_php,
+        ),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 15, 12).await;
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"display_name"),
+        "Legacy accessor property display_name should be present, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"is_verified"),
+        "Modern accessor property is_verified should be present, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"friends"),
+        "Relationship property friends should be present, got: {:?}",
+        props
+    );
+    assert!(
+        methods.contains(&"active"),
+        "Scope method active() should be present, got: {:?}",
+        methods
+    );
+}
+
+/// A cross-file modern accessor should work when the Attribute class is
+/// resolved via PSR-4.
+#[tokio::test]
+async fn test_modern_accessor_cross_file() {
+    let attribute_php = "\
+<?php
+namespace Illuminate\\Database\\Eloquent\\Casts;
+class Attribute {}
+";
+    let profile_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Casts\\Attribute;
+class Profile extends Model {
+    protected function avatarUrl(): Attribute {
+        return Attribute::make(get: fn() => 'https://example.com/avatar.png');
+    }
+}
+";
+    let user_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+class User extends Model {
+    /** @return \\Illuminate\\Database\\Eloquent\\Relations\\HasOne<Profile, $this> */
+    public function profile(): mixed { return $this->hasOne(Profile::class); }
+    public function test() {
+        $u = new User();
+        $u->profile->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        (
+            "vendor/illuminate/Eloquent/Casts/Attribute.php",
+            attribute_php,
+        ),
+        ("src/Models/Profile.php", profile_php),
+        ("src/Models/User.php", user_php),
+    ]);
+
+    // "$u->profile->" — profile resolves to Profile, and Profile has
+    // a modern accessor avatarUrl() producing $avatar_url.
+    let items = complete_at(&backend, &dir, "src/Models/User.php", user_php, 8, 22).await;
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"avatar_url"),
+        "Cross-file modern accessor avatarUrl() on Profile should produce property avatar_url, got: {:?}",
+        props
     );
 }

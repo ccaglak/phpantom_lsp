@@ -64,6 +64,10 @@ const COLLECTION_RELATIONSHIPS: &[&str] = &[
 /// because the concrete related type is determined at runtime.
 const MORPH_TO: &str = "MorphTo";
 
+/// The fully-qualified name of the `Attribute` cast class used by
+/// Laravel 9+ modern accessors/mutators.
+const ATTRIBUTE_CAST_FQN: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
+
 /// The default return type for scope methods that don't declare a return
 /// type or return `void`.
 const DEFAULT_SCOPE_RETURN_TYPE: &str = "\\Illuminate\\Database\\Eloquent\\Builder<static>";
@@ -212,6 +216,98 @@ fn build_property_type(
         }
         RelationshipKind::MorphTo => Some("\\Illuminate\\Database\\Eloquent\\Model".to_string()),
     }
+}
+
+/// Determine whether a method is a legacy Eloquent accessor.
+///
+/// Legacy accessors follow the `getXAttribute()` naming convention where
+/// `X` starts with an uppercase letter.  For example,
+/// `getFullNameAttribute()` is a legacy accessor that produces a virtual
+/// property `$full_name`.
+fn is_legacy_accessor(method: &MethodInfo) -> bool {
+    let name = &method.name;
+    if !name.starts_with("get") || !name.ends_with("Attribute") {
+        return false;
+    }
+    // Must have at least one character between "get" and "Attribute".
+    // "getAttribute" itself (len 12) is a real Eloquent method, not an accessor.
+    let middle = &name[3..name.len() - 9]; // strip "get" (3) and "Attribute" (9)
+    if middle.is_empty() {
+        return false;
+    }
+    // The first character of the middle portion must be uppercase.
+    middle.starts_with(|c: char| c.is_uppercase())
+}
+
+/// Extract the virtual property name from a legacy accessor method name.
+///
+/// Strips `get` prefix and `Attribute` suffix, then converts the
+/// remaining CamelCase portion to snake_case.
+///
+/// `getFullNameAttribute` → `full_name`
+/// `getNameAttribute` → `name`
+fn legacy_accessor_property_name(method_name: &str) -> String {
+    let middle = &method_name[3..method_name.len() - 9];
+    camel_to_snake(middle)
+}
+
+/// Determine whether a method is a modern Eloquent accessor (Laravel 9+).
+///
+/// Modern accessors are methods that return
+/// `Illuminate\Database\Eloquent\Casts\Attribute`.  The method name
+/// is in camelCase and the virtual property name is the snake_case
+/// equivalent.  For example, `fullName(): Attribute` produces
+/// `$full_name`.
+fn is_modern_accessor(method: &MethodInfo) -> bool {
+    match method.return_type.as_deref() {
+        Some(rt) => {
+            let clean = rt.strip_prefix('\\').unwrap_or(rt);
+            // Strip generic parameters (e.g. Attribute<string, never>)
+            let base = clean.split('<').next().unwrap_or(clean).trim();
+            base == ATTRIBUTE_CAST_FQN || base == "Attribute"
+        }
+        None => false,
+    }
+}
+
+/// Convert a camelCase or PascalCase string to snake_case.
+///
+/// Inserts an underscore before each uppercase letter that follows a
+/// lowercase letter or digit, and before an uppercase letter that is
+/// followed by a lowercase letter when preceded by another uppercase
+/// letter (to handle acronyms like `URL` → `u_r_l`).
+///
+/// `FullName` → `full_name`
+/// `firstName` → `first_name`
+/// `isAdmin` → `is_admin`
+fn camel_to_snake(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() + 4);
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                let prev = chars[i - 1];
+                // Insert underscore when: lowercase/digit → uppercase,
+                // or uppercase → uppercase followed by lowercase (acronym boundary).
+                if prev.is_lowercase() || prev.is_ascii_digit() {
+                    result.push('_');
+                } else if prev.is_uppercase() {
+                    // Check next char for acronym boundary: "URL" + "Name" → "u_r_l_name"
+                    if let Some(&next) = chars.get(i + 1)
+                        && next.is_lowercase()
+                    {
+                        result.push('_');
+                    }
+                }
+            }
+            for lc in c.to_lowercase() {
+                result.push(lc);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Determine whether a method is an Eloquent scope.
@@ -435,6 +531,32 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 continue;
             }
 
+            // ── Legacy accessors (getXAttribute) ────────────────────
+            if is_legacy_accessor(method) {
+                let prop_name = legacy_accessor_property_name(&method.name);
+                properties.push(PropertyInfo {
+                    name: prop_name,
+                    type_hint: method.return_type.clone(),
+                    is_static: false,
+                    visibility: Visibility::Public,
+                    is_deprecated: method.is_deprecated,
+                });
+                continue;
+            }
+
+            // ── Modern accessors (Laravel 9+ Attribute casts) ───────
+            if is_modern_accessor(method) {
+                let prop_name = camel_to_snake(&method.name);
+                properties.push(PropertyInfo {
+                    name: prop_name,
+                    type_hint: Some("mixed".to_string()),
+                    is_static: false,
+                    visibility: Visibility::Public,
+                    is_deprecated: method.is_deprecated,
+                });
+                continue;
+            }
+
             // ── Relationship properties ─────────────────────────────
             let return_type = match method.return_type.as_deref() {
                 Some(rt) => rt,
@@ -447,11 +569,28 @@ impl VirtualMemberProvider for LaravelModelProvider {
             };
 
             let related_type = extract_related_type(return_type);
-            let type_hint = build_property_type(
-                kind,
-                related_type.as_deref(),
-                class.custom_collection.as_deref(),
-            );
+
+            // For collection relationships, use the *related* model's
+            // custom_collection, not the owning model's.  For example,
+            // if Product has `#[CollectedBy(ProductCollection)]` and
+            // Review has `#[CollectedBy(ReviewCollection)]`, then
+            // `Product::reviews()` returning `HasMany<Review, $this>`
+            // should produce `ReviewCollection<Review>`, not
+            // `ProductCollection<Review>`.
+            let custom_collection = if kind == RelationshipKind::Collection {
+                related_type
+                    .as_deref()
+                    .and_then(|rt| {
+                        let clean = rt.strip_prefix('\\').unwrap_or(rt);
+                        class_loader(clean)
+                    })
+                    .and_then(|related_class| related_class.custom_collection)
+            } else {
+                None
+            };
+
+            let type_hint =
+                build_property_type(kind, related_type.as_deref(), custom_collection.as_deref());
 
             if type_hint.is_some() {
                 properties.push(PropertyInfo {
@@ -2037,5 +2176,357 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].return_type.as_deref(), Some("string"));
         assert_eq!(result[1].return_type.as_deref(), Some("bool"));
+    }
+
+    // ── camel_to_snake ──────────────────────────────────────────────
+
+    #[test]
+    fn camel_to_snake_simple() {
+        assert_eq!(camel_to_snake("FullName"), "full_name");
+    }
+
+    #[test]
+    fn camel_to_snake_single_word() {
+        assert_eq!(camel_to_snake("Name"), "name");
+    }
+
+    #[test]
+    fn camel_to_snake_already_lower() {
+        assert_eq!(camel_to_snake("name"), "name");
+    }
+
+    #[test]
+    fn camel_to_snake_camel_case() {
+        assert_eq!(camel_to_snake("firstName"), "first_name");
+    }
+
+    #[test]
+    fn camel_to_snake_multiple_words() {
+        assert_eq!(camel_to_snake("isAdminUser"), "is_admin_user");
+    }
+
+    #[test]
+    fn camel_to_snake_with_digit() {
+        assert_eq!(camel_to_snake("item2Name"), "item2_name");
+    }
+
+    #[test]
+    fn camel_to_snake_acronym() {
+        assert_eq!(camel_to_snake("URLName"), "url_name");
+    }
+
+    // ── is_legacy_accessor ──────────────────────────────────────────
+
+    #[test]
+    fn legacy_accessor_detected() {
+        let method = make_method("getFullNameAttribute", Some("string"));
+        assert!(is_legacy_accessor(&method));
+    }
+
+    #[test]
+    fn legacy_accessor_single_word() {
+        let method = make_method("getNameAttribute", Some("string"));
+        assert!(is_legacy_accessor(&method));
+    }
+
+    #[test]
+    fn legacy_accessor_get_attribute_itself_not_accessor() {
+        // getAttribute() is a real Eloquent method, not an accessor.
+        let method = make_method("getAttribute", Some("mixed"));
+        assert!(!is_legacy_accessor(&method));
+    }
+
+    #[test]
+    fn legacy_accessor_wrong_prefix() {
+        let method = make_method("setFullNameAttribute", None);
+        assert!(!is_legacy_accessor(&method));
+    }
+
+    #[test]
+    fn legacy_accessor_no_attribute_suffix() {
+        let method = make_method("getFullName", Some("string"));
+        assert!(!is_legacy_accessor(&method));
+    }
+
+    #[test]
+    fn legacy_accessor_lowercase_after_get() {
+        // getfooAttribute — first char after "get" must be uppercase.
+        let method = make_method("getfooAttribute", Some("string"));
+        assert!(!is_legacy_accessor(&method));
+    }
+
+    // ── legacy_accessor_property_name ───────────────────────────────
+
+    #[test]
+    fn legacy_accessor_prop_name_simple() {
+        assert_eq!(legacy_accessor_property_name("getNameAttribute"), "name");
+    }
+
+    #[test]
+    fn legacy_accessor_prop_name_multi_word() {
+        assert_eq!(
+            legacy_accessor_property_name("getFullNameAttribute"),
+            "full_name"
+        );
+    }
+
+    #[test]
+    fn legacy_accessor_prop_name_three_words() {
+        assert_eq!(
+            legacy_accessor_property_name("getFirstMiddleLastAttribute"),
+            "first_middle_last"
+        );
+    }
+
+    // ── is_modern_accessor ──────────────────────────────────────────
+
+    #[test]
+    fn modern_accessor_fqn() {
+        let method = make_method(
+            "fullName",
+            Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        );
+        assert!(is_modern_accessor(&method));
+    }
+
+    #[test]
+    fn modern_accessor_fqn_with_backslash() {
+        let method = make_method(
+            "fullName",
+            Some("\\Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        );
+        assert!(is_modern_accessor(&method));
+    }
+
+    #[test]
+    fn modern_accessor_short_name() {
+        let method = make_method("fullName", Some("Attribute"));
+        assert!(is_modern_accessor(&method));
+    }
+
+    #[test]
+    fn modern_accessor_with_generics() {
+        let method = make_method(
+            "fullName",
+            Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute<string, never>"),
+        );
+        assert!(is_modern_accessor(&method));
+    }
+
+    #[test]
+    fn modern_accessor_not_matching_return_type() {
+        let method = make_method("fullName", Some("string"));
+        assert!(!is_modern_accessor(&method));
+    }
+
+    #[test]
+    fn modern_accessor_no_return_type() {
+        let method = make_method("fullName", None);
+        assert!(!is_modern_accessor(&method));
+    }
+
+    // ── provide: accessor integration ───────────────────────────────
+
+    #[test]
+    fn synthesizes_legacy_accessor_property() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("getFullNameAttribute", Some("string")));
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop = result.properties.iter().find(|p| p.name == "full_name");
+        assert!(
+            prop.is_some(),
+            "Legacy accessor getFullNameAttribute should produce property full_name, got: {:?}",
+            result
+                .properties
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(prop.unwrap().type_hint.as_deref(), Some("string"));
+        assert!(!prop.unwrap().is_static);
+    }
+
+    #[test]
+    fn synthesizes_modern_accessor_property() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods.push(make_method(
+            "fullName",
+            Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        ));
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop = result.properties.iter().find(|p| p.name == "full_name");
+        assert!(
+            prop.is_some(),
+            "Modern accessor fullName() returning Attribute should produce property full_name, got: {:?}",
+            result
+                .properties
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(prop.unwrap().type_hint.as_deref(), Some("mixed"));
+    }
+
+    #[test]
+    fn accessor_and_relationship_coexist() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("getFullNameAttribute", Some("string")));
+        user.methods.push(make_method(
+            "posts",
+            Some("HasMany<App\\Models\\Post, $this>"),
+        ));
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop_names: Vec<_> = result.properties.iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            prop_names.contains(&"full_name"),
+            "Should have accessor property"
+        );
+        assert!(
+            prop_names.contains(&"posts"),
+            "Should have relationship property"
+        );
+    }
+
+    #[test]
+    fn get_attribute_method_not_treated_as_accessor() {
+        // getAttribute() is a real Eloquent method, not an accessor.
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("getAttribute", Some("mixed")));
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        // getAttribute should not produce any virtual property.
+        assert!(
+            result.properties.is_empty(),
+            "getAttribute() should not be treated as a legacy accessor, got: {:?}",
+            result
+                .properties
+                .iter()
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn accessor_scope_and_relationship_all_coexist() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+        user.methods
+            .push(make_method("getFullNameAttribute", Some("string")));
+        user.methods.push(make_method(
+            "firstName",
+            Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        ));
+        user.methods.push(make_method_with_params(
+            "scopeActive",
+            Some("void"),
+            vec![make_param("$query", Some("Builder"), true)],
+        ));
+        user.methods.push(make_method(
+            "posts",
+            Some("HasMany<App\\Models\\Post, $this>"),
+        ));
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop_names: Vec<_> = result.properties.iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            prop_names.contains(&"full_name"),
+            "Legacy accessor property"
+        );
+        assert!(
+            prop_names.contains(&"first_name"),
+            "Modern accessor property"
+        );
+        assert!(prop_names.contains(&"posts"), "Relationship property");
+
+        let method_names: Vec<_> = result.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(method_names.contains(&"active"), "Scope method");
+    }
+
+    #[test]
+    fn legacy_accessor_preserves_deprecated() {
+        let provider = LaravelModelProvider;
+        let mut user = make_class("App\\Models\\User");
+        user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+
+        let mut accessor = make_method("getOldNameAttribute", Some("string"));
+        accessor.is_deprecated = true;
+        user.methods.push(accessor);
+
+        let model = make_class("Illuminate\\Database\\Eloquent\\Model");
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Illuminate\\Database\\Eloquent\\Model" {
+                Some(model.clone())
+            } else {
+                None
+            }
+        };
+
+        let result = provider.provide(&user, &loader);
+        let prop = result.properties.iter().find(|p| p.name == "old_name");
+        assert!(prop.is_some());
+        assert!(
+            prop.unwrap().is_deprecated,
+            "Deprecated flag should be preserved"
+        );
     }
 }

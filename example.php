@@ -915,6 +915,38 @@ class CustomCollectionDemo
 }
 
 
+// ── Eloquent Accessors & Mutators ───────────────────────────────────────────
+// Legacy accessors (getXAttribute) and modern accessors (Laravel 9+ Attribute
+// cast) produce virtual properties on the model. The property name is derived
+// by converting the method name to snake_case.
+
+class AccessorDemo extends \Illuminate\Database\Eloquent\Model
+{
+    // Legacy accessor — produces virtual property $display_name
+    public function getDisplayNameAttribute(): string
+    {
+        return 'display';
+    }
+
+    // Modern accessor (Laravel 9+) — produces virtual property $avatar_url
+    protected function avatarUrl(): \Illuminate\Database\Eloquent\Casts\Attribute
+    {
+        return new \Illuminate\Database\Eloquent\Casts\Attribute();
+    }
+
+    public function demo(): void
+    {
+        $model = new AccessorDemo();
+
+        // Legacy accessor: getDisplayNameAttribute() → $display_name
+        $model->display_name;             // virtual property → string
+
+        // Modern accessor: avatarUrl() returning Attribute → $avatar_url
+        $model->avatar_url;               // virtual property → mixed
+    }
+}
+
+
 // ── Match Class-String Forwarding to Conditional Return Types ───────────────
 // When a variable holds a ::class value from a match expression and is then
 // passed to a function/method with @template T + @param class-string<T> +
@@ -2710,6 +2742,10 @@ namespace Illuminate\Database\Eloquent\Relations {
 
 namespace Illuminate\Database\Eloquent\Attributes {
     class CollectedBy {}
+}
+
+namespace Illuminate\Database\Eloquent\Casts {
+    class Attribute {}
 }
 
 namespace Illuminate\Database\Eloquent {

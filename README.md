@@ -18,7 +18,7 @@ PHPantom focuses on completion and go-to-definition and aims to do them really w
 | `@mixin` completion | ✅ | 💰 | ✅ | ✅ | 🚧 |
 | `@phpstan` annotations | ✅ | ❌ | 🚧 | ❌ | 🚧 |
 | Conditional return types | ✅ | ❌ | ✅ | ❌ | 🚧 |
-| Laravel Eloquent | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Laravel Eloquent | ✅ | ❌ | ❌ | ❌ | 🧩 |
 | Array shape inference | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Object shape completion | ✅ | ❌ | ✅ | ❌ | 🚧 |
 | Generator body types | 🚧 | ❌ | 🚧 | ❌ | ❌ |

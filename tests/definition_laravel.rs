@@ -319,11 +319,6 @@ async fn test_goto_definition_scope_method_on_model() {
     // Scope methods are defined on the model itself as scopeXxx.
     // go-to-definition on `BlogAuthor::active()` should jump to
     // the `scopeActive` method in BlogAuthor.
-    //
-    // NOTE: Scope virtual methods (active → scopeActive) are currently
-    // not resolvable by find_declaring_class because it looks for the
-    // short name "active", not "scopeActive". This is a known gap.
-    // For now, verify that at least the builder-forwarded methods work.
     let author_php = "\
 <?php
 namespace App\\Models;
