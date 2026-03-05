@@ -1380,6 +1380,291 @@ async fn test_implementation_transitive_interface_via_parent_class() {
 
 /// Cross-file transitive interface inheritance via PSR-4.
 #[tokio::test]
+async fn test_implementation_reverse_jump_to_interface_method() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_reverse.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                      // 0
+        "interface Handler {\n",                        // 1
+        "    public function handle(): void;\n",        // 2
+        "}\n",                                          // 3
+        "class ConcreteHandler implements Handler {\n", // 4
+        "    public function handle(): void {}\n",      // 5
+        "}\n",                                          // 6
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "handle" at the declaration site in ConcreteHandler (line 5).
+    // "    public function handle(): void {}"
+    //                     ^ col 20
+    let locations = implementation_at(&backend, &uri, 5, 20).await;
+
+    assert!(
+        !locations.is_empty(),
+        "Reverse jump should find the interface method declaration"
+    );
+
+    // Should point to the interface method on line 2.
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&2),
+        "Should jump to Handler::handle() on line 2, got lines: {:?}",
+        lines
+    );
+}
+
+// ─── Reverse jump: interface method declaration → concrete implementations ──
+
+#[tokio::test]
+async fn test_implementation_forward_jump_from_interface_declaration() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_fwd_decl.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                     // 0
+        "interface Processor {\n",                     // 1
+        "    public function process(): void;\n",      // 2
+        "}\n",                                         // 3
+        "class FooProcessor implements Processor {\n", // 4
+        "    public function process(): void {}\n",    // 5
+        "}\n",                                         // 6
+        "class BarProcessor implements Processor {\n", // 7
+        "    public function process(): void {}\n",    // 8
+        "}\n",                                         // 9
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "process" at the declaration site in Processor (line 2).
+    // "    public function process(): void;"
+    //                     ^ col 20
+    let locations = implementation_at(&backend, &uri, 2, 20).await;
+
+    assert!(
+        locations.len() >= 2,
+        "Forward jump from interface declaration should find concrete implementations, got {}",
+        locations.len()
+    );
+
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&5),
+        "Should include FooProcessor::process() on line 5, got lines: {:?}",
+        lines
+    );
+    assert!(
+        lines.contains(&8),
+        "Should include BarProcessor::process() on line 8, got lines: {:?}",
+        lines
+    );
+}
+
+// ─── Reverse jump: abstract class method → concrete implementations ─────────
+
+#[tokio::test]
+async fn test_implementation_forward_jump_from_abstract_declaration() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_abstract_decl.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                              // 0
+        "abstract class Shape {\n",                             // 1
+        "    abstract public function area(): float;\n",        // 2
+        "}\n",                                                  // 3
+        "class Circle extends Shape {\n",                       // 4
+        "    public function area(): float { return 3.14; }\n", // 5
+        "}\n",                                                  // 6
+        "class Square extends Shape {\n",                       // 7
+        "    public function area(): float { return 1.0; }\n",  // 8
+        "}\n",                                                  // 9
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "area" at the declaration site in Shape (line 2).
+    // "    abstract public function area(): float;"
+    //                              ^ col 29
+    let locations = implementation_at(&backend, &uri, 2, 29).await;
+
+    assert!(
+        locations.len() >= 2,
+        "Forward jump from abstract declaration should find concrete implementations, got {}",
+        locations.len()
+    );
+
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&5),
+        "Should include Circle::area() on line 5, got lines: {:?}",
+        lines
+    );
+    assert!(
+        lines.contains(&8),
+        "Should include Square::area() on line 8, got lines: {:?}",
+        lines
+    );
+}
+
+// ─── Reverse jump: method implementing abstract parent ──────────────────────
+
+#[tokio::test]
+async fn test_implementation_reverse_jump_to_abstract_method() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_reverse_abstract.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                // 0
+        "abstract class Logger {\n",                              // 1
+        "    abstract public function log(string $msg): void;\n", // 2
+        "}\n",                                                    // 3
+        "class FileLogger extends Logger {\n",                    // 4
+        "    public function log(string $msg): void {}\n",        // 5
+        "}\n",                                                    // 6
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "log" at the declaration site in FileLogger (line 5).
+    // "    public function log(string $msg): void {}"
+    //                     ^ col 20
+    let locations = implementation_at(&backend, &uri, 5, 20).await;
+
+    assert!(
+        !locations.is_empty(),
+        "Reverse jump should find the abstract method declaration"
+    );
+
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&2),
+        "Should jump to Logger::log() on line 2, got lines: {:?}",
+        lines
+    );
+}
+
+// ─── Reverse jump: method implementing interface inherited from parent ──────
+
+#[tokio::test]
+async fn test_implementation_reverse_jump_transitive_interface() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_reverse_transitive.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                  // 0
+        "interface Serializable {\n",                               // 1
+        "    public function serialize(): string;\n",               // 2
+        "}\n",                                                      // 3
+        "abstract class BaseModel implements Serializable {\n",     // 4
+        "}\n",                                                      // 5
+        "class User extends BaseModel {\n",                         // 6
+        "    public function serialize(): string { return ''; }\n", // 7
+        "}\n",                                                      // 8
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "serialize" at the declaration site in User (line 7).
+    // "    public function serialize(): string { return ''; }"
+    //                     ^ col 20
+    let locations = implementation_at(&backend, &uri, 7, 20).await;
+
+    assert!(
+        !locations.is_empty(),
+        "Reverse jump should find the interface method via transitive inheritance"
+    );
+
+    let lines: Vec<u32> = locations.iter().map(|l| l.range.start.line).collect();
+    assert!(
+        lines.contains(&2),
+        "Should jump to Serializable::serialize() on line 2, got lines: {:?}",
+        lines
+    );
+}
+
+// ─── Reverse jump: concrete class with no interface returns none ─────────────
+
+#[tokio::test]
+async fn test_implementation_reverse_jump_no_interface_returns_none() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_reverse_none.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                  // 0
+        "class StandaloneClass {\n",                // 1
+        "    public function doStuff(): void {}\n", // 2
+        "}\n",                                      // 3
+    );
+
+    open(&backend, &uri, text).await;
+
+    // Cursor on "doStuff" at the declaration site (line 2).
+    // "    public function doStuff(): void {}"
+    //                     ^ col 20
+    let locations = implementation_at(&backend, &uri, 2, 20).await;
+
+    assert!(
+        locations.is_empty(),
+        "No interface or abstract parent — should return empty, got {} locations",
+        locations.len()
+    );
+}
+
+// ─── FQN deduplication: same short name in different namespaces ─────────────
+
+#[tokio::test]
+async fn test_implementation_fqn_dedup_different_namespaces() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///impl_fqn_dedup.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                // 0
+        "namespace App;\n",                       // 1
+        "interface Logger {\n",                   // 2
+        "    public function log(): void;\n",     // 3
+        "}\n",                                    // 4
+        "class FileLogger implements Logger {\n", // 5
+        "    public function log(): void {}\n",   // 6
+        "}\n",                                    // 7
+    );
+
+    let uri2 = Url::parse("file:///impl_fqn_dedup2.php").unwrap();
+    let text2 = concat!(
+        "<?php\n",                                   // 0
+        "namespace Vendor;\n",                       // 1
+        "interface Logger {\n",                      // 2
+        "    public function log(): void;\n",        // 3
+        "}\n",                                       // 4
+        "class ConsoleLogger implements Logger {\n", // 5
+        "    public function log(): void {}\n",      // 6
+        "}\n",                                       // 7
+    );
+
+    open(&backend, &uri, text).await;
+    open(&backend, &uri2, text2).await;
+
+    // Go-to-implementation on App\Logger (line 2 of file 1).
+    let locations = implementation_at(&backend, &uri, 2, 12).await;
+
+    // Should only find FileLogger, not ConsoleLogger (different namespace).
+    let uris: Vec<String> = locations.iter().map(|l| l.uri.to_string()).collect();
+    assert!(
+        uris.iter().all(|u| u.contains("impl_fqn_dedup.php")),
+        "App\\Logger should only find implementors from the App namespace, got: {:?}",
+        uris
+    );
+
+    // The result should include FileLogger.
+    assert!(
+        !locations.is_empty(),
+        "Should find FileLogger as an implementor of App\\Logger"
+    );
+}
+
+// ─── Transitive interface cross-file ────────────────────────────────────────
+
+#[tokio::test]
 async fn test_implementation_transitive_interface_cross_file() {
     let (backend, _dir) = create_psr4_workspace(
         r#"{

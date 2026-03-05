@@ -330,19 +330,16 @@ visible — well within our per-file performance budget.
 ---
 
 ## 10. Reverse jump: implementation → interface method declaration
-**Impact: Medium · Effort: Low**
+**Impact: Medium · Effort: Low (fixed)**
 
-Go-to-implementation lets you jump from an interface method to its concrete
-implementations, but there is no way to jump from a concrete implementation
-*back* to the interface or abstract method it satisfies.  For example,
-clicking `handle()` in a class that `implements Handler` cannot jump to
-`Handler::handle()`.
-
-This would be a natural extension of `find_declaring_class` in
-`definition/member.rs`: when the cursor is on a method *definition* (not
-a call), check whether any implemented interface or parent abstract class
-declares a method with the same name, and offer that as a definition
-target.
+**Status:** Fixed. When go-to-implementation is invoked on a
+`MemberDeclaration` symbol in a concrete class, the handler walks the
+class's interfaces (including those inherited from parent classes) and
+parent abstract classes to find the prototype method declaration and
+returns its location. Conversely, invoking go-to-implementation on a
+method declaration inside an interface or abstract class finds the
+concrete implementations. Tested with same-file and transitive
+inheritance scenarios.
 
 ---
 

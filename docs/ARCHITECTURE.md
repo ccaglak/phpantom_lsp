@@ -526,7 +526,7 @@ This ensures that user-defined overrides or polyfills always win over built-in s
 
 ## Go-to-Implementation: `find_implementors`
 
-When the user invokes go-to-implementation on an interface or abstract class, PHPantom scans for concrete classes that implement or extend it. The scan runs five phases, each progressively wider:
+When the user invokes go-to-implementation on an interface or abstract class, PHPantom scans for concrete classes that implement or extend it. When invoked on a method definition in a concrete class, it performs a reverse jump to the interface or abstract method that declares the prototype. The forward scan runs five phases, each progressively wider:
 
 ```
 find_implementors("Cacheable", "App\\Contracts\\Cacheable")
@@ -572,10 +572,6 @@ Phase 5 exists to catch newly-created or not-yet-indexed user classes that are m
 
 Note: `collect_php_files` still receives the vendor dir name because a fallback mapping like `"" => "."` resolves to the workspace root, where the walk must skip the vendor directory (and hidden directories like `.git`).
 
-### Known Limitation: Transitive Implementors
-
-`find_implementors` currently misses classes that transitively implement the target through a concrete intermediate class. For example, if `BaseView implements Renderable` and `HtmlView extends BaseView`, only `BaseView` is found. PhpStorm finds both. See `todo-bugs.md` §4 for the fix plan.
-
 ### String Pre-Filter
 
 Phases 3–5 avoid expensive parsing by first reading the raw file content and checking whether it contains the target class's short name. A file that doesn't mention `"Cacheable"` anywhere in its source can't possibly implement the `Cacheable` interface, so it's skipped without parsing. This keeps the scan fast even for large projects with thousands of files.
@@ -587,6 +583,21 @@ Phases 3–5 avoid expensive parsing by first reading the raw file content and c
 ### Member-Level Implementation
 
 When the cursor is on a method call (e.g. `$repo->find()`), `resolve_member_implementations` first resolves the subject to candidate classes. If any candidate is an interface or abstract class, `find_implementors` is called and each implementor is checked for the specific method. Only classes that directly define (override) the method are returned — inherited-but-not-overridden methods are excluded.
+
+### Reverse Jump: Concrete Method → Prototype Declaration
+
+When go-to-implementation is invoked on a `MemberDeclaration` symbol (a method name at its definition site), `resolve_reverse_implementation` checks whether the enclosing class implements any interface or extends an abstract class that declares a method with the same name. If found, it returns the location of the prototype method in the interface or abstract class. This covers:
+
+- Direct interfaces (`class Foo implements Bar`)
+- Interfaces inherited from parent classes (`class Foo extends Base` where `Base implements Bar`)
+- Interface-extends chains (`interface A extends B`)
+- Abstract parent methods (`abstract class Base { abstract function foo(); }`)
+
+For interface and abstract class method declarations, the same handler works in the forward direction: it calls `resolve_interface_member_implementations` to find all concrete classes that define the method.
+
+### FQN-Based Comparison
+
+All comparisons in `class_implements_or_extends` and deduplication in `find_implementors` use fully-qualified names (built from `ClassInfo.name` + `ClassInfo.file_namespace`). The short-name fallback is only used when the target has no namespace information, preventing false positives when two interfaces in different namespaces share the same short name (e.g. `App\Logger` vs `Vendor\Logger`).
 
 ## Find References: `ensure_workspace_indexed`
 

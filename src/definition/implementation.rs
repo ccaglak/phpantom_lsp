@@ -4,6 +4,10 @@
 /// call where the owning type is an interface or abstract class, this module
 /// finds all concrete implementations and returns their locations.
 ///
+/// When the cursor is on a method *definition* inside a concrete class, the
+/// reverse direction is also supported: the handler finds the interface or
+/// abstract class that declares the method and jumps to it.
+///
 /// # Resolution strategy
 ///
 /// 1. **Determine the target symbol** — consult the precomputed `SymbolMap`
@@ -16,6 +20,9 @@
 /// 4. **Return locations** — for class-level requests, return the class
 ///    declaration position; for method-level requests, return the method
 ///    position in each implementing class.
+/// 5. **Reverse jump** — for `MemberDeclaration` symbols on a concrete class,
+///    walk the class's interfaces and parent abstract classes to find the
+///    prototype method declaration and return its location.
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -88,6 +95,23 @@ impl Backend {
                     }
                     return None;
                 }
+                // Member declaration — reverse jump: from a concrete method
+                // definition to the interface/abstract method it implements.
+                SymbolKind::MemberDeclaration { name, .. } => {
+                    let ctx = self.file_context(uri);
+                    let class_loader = self.class_loader(&ctx);
+                    let current_class = find_class_at_offset(&ctx.classes, offset);
+                    if let Some(cls) = current_class {
+                        return self.resolve_reverse_implementation(
+                            uri,
+                            content,
+                            cls,
+                            name,
+                            &class_loader,
+                        );
+                    }
+                    return None;
+                }
                 // Other symbol kinds (variables, function calls, etc.)
                 // are not meaningful for go-to-implementation.
                 _ => return None,
@@ -121,9 +145,23 @@ impl Backend {
         }
 
         let target_short = target.name.clone();
-        let target_fqn = self
-            .class_fqn_for_short(&target_short)
-            .unwrap_or(target_short.clone());
+        // Compute target FQN from the class's own namespace (most
+        // reliable), then fall back to class_index, then to the FQN we
+        // resolved from the use-map, and finally to the short name.
+        let target_fqn = {
+            let from_class = Self::build_fqn(&target.name, &target.file_namespace);
+            if from_class.contains('\\') {
+                from_class
+            } else {
+                self.class_fqn_for_short(&target_short).unwrap_or_else(|| {
+                    if fqn.contains('\\') {
+                        fqn.clone()
+                    } else {
+                        target_short.clone()
+                    }
+                })
+            }
+        };
 
         let implementors = self.find_implementors(&target_short, &target_fqn, &class_loader);
 
@@ -135,6 +173,253 @@ impl Backend {
         for imp in &implementors {
             if let Some(loc) = self.locate_class_declaration(imp, uri, content) {
                 locations.push(loc);
+            }
+        }
+
+        if locations.is_empty() {
+            None
+        } else {
+            Some(locations)
+        }
+    }
+
+    /// Reverse jump: from a method definition in a concrete class to the
+    /// interface or abstract class that declares the prototype.
+    ///
+    /// When the cursor is on a method name at its definition site (e.g.
+    /// `public function handle()` in a class that implements `Handler`),
+    /// this finds the interface/abstract method declaration and returns
+    /// its location.
+    fn resolve_reverse_implementation(
+        &self,
+        uri: &str,
+        content: &str,
+        current_class: &ClassInfo,
+        member_name: &str,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    ) -> Option<Vec<Location>> {
+        // For interfaces and abstract classes, the forward direction
+        // applies: find concrete implementors that define the method.
+        if current_class.kind == ClassLikeKind::Interface || current_class.is_abstract {
+            return self.resolve_interface_member_implementations(
+                uri,
+                content,
+                current_class,
+                member_name,
+                class_loader,
+            );
+        }
+
+        let mut locations = Vec::new();
+
+        // Check implemented interfaces for a method with the same name.
+        let all_ifaces = self.collect_all_interfaces(current_class, class_loader);
+        for iface_name in &all_ifaces {
+            if let Some(iface) = class_loader(iface_name) {
+                let has_member = iface.methods.iter().any(|m| m.name == member_name)
+                    || iface.properties.iter().any(|p| p.name == member_name);
+                if has_member {
+                    let member_kind = if iface.methods.iter().any(|m| m.name == member_name) {
+                        MemberKind::Method
+                    } else {
+                        MemberKind::Property
+                    };
+                    if let Some((class_uri, class_content)) =
+                        self.find_class_file_content(iface_name, uri, content)
+                        && let Some(member_pos) = Self::find_member_position_in_class(
+                            &class_content,
+                            member_name,
+                            member_kind,
+                            &iface,
+                        )
+                        && let Ok(parsed_uri) = Url::parse(&class_uri)
+                    {
+                        let loc = point_location(parsed_uri, member_pos);
+                        if !locations.contains(&loc) {
+                            locations.push(loc);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check parent abstract classes for an abstract method with the
+        // same name.
+        let mut current = current_class.parent_class.clone();
+        let mut depth = 0u32;
+        while let Some(ref parent_name) = current {
+            if depth >= MAX_INHERITANCE_DEPTH {
+                break;
+            }
+            depth += 1;
+
+            if let Some(parent_cls) = class_loader(parent_name) {
+                // Only consider abstract methods on abstract parents.
+                if parent_cls.is_abstract || parent_cls.kind == ClassLikeKind::Interface {
+                    let has_method = parent_cls.methods.iter().any(|m| m.name == member_name);
+                    if has_method
+                        && let Some((class_uri, class_content)) =
+                            self.find_class_file_content(parent_name, uri, content)
+                        && let Some(member_pos) = Self::find_member_position_in_class(
+                            &class_content,
+                            member_name,
+                            MemberKind::Method,
+                            &parent_cls,
+                        )
+                        && let Ok(parsed_uri) = Url::parse(&class_uri)
+                    {
+                        let loc = point_location(parsed_uri, member_pos);
+                        if !locations.contains(&loc) {
+                            locations.push(loc);
+                        }
+                    }
+                }
+                current = parent_cls.parent_class.clone();
+            } else {
+                break;
+            }
+        }
+
+        if locations.is_empty() {
+            None
+        } else {
+            Some(locations)
+        }
+    }
+
+    /// Collect all interface names from a class and its parent chain.
+    ///
+    /// Walks the class's `interfaces` list and its parent class chain,
+    /// collecting all interface names (including those inherited from
+    /// parents).  Also walks interface-extends chains transitively.
+    fn collect_all_interfaces(
+        &self,
+        cls: &ClassInfo,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    ) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+
+        // Direct interfaces.
+        for iface in &cls.interfaces {
+            if seen.insert(iface.clone()) {
+                result.push(iface.clone());
+                // Also collect interfaces that this interface extends.
+                self.collect_parent_interfaces(iface, class_loader, &mut result, &mut seen);
+            }
+        }
+
+        // Interfaces from parent classes.
+        let mut current = cls.parent_class.clone();
+        let mut depth = 0u32;
+        while let Some(ref parent_name) = current {
+            if depth >= MAX_INHERITANCE_DEPTH {
+                break;
+            }
+            depth += 1;
+            if let Some(parent_cls) = class_loader(parent_name) {
+                for iface in &parent_cls.interfaces {
+                    if seen.insert(iface.clone()) {
+                        result.push(iface.clone());
+                        self.collect_parent_interfaces(iface, class_loader, &mut result, &mut seen);
+                    }
+                }
+                current = parent_cls.parent_class.clone();
+            } else {
+                break;
+            }
+        }
+
+        result
+    }
+
+    /// Recursively collect interfaces that an interface extends.
+    fn collect_parent_interfaces(
+        &self,
+        iface_name: &str,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        result: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        let Some(iface) = class_loader(iface_name) else {
+            return;
+        };
+        // Check parent_class (first extended interface).
+        if let Some(ref parent) = iface.parent_class
+            && seen.insert(parent.clone())
+        {
+            result.push(parent.clone());
+            self.collect_parent_interfaces(parent, class_loader, result, seen);
+        }
+        // Check interfaces list (multi-extends).
+        for parent_iface in &iface.interfaces {
+            if seen.insert(parent_iface.clone()) {
+                result.push(parent_iface.clone());
+                self.collect_parent_interfaces(parent_iface, class_loader, result, seen);
+            }
+        }
+    }
+
+    /// Resolve implementations of a method on an interface/abstract class
+    /// when invoked from the interface declaration itself (reverse jump
+    /// from an interface method to concrete implementations).
+    fn resolve_interface_member_implementations(
+        &self,
+        uri: &str,
+        content: &str,
+        interface_class: &ClassInfo,
+        member_name: &str,
+        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    ) -> Option<Vec<Location>> {
+        let target_short = interface_class.name.clone();
+        let target_fqn = self
+            .class_fqn_for_short(&target_short)
+            .unwrap_or(target_short.clone());
+
+        let implementors = self.find_implementors(&target_short, &target_fqn, class_loader);
+
+        let member_kind = if interface_class
+            .methods
+            .iter()
+            .any(|m| m.name == member_name)
+        {
+            MemberKind::Method
+        } else if interface_class
+            .properties
+            .iter()
+            .any(|p| p.name == member_name)
+        {
+            MemberKind::Property
+        } else {
+            MemberKind::Constant
+        };
+
+        let mut locations = Vec::new();
+        for imp in &implementors {
+            // Check that the implementor owns (not inherits) this member.
+            let owns_member = match member_kind {
+                MemberKind::Method => imp.methods.iter().any(|m| m.name == member_name),
+                MemberKind::Property => imp.properties.iter().any(|p| p.name == member_name),
+                MemberKind::Constant => imp.constants.iter().any(|c| c.name == member_name),
+            };
+            if !owns_member {
+                continue;
+            }
+
+            if let Some((class_uri, class_content)) =
+                self.find_class_file_content(&imp.name, uri, content)
+                && let Some(member_pos) = Self::find_member_position_in_class(
+                    &class_content,
+                    member_name,
+                    member_kind,
+                    imp,
+                )
+                && let Ok(parsed_uri) = Url::parse(&class_uri)
+            {
+                let loc = point_location(parsed_uri, member_pos);
+                if !locations.contains(&loc) {
+                    locations.push(loc);
+                }
             }
         }
 
@@ -303,7 +588,8 @@ impl Backend {
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     ) -> Vec<ClassInfo> {
         let mut result: Vec<ClassInfo> = Vec::new();
-        let mut seen_names = HashSet::new();
+        // Track by FQN to avoid short-name collisions across namespaces.
+        let mut seen_fqns: HashSet<String> = HashSet::new();
 
         // ── Phase 1: scan ast_map ───────────────────────────────────────
         // Collect all candidate classes first, then drop the lock before
@@ -317,8 +603,9 @@ impl Backend {
         };
 
         for cls in &ast_candidates {
+            let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
             if self.class_implements_or_extends(cls, target_short, target_fqn, class_loader)
-                && seen_names.insert(cls.name.clone())
+                && seen_fqns.insert(cls_fqn)
             {
                 result.push(cls.clone());
             }
@@ -337,15 +624,16 @@ impl Backend {
             .unwrap_or_default();
 
         for (fqn, _uri) in &index_entries {
-            let short = short_name(fqn);
-            if seen_names.contains(short) {
+            if seen_fqns.contains(fqn) {
                 continue;
             }
             if let Some(cls) = class_loader(fqn)
                 && self.class_implements_or_extends(&cls, target_short, target_fqn, class_loader)
-                && seen_names.insert(cls.name.clone())
             {
-                result.push(cls);
+                let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
+                if seen_fqns.insert(cls_fqn) {
+                    result.push(cls);
+                }
             }
         }
 
@@ -387,12 +675,13 @@ impl Backend {
             // Parse the file, cache it, and check every class it defines.
             if let Some(classes) = self.parse_and_cache_file(path) {
                 for cls in &classes {
-                    if seen_names.contains(&cls.name) {
+                    let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
+                    if seen_fqns.contains(&cls_fqn) {
                         continue;
                     }
                     if self.class_implements_or_extends(cls, target_short, target_fqn, class_loader)
                     {
-                        seen_names.insert(cls.name.clone());
+                        seen_fqns.insert(cls_fqn);
                         result.push(cls.clone());
                     }
                 }
@@ -405,7 +694,7 @@ impl Backend {
         // Parsing is lazy and cached in ast_map, so subsequent lookups
         // hit Phase 1.
         for (&stub_name, &stub_source) in &self.stub_index {
-            if seen_names.contains(stub_name) {
+            if seen_fqns.contains(stub_name) {
                 continue;
             }
             // Cheap pre-filter: skip stubs whose source doesn't mention
@@ -415,13 +704,15 @@ impl Backend {
             }
             if let Some(cls) = class_loader(stub_name)
                 && self.class_implements_or_extends(&cls, target_short, target_fqn, class_loader)
-                && seen_names.insert(cls.name.clone())
             {
-                result.push(cls);
+                let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
+                if seen_fqns.insert(cls_fqn) {
+                    result.push(cls);
+                }
             }
         }
 
-        // ── Phase 5: scan user PSR-4 directories for files not in classmap
+        // ── Phase 5: scan user PSR-4 directories for files not in classmap ──
         // The user may have created classes that are not yet in the
         // classmap.  Walk user PSR-4 roots only — vendor classes are
         // assumed complete in the classmap (Phase 3) and should not
@@ -487,7 +778,8 @@ impl Backend {
 
                     if let Some(classes) = self.parse_and_cache_file(&php_file) {
                         for cls in &classes {
-                            if seen_names.contains(&cls.name) {
+                            let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
+                            if seen_fqns.contains(&cls_fqn) {
                                 continue;
                             }
                             if self.class_implements_or_extends(
@@ -496,7 +788,7 @@ impl Backend {
                                 target_fqn,
                                 class_loader,
                             ) {
-                                seen_names.insert(cls.name.clone());
+                                seen_fqns.insert(cls_fqn);
                                 result.push(cls.clone());
                             }
                         }
@@ -511,6 +803,9 @@ impl Backend {
     /// Check whether `cls` implements the target interface or extends the
     /// target abstract class (directly or transitively through its parent
     /// chain).
+    ///
+    /// Comparisons use fully-qualified names to avoid false positives when
+    /// two interfaces in different namespaces share the same short name.
     fn class_implements_or_extends(
         &self,
         cls: &ClassInfo,
@@ -518,8 +813,11 @@ impl Backend {
         target_fqn: &str,
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     ) -> bool {
+        // Build the FQN of the candidate class for comparison.
+        let cls_fqn = Self::build_fqn(&cls.name, &cls.file_namespace);
+
         // Skip the target class itself.
-        if cls.name == target_short {
+        if cls_fqn == target_fqn || cls.name == target_short {
             return false;
         }
 
@@ -528,20 +826,24 @@ impl Backend {
             return false;
         }
 
-        // Direct `implements` match.
+        // Whether the target has a known FQN (contains a namespace
+        // separator).  When it does, short-name comparison is skipped
+        // to avoid false positives between identically-named classes in
+        // different namespaces (e.g. App\Logger vs Vendor\Logger).
+        let has_fqn = target_fqn.contains('\\');
+
+        // Direct `implements` match (interfaces are FQN after resolution).
         for iface in &cls.interfaces {
-            let iface_short = short_name(iface);
-            if iface_short == target_short || iface == target_fqn {
+            if iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
                 return true;
             }
         }
 
         // Direct `extends` match (for abstract class implementations).
-        if let Some(ref parent) = cls.parent_class {
-            let parent_short = short_name(parent);
-            if parent_short == target_short || parent == target_fqn {
-                return true;
-            }
+        if let Some(ref parent) = cls.parent_class
+            && (parent == target_fqn || (!has_fqn && short_name(parent) == target_short))
+        {
+            return true;
         }
 
         // ── Transitive check: walk the interface-extends chains ─────────
@@ -570,8 +872,7 @@ impl Backend {
             if let Some(parent_cls) = class_loader(parent_name) {
                 // Check if the parent implements the target interface.
                 for iface in &parent_cls.interfaces {
-                    let iface_short = short_name(iface);
-                    if iface_short == target_short || iface == target_fqn {
+                    if iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
                         return true;
                     }
                     // Also walk the interface's own extends chain.
@@ -587,8 +888,8 @@ impl Backend {
                 }
 
                 // Check if the parent IS the target (for abstract class chains).
-                let pshort = parent_cls.name.as_str();
-                if pshort == target_short {
+                let parent_fqn = Self::build_fqn(&parent_cls.name, &parent_cls.file_namespace);
+                if parent_fqn == target_fqn {
                     return true;
                 }
 
@@ -707,6 +1008,14 @@ impl Backend {
 
     /// Get the FQN for a class given its short name, by looking it up in
     /// the `class_index`.
+    /// Build a fully-qualified name from a short name and optional namespace.
+    fn build_fqn(short_name: &str, namespace: &Option<String>) -> String {
+        match namespace {
+            Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, short_name),
+            _ => short_name.to_string(),
+        }
+    }
+
     fn class_fqn_for_short(&self, target_short: &str) -> Option<String> {
         let idx = self.class_index.lock().ok()?;
         // Look for an entry whose short name matches.

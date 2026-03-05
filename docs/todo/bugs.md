@@ -15,18 +15,13 @@ Items are ordered by **impact** (descending), then **effort** (ascending).
 ---
 
 ## 1. Short-name collisions in `find_implementors`
-**Impact: Low · Effort: Low**
+**Impact: Low · Effort: Low (fixed)**
 
-`class_implements_or_extends` matches interfaces by both short name and
-FQN (`iface_short == target_short || iface == target_fqn`).  Two
-interfaces in different namespaces with the same short name (e.g.
-`App\Logger` and `Vendor\Logger`) could produce false positives.
-Similarly, `seen_names` in `find_implementors` deduplicates by short
-name, so two classes with the same short name in different namespaces
-could shadow each other.
-
-**Fix:** always compare fully-qualified names by resolving both sides
-before comparison.
+**Status:** Fixed. `class_implements_or_extends` now compares
+fully-qualified names when a namespace is available. The short-name
+fallback is only used when FQN information is absent. `seen_fqns` in
+`find_implementors` deduplicates by FQN (built from `name` +
+`file_namespace`) instead of by short name.
 
 ---
 
@@ -89,66 +84,15 @@ fast-path fallback when the FQN is already in the
 ---
 
 ## 4. Go-to-implementation misses transitive implementors
-**Impact: Medium · Effort: Medium**
+**Impact: Medium · Effort: Medium (fixed)**
 
-`find_implementors` only finds classes that directly implement or extend
-the target interface/abstract class (plus one level of interface-extends
-and parent-class chains). It does not discover classes that extend a
-non-final concrete class which itself implements the target.
-
-**Example:**
-
-```php
-interface Renderable {}
-class BaseView implements Renderable {}  // found ✓
-class HtmlView extends BaseView {}       // missed ✗
-class JsonView extends HtmlView {}       // missed ✗
-```
-
-PhpStorm finds all three. PHPantom only finds `BaseView`.
-
-**Fix:** After the initial scan, collect all non-final concrete classes
-in the result set and re-scan for classes that extend them. Repeat until
-no new implementors are discovered (fixed-point iteration). The
-`seen_names` set prevents infinite loops. This only affects the
-`class_implements_or_extends` check — the five-phase file discovery
-pipeline stays the same.
-
-### Scanning strategy
-
-Only Go-to-implementation and Find References do multi-file scanning.
-All other features (completion, go-to-definition, hover, diagnostics)
-use maps or known file names and never walk directories.
-
-For both GTI and Find References, the scanning should follow these
-principles:
-
-- **Vendor code:** the classmap is the sole source of truth. Never walk
-  vendor directories. Vendor PSR-4 mappings are not loaded at all (see
-  §7). If the classmap is missing or stale, vendor classes fail to
-  resolve visibly (fix: run `composer dump-autoload`).
-- **User code:** walk user PSR-4 roots from `composer.json`. User files
-  may have been created since the last `dump-autoload`, so a filesystem
-  walk is appropriate.
-
-### Shared pre-filter for file scanning
-
-Both GTI (Phases 3 and 5) and Find References read raw file contents
-and use `raw.contains(target_short)` to skip files cheaply before
-parsing. This produces many false positives because `target_short` can
-appear in comments, strings, variable names, or as a substring of
-unrelated identifiers.
-
-A tighter regex-based pre-filter could eliminate most false positives.
-For a class name like `Renderable`, searching for a pattern like
-`\bRenderable\b` followed by a likely PHP context character (`;`, `(`,
-`,`, `{`, or preceded by `\`, `implements`, `extends`, `new`, `use`)
-would reject files that only mention the name in a comment or string.
-
-This should be extracted into a shared utility (e.g.
-`source_likely_references_name(raw: &str, name: &str) -> bool`) that
-both GTI and Find References can use. The exact pattern can be tuned
-over time without touching the callers.
+**Status:** Fixed. `class_implements_or_extends` already walks the
+parent class chain transitively (up to `MAX_INHERITANCE_DEPTH`) and
+checks interface-extends chains recursively. Classes that extend a
+concrete class which itself implements the target interface are found
+correctly. Tested with `test_implementation_transitive_via_parent`,
+`test_implementation_skips_abstract_subclasses`, and deep interface
+inheritance chains.
 
 ---
 
@@ -264,5 +208,27 @@ resolved for completion:
 The parenthesized `new` expression is handled for simple variable
 assignment (`$x = (new Foo())`), but not when it appears inline as the
 root of a chain that feeds into completion or further resolution.
+
+---
+
+## 13. Evict transiently-loaded files from ast_map after GTI and Find References
+**Impact: Low · Effort: Low**
+
+Go-to-implementation (Phases 3 and 5) and Find References
+(`ensure_workspace_indexed`) parse files from disk and cache them in
+`ast_map`. Most of these are false positives that passed the cheap
+string pre-filter but don't actually contain matching symbols. Even the
+true matches are rarely needed afterwards (the user will open the one
+they care about through the editor, which triggers a fresh `did_open`).
+
+Keeping these files in the ast_map wastes memory and pollutes subsequent
+Phase 1 scans with classes from files that aren't part of the user's
+working set.
+
+**Fix:** After `find_implementors` returns, remove any `ast_map` entries
+whose URI was not already present before the scan started. Same for
+`ensure_workspace_indexed`. Collect the set of existing URIs before the
+scan, then evict the difference afterwards. Files that are in
+`open_files` must never be evicted.
 
 **Discovered via:** fixture conversion (call_expression/static_factory_return_self).

@@ -99,7 +99,6 @@ deepens that lead and rounds out the remaining feature surface.
 | 30 | `@param-closure-this` | Medium | Type Inference | [type-inference.md §15](todo/type-inference.md#15-param-closure-this) |
 | 31 | `key-of<T>` and `value-of<T>` resolution | Medium | Type Inference | [type-inference.md §16](todo/type-inference.md#16-key-oft-and-value-oft-resolution) |
 | 32 | Code Lens: jump to prototype method | Low | LSP Features | [lsp-features.md §8](todo/lsp-features.md#8-code-lens-jump-to-prototype-method) |
-| 33 | Implementation → interface method declaration (reverse jump) | Low | LSP Features | [lsp-features.md §10](todo/lsp-features.md#10-reverse-jump-implementation--interface-method-declaration) |
 | 34 | Document Links (`textDocument/documentLink`) | Low | LSP Features | [lsp-features.md §15](todo/lsp-features.md#15-document-links-textdocumentdocumentlink) |
 | 35 | Resolution-failure diagnostics | Medium | Diagnostics | [diagnostics.md §2](todo/diagnostics.md#2-resolution-failure-diagnostics) |
 | 36 | Warn when composer.json is missing or classmap not optimized | Medium | Diagnostics | [diagnostics.md §5](todo/diagnostics.md#5-warn-when-composerjson-is-missing-or-classmap-is-not-optimized) |
@@ -207,6 +206,7 @@ eventually but don't move the needle.
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
 | 74 | Short-name collisions in `find_implementors` | Low | Bug Fixes | [bugs.md §1](todo/bugs.md#1-short-name-collisions-in-find_implementors) |
+| 75 | Evict transiently-loaded files from ast_map after GTI and Find References | Low | LSP Features | [bugs.md §13](todo/bugs.md#13-evict-transiently-loaded-files-from-ast_map-after-gti-and-find-references) |
 
 ---
 

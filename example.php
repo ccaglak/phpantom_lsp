@@ -1465,6 +1465,21 @@ class GtdPlainPrinter implements GtdPrintable { public function format(): string
 class GtdHtmlPrinter implements GtdPrintable { public function format(): string { return '<b>html</b>'; } }
 
 
+// ── Reverse Go-to-Implementation ────────────────────────────────────────────
+// Go-to-Implementation also works in reverse: from a concrete method back to
+// the interface or abstract method it satisfies.
+
+class ReverseImplementationDemo implements GtdPrintable
+{
+    // Try: Go-to-Implementation on "format" below → jumps to
+    // GtdPrintable::format() (the interface prototype).
+    public function format(): string
+    {
+        return 'reverse';
+    }
+}
+
+
 // ── Context-Aware Class Name Filtering ──────────────────────────────────────
 // Try: erase the class name after each keyword and re-trigger completion.
 //

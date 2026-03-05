@@ -3,7 +3,7 @@
 A fast, lightweight PHP language server written in Rust. Uses only a few MB of RAM regardless of project size and is fully responsive in milliseconds. No indexing phase, no background workers, no waiting.
 
 > [!NOTE]
-> PHPantom is in active development. Completion, go-to-definition, hover, and signature help are solid and used daily. Find references, diagnostics, and rename are on the roadmap.
+> PHPantom is in active development. The core editing features are solid and used daily on production codebases. Rename and broader diagnostics are still on the roadmap.
 
 ## Features
 
@@ -23,7 +23,7 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Closure param inference | ✅ | 🚧 | 🚧 | 🚧 | ❌ |
 | Generator body types | ✅ | ❌ | 🚧 | ❌ | ❌ |
 | Go-to-definition | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go-to-implementation | 🚧 | ✅ | ❌ | ✅ | ✅ |
+| Go-to-implementation | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Hover | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Signature help | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Find references | ✅ | ✅ | ✅ | ✅ | ✅ |
