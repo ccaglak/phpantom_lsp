@@ -80,6 +80,7 @@ mod hover;
 pub(crate) mod inheritance;
 mod parser;
 mod references;
+mod rename;
 mod resolution;
 mod server;
 mod signature_help;

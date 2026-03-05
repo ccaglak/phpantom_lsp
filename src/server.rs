@@ -86,6 +86,12 @@ impl LanguageServer for Backend {
                         resolve_provider: None,
                     },
                 )),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                })),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -456,6 +462,53 @@ impl LanguageServer for Backend {
 
             if let Some(highlights) = result {
                 return Ok(highlights);
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = params.text_document.uri.to_string();
+        let position = params.position;
+
+        let content = self.get_file_content(&uri);
+
+        if let Some(content) = content {
+            let result = crate::util::catch_panic_unwind_safe(
+                "prepare_rename",
+                &uri,
+                Some(position),
+                || self.handle_prepare_rename(&uri, &content, position),
+            );
+
+            if let Some(response) = result {
+                return Ok(response);
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = params.text_document_position.text_document.uri.to_string();
+        let position = params.text_document_position.position;
+        let new_name = &params.new_name;
+
+        let content = self.get_file_content(&uri);
+
+        if let Some(content) = content {
+            let new_name = new_name.to_string();
+            let result =
+                crate::util::catch_panic_unwind_safe("rename", &uri, Some(position), || {
+                    self.handle_rename(&uri, &content, position, &new_name)
+                });
+
+            if let Some(edit) = result {
+                return Ok(edit);
             }
         }
 
