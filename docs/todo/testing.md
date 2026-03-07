@@ -1,11 +1,11 @@
 # PHPantom — Ignored Fixture Tasks
 
-There are **228 fixture tests** in `tests/fixtures/`. Of these, **178
-pass** and **50 are ignored** because they exercise features or bug
+There are **228 fixture tests** in `tests/fixtures/`. Of these, **183
+pass** and **45 are ignored** because they exercise features or bug
 fixes that are not yet implemented. Each ignored fixture has a
 `// ignore:` comment explaining what is missing.
 
-This document groups the 50 ignored fixtures by the underlying work
+This document groups the 45 ignored fixtures by the underlying work
 needed to un-ignore them. Tasks are ordered by the number of fixtures
 they unblock (descending), then by estimated effort. Once a task is
 complete, remove the `// ignore:` line from each fixture, verify the
@@ -172,31 +172,6 @@ work without further changes.
 
 ---
 
-## 6. `@method` with `static`/`$this` return type on parent (2 fixtures)
-
-**Ref:** [type-inference.md §26](type-inference.md#26-method-with-static-or-this-return-type-on-parent-class)
-**Impact: Medium · Effort: Low-Medium**
-
-When a parent class declares `@method static foo()` or
-`@method $this bar()`, calling the method on a child class should
-return the child class type. Virtual method return types are not
-rewritten through the inheritance chain today.
-
-**Fixtures:**
-
-- [ ] `virtual_member/method_returns_static.fixture` — `@method static foo()` on parent, called on child
-- [ ] `virtual_member/method_returns_this.fixture` — `@method $this bar()` on parent, called on child
-
-**Implementation notes:**
-
-During inheritance merging, when copying virtual methods from a parent
-class, apply the same `static`/`$this`/`self` return type rewriting
-that already works for regular methods. Check `rewrite_self_static` in
-`inheritance.rs` and ensure it also processes `MethodInfo` entries that
-originated from `@method` tags.
-
----
-
 ## 7. Invoked closure/arrow function return type (2 fixtures)
 
 **Ref:** [type-inference.md §30](type-inference.md#30-invoked-closurearrow-function-return-type)
@@ -243,32 +218,6 @@ name is a variable, resolve the variable's type. If it is
 
 ---
 
-## 9. Enum case instance properties (2 fixtures)
-
-**Ref:** [bugs.md §9](bugs.md#9-enum-case-instance-properties-not-shown-in---completion)
-**Impact: Medium · Effort: Low**
-
-`->` completion on an enum case does not show the `name` property
-(available on all enums via `UnitEnum`) or the `value` property
-(available on backed enums via `BackedEnum`). The enum's own methods
-and trait methods appear, but these built-in properties are missing.
-
-**Fixtures:**
-
-- [ ] `enum/enum_case_members.fixture` — `$case->name` available on unit enum
-- [ ] `enum/backed_enum_case_members.fixture` — `$case->value` and `$case->name` on backed enum
-
-**Implementation notes:**
-
-During enum class resolution (or in the completion builder), inject
-synthetic `PropertyInfo` entries for `name` (type `string`, on all
-enums) and `value` (type matching the backing type, on backed enums).
-These are defined by the `UnitEnum` and `BackedEnum` interfaces in the
-stubs, so alternatively ensure that enum resolution inherits from those
-interfaces and their properties are included.
-
----
-
 ## 10. Mixed `->` then `::` accessor chaining (2 fixtures)
 
 **Ref:** [bugs.md §10](bugs.md#10-mixed-arrow-then-static-accessor-chaining-not-resolved)
@@ -307,20 +256,7 @@ merging.
 
 ---
 
-## 12. Sequential `assert()` calls do not accumulate (1 fixture)
 
-**Ref:** [type-inference.md §22](type-inference.md#22-sequential-assert-calls-do-not-accumulate)
-**Impact: Low-Medium · Effort: Low**
-
-Multiple `assert($x instanceof Foo); assert($x instanceof Bar);`
-statements should accumulate. Only the last assertion's narrowing
-applies today.
-
-**Fixture:**
-
-- [ ] `combination/intersect_interface_assert.fixture` — sequential assert narrows to both types
-
----
 
 ## 13. Compound negated guard clause narrowing (1 fixture)
 
@@ -504,14 +440,11 @@ Quick wins (Low effort, 1 fixture each):
 | Task | Fixture |
 |---|---|
 | §23 `@phpstan-type` in foreach | `type/phpstan_type_alias` |
-| §12 Sequential assert accumulation | `combination/intersect_interface_assert` |
 
 Moderate wins (Low-Medium effort, multiple fixtures):
 
 | Task | Fixtures |
 |---|---|
-| §6 `@method` static/`$this` rewriting | 2 |
-| §9 Enum case `name`/`value` properties | 2 |
 | §10 Mixed `->` then `::` chaining | 2 |
 
 Biggest unlocks (Medium effort, many fixtures):

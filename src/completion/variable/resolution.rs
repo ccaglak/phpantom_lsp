@@ -460,6 +460,18 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
     results: &mut Vec<ClassInfo>,
     conditional: bool,
 ) {
+    /// Return the sorted set of class names in `results`.
+    fn result_names(results: &[ClassInfo]) -> Vec<String> {
+        let mut names: Vec<String> = results.iter().map(|c| c.name.clone()).collect();
+        names.sort();
+        names
+    }
+
+    // Accumulator for sequential `assert($x instanceof ...)` calls.
+    // Each assert narrows to a single type; this vec collects them
+    // so that two asserts in a row produce a union (intersection type).
+    let mut assert_narrowed_types: Vec<ClassInfo> = Vec::new();
+
     for stmt in statements {
         // ── Closure / arrow-function scope ──
         // If the cursor falls *inside* this statement, check whether
@@ -485,6 +497,7 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
                 // If the docblock resolves successfully (and passes
                 // the same override check we apply to @return), use
                 // it and skip normal resolution for this statement.
+                let pre_assign_names = result_names(results);
                 if !try_inline_var_override(
                     expr_stmt.expression,
                     stmt.span().start.offset as usize,
@@ -499,16 +512,47 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
                         conditional,
                     );
                 }
+                // If an assignment (or @var override) changed the
+                // results, the variable was reassigned — any prior
+                // assert-narrowed types are no longer valid.
+                if result_names(results) != pre_assign_names {
+                    assert_narrowed_types.clear();
+                }
 
                 // ── assert($var instanceof ClassName) narrowing ──
                 // When `assert($var instanceof Foo)` appears before
                 // the cursor, narrow the variable to `Foo` for the
                 // remainder of the current scope.
+                //
+                // Sequential asserts accumulate an intersection type:
+                //   assert($x instanceof A);
+                //   assert($x instanceof B);
+                // → results contains members from both A and B.
+                //
+                // Save the pre-assert state so we can detect when
+                // the assert actually narrowed, and merge with any
+                // prior assert-narrowed types.
+                let pre_assert_names = result_names(results);
                 narrowing::try_apply_assert_instanceof_narrowing(
                     expr_stmt.expression,
                     ctx,
                     results,
                 );
+                let changed = result_names(results) != pre_assert_names;
+                // If the assert changed results AND we had prior
+                // assert-narrowed types, merge the old narrowed
+                // types back in (accumulate the intersection).
+                if changed && !assert_narrowed_types.is_empty() {
+                    for cls in &assert_narrowed_types {
+                        if !results.iter().any(|c| c.name == cls.name) {
+                            results.push(cls.clone());
+                        }
+                    }
+                }
+                // Track types that came from assert narrowing.
+                if changed {
+                    assert_narrowed_types.clone_from(results);
+                }
 
                 // ── @phpstan-assert / @psalm-assert narrowing ──
                 // When a function with `@phpstan-assert Type $param`

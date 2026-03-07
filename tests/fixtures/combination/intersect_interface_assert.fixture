@@ -3,7 +3,6 @@
 // Adapted from phpactor combination/intersect_interface.test
 // After assert($foo instanceof Foobar) then assert($foo instanceof Baz),
 // PHPantom shows members from both Foobar and Baz (union semantics)
-// ignore: sequential assert() instanceof narrowing does not accumulate types
 // expect: fooMethod(
 // expect: bazMethod(
 ---

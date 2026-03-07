@@ -1,6 +1,5 @@
 // test: virtual method returning $this resolves to the child class
 // feature: completion
-// ignore: @method $this return type chaining not yet resolved to concrete class
 // Adapted from phpactor virtual_member/virtual-method-returns-this.test
 // expect: sendMessage(
 ---

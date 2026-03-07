@@ -6,11 +6,44 @@
 //!
 //! See `tests/fixtures/README.md` for the fixture format specification.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use phpantom_lsp::Backend;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
+
+// ─── Embedded stubs ─────────────────────────────────────────────────────────
+// Minimal PHP stubs so that fixture tests mirror real LSP behaviour.
+// Enums implicitly implement UnitEnum / BackedEnum, and the inheritance
+// system needs to load these interfaces to surface `$name` and `$value`.
+
+static UNIT_ENUM_STUB: &str = "\
+<?php
+interface UnitEnum
+{
+    public static function cases(): array;
+    public readonly string $name;
+}
+";
+
+static BACKED_ENUM_STUB: &str = "\
+<?php
+interface BackedEnum extends UnitEnum
+{
+    public static function from(int|string $value): static;
+    public static function tryFrom(int|string $value): ?static;
+    public readonly int|string $value;
+}
+";
+
+/// Create a test backend with embedded class stubs pre-loaded.
+fn create_fixture_backend() -> Backend {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert("UnitEnum", UNIT_ENUM_STUB);
+    stubs.insert("BackedEnum", BACKED_ENUM_STUB);
+    Backend::new_test_with_stubs(stubs)
+}
 
 // ─── Fixture parsing ────────────────────────────────────────────────────────
 
@@ -332,7 +365,7 @@ async fn open_files(backend: &Backend, fixture: &ParsedFixture) -> Url {
 // ─── Feature runners ────────────────────────────────────────────────────────
 
 async fn run_completion(fixture: &ParsedFixture) -> Result<(), String> {
-    let backend = Backend::new_test();
+    let backend = create_fixture_backend();
     let uri = open_files(&backend, fixture).await;
 
     let position = Position {
@@ -414,7 +447,7 @@ fn extract_hover_text(hover: &Hover) -> String {
 }
 
 async fn run_hover(fixture: &ParsedFixture) -> Result<(), String> {
-    let backend = Backend::new_test();
+    let backend = create_fixture_backend();
     let uri = open_files(&backend, fixture).await;
     let source = &fixture.files[fixture.cursor_file].content;
 
@@ -502,7 +535,7 @@ async fn run_hover(fixture: &ParsedFixture) -> Result<(), String> {
 }
 
 async fn run_definition(fixture: &ParsedFixture) -> Result<(), String> {
-    let backend = Backend::new_test();
+    let backend = create_fixture_backend();
     let uri = open_files(&backend, fixture).await;
 
     let position = Position {
@@ -593,7 +626,7 @@ async fn run_definition(fixture: &ParsedFixture) -> Result<(), String> {
 }
 
 async fn run_signature_help(fixture: &ParsedFixture) -> Result<(), String> {
-    let backend = Backend::new_test();
+    let backend = create_fixture_backend();
     let uri = open_files(&backend, fixture).await;
 
     let position = Position {

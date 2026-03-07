@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Enum case properties.** Completing on an enum case variable (`$case->`) now shows `name` (on all enums) and `value` (on backed enums) inherited from the `UnitEnum` and `BackedEnum` interfaces.
+
+### Fixed
+
+- **Inherited `@method` and `@property` tags.** Virtual members declared via `@method` or `@property` on a parent class now appear on child classes. Previously only the declaring class itself surfaced these members.
+- **Class constant and enum case assignment resolution.** Assigning from a class constant (`$x = Foo::SOME_CONST`) or enum case (`$x = Status::Active`) now resolves the variable's type correctly for subsequent completion.
+- **Sequential assert narrowing.** Multiple `assert($x instanceof A); assert($x instanceof B);` statements now accumulate, showing members from both types. Previously only the last assertion's narrowing applied.
+
+
 - **Project configuration.** PHPantom now reads a `.phpantom.toml` file from the project root (next to `composer.json`) for per-project settings. Currently supports `[php] version` to override the detected PHP version, and `[diagnostics] unresolved-member-access` to enable the new unresolved member access diagnostic. Run `phpantom --init` to generate a default config file with all options commented out. When the file is missing, all settings use their defaults. Parse errors are reported as a warning in the editor.
 - **Unresolved member access diagnostic (opt-in).** A new hint-level diagnostic flags `->`, `?->`, and `::` accesses where PHPantom cannot resolve the subject type at all. Off by default because most codebases lack full type coverage. Enable it by adding `unresolved-member-access = true` under `[diagnostics]` in `.phpantom.toml`. Useful for discovering gaps in type annotations or places where PHPantom's inference falls short.
 - **Rename.** `textDocument/rename` with `prepareRename` support. Rename variables, classes, methods, properties, functions, and constants across the entire workspace. Variable renames are scoped to the enclosing function or closure. Property renames handle the `$` prefix correctly at declaration vs. access sites. Symbols defined in vendor files are rejected. Non-renameable tokens (`$this`, `self`, `static`, `parent`) are rejected at the prepare step so the editor never opens the rename prompt.

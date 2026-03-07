@@ -2,7 +2,7 @@
 // feature: completion
 // Adapted from phpactor enum/backed_enum_case.test
 // Accessing a backed enum case via -> should show name and value properties
-// ignore: enum case instance properties (name, value) not shown in -> completion
+
 // expect: name
 // expect: value
 ---

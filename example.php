@@ -1329,8 +1329,18 @@ class StaticEnumDemo
 
         Status::Active;              // backed enum case
         Status::Active->label();     // enum method
+        Status::Active->name;        // "Active" (from UnitEnum)
+        Status::Active->value;       // "active" (from BackedEnum)
         Priority::High;              // int-backed enum
+        Priority::High->name;        // "High" (from UnitEnum)
+        Priority::High->value;       // 3 (from BackedEnum, int)
         Mode::Manual;                // unit enum
+        Mode::Manual->name;          // "Manual" (from UnitEnum)
+
+        // Enum case assigned to variable
+        $status = Status::Active;
+        $status->name;               // resolves through variable
+        $status->value;
     }
 }
 

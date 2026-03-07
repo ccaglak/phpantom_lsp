@@ -77,7 +77,8 @@ impl VirtualMemberProvider for PHPDocProvider {
             return true;
         }
 
-        // Walk the parent chain to check for ancestor mixins.
+        // Walk the parent chain to check for ancestor mixins or docblocks
+        // with @method/@property tags.
         let mut current = class.clone();
         let mut depth = 0u32;
         while let Some(ref parent_name) = current.parent_class {
@@ -91,6 +92,13 @@ impl VirtualMemberProvider for PHPDocProvider {
                 break;
             };
             if !parent.mixins.is_empty() {
+                return true;
+            }
+            if parent
+                .class_docblock
+                .as_ref()
+                .is_some_and(|d| !d.is_empty())
+            {
                 return true;
             }
             current = parent;
@@ -192,6 +200,69 @@ impl VirtualMemberProvider for PHPDocProvider {
                         });
                     }
                 }
+            }
+        }
+
+        // ── Phase 1c: @method and @property tags from parent classes ────
+        //
+        // When a parent class declares `@method` or `@property` tags in
+        // its docblock, those virtual members should be visible on child
+        // classes.  Real inherited methods are already merged by
+        // `resolve_class_with_inheritance`, but virtual members from
+        // docblock tags are not — they only exist as text in the parent's
+        // `class_docblock`.  Walk the parent chain and collect them.
+        {
+            let mut current = class.clone();
+            let mut depth = 0u32;
+            while let Some(ref parent_name) = current.parent_class {
+                depth += 1;
+                if depth > MAX_INHERITANCE_DEPTH {
+                    break;
+                }
+                let parent = if let Some(p) = class_loader(parent_name) {
+                    p
+                } else {
+                    break;
+                };
+
+                if let Some(doc_text) = parent.class_docblock.as_deref()
+                    && !doc_text.is_empty()
+                {
+                    for m in docblock::extract_method_tags(doc_text) {
+                        if !methods.iter().any(|existing| existing.name == m.name)
+                            && !class.methods.iter().any(|existing| existing.name == m.name)
+                        {
+                            methods.push(m);
+                        }
+                    }
+
+                    for (name, type_str) in docblock::extract_property_tags(doc_text) {
+                        if !properties.iter().any(|existing| existing.name == name)
+                            && !class
+                                .properties
+                                .iter()
+                                .any(|existing| existing.name == name)
+                        {
+                            properties.push(PropertyInfo {
+                                name,
+                                name_offset: 0,
+                                type_hint: if type_str.is_empty() {
+                                    None
+                                } else {
+                                    Some(type_str)
+                                },
+                                native_type_hint: None,
+                                description: None,
+                                is_static: false,
+                                visibility: Visibility::Public,
+                                deprecation_message: None,
+                                is_virtual: true,
+                            });
+                        }
+                    }
+                }
+
+                current = parent;
             }
         }
 

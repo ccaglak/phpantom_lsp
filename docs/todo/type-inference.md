@@ -681,16 +681,7 @@ property_narrowing_negated, combination/property_instanceof).
 
 ---
 
-## 22. Sequential `assert()` calls do not accumulate
-**Impact: Low-Medium · Effort: Low**
 
-Multiple `assert($x instanceof Foo); assert($x instanceof Bar);`
-statements on the same variable should accumulate. Today only the
-last assertion's narrowing applies.
-
-**Discovered via:** fixture conversion (sequential_narrowing).
-
----
 
 ## 24. Literal string conditional return type
 **Impact: Low · Effort: Low-Medium**
@@ -716,18 +707,6 @@ inheritance merging.
 
 ---
 
-## 26. `@method` with `static` or `$this` return type on parent class
-**Impact: Medium · Effort: Low-Medium**
-
-When a parent class declares `@method static foo()` or
-`@method $this bar()`, calling the method on a child class should
-return the child class type. Today the virtual method's return type
-is not rewritten through the inheritance chain.
-
-**Discovered via:** fixture conversion (virtual_member/method_returns_static,
-virtual_member/method_returns_this).
-
----
 
 ## 27. `new $classStringVar` and `$classStringVar::staticMethod()`
 **Impact: Low-Medium · Effort: Medium**

@@ -138,20 +138,6 @@ error message.
 
 ---
 
-## 9. Enum case instance properties not shown in `->` completion
-**Impact: Medium · Effort: Low**
-
-After resolving an enum case, `->` completion does not show the `name`
-property (available on all enums) or the `value` property (available on
-backed enums). These are implicit instance properties defined by the
-`UnitEnum` and `BackedEnum` interfaces. The enum's own methods and
-trait methods appear, but these built-in properties are missing.
-
-**Discovered via:** fixture conversion (enum/backed_enum_case_members,
-enum/enum_case_members).
-
----
-
 ## 10. Mixed arrow then static accessor chaining not resolved
 **Impact: Low · Effort: Low**
 

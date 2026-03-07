@@ -2,7 +2,7 @@
 // feature: completion
 // Adapted from phpactor enum/enum_case.test
 // Accessing Foo::FOO-> should show the name property from UnitEnum
-// ignore: enum case instance properties (name, value) not shown in -> completion
+
 // expect: name
 ---
 <?php

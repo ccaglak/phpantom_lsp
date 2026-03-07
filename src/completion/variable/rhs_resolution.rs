@@ -536,6 +536,58 @@ fn resolve_rhs_property_access(access: &Access<'_>, ctx: &VarResolutionCtx<'_>) 
     let all_classes = ctx.all_classes;
     let class_loader = ctx.class_loader;
 
+    // ── Class constant / enum case access: `Foo::BAR` ──
+    // When the RHS is a class constant access, resolve the class and
+    // check whether the constant is an enum case (→ type is the enum
+    // itself) or a typed constant (→ use its type_hint).
+    if let Access::ClassConstant(cca) = access {
+        let class_name = match cca.class {
+            Expression::Identifier(ident) => Some(ident.value().to_string()),
+            Expression::Self_(_) => Some(current_class_name.to_string()),
+            Expression::Static(_) => Some(current_class_name.to_string()),
+            _ => None,
+        };
+        if let Some(class_name) = class_name {
+            let resolved_name = crate::docblock::types::clean_type(&class_name);
+            let target_classes = crate::completion::type_resolution::type_hint_to_classes(
+                &resolved_name,
+                current_class_name,
+                all_classes,
+                class_loader,
+            );
+
+            let const_name = match &cca.constant {
+                ClassLikeConstantSelector::Identifier(ident) => Some(ident.value.to_string()),
+                _ => None,
+            };
+
+            if let Some(const_name) = const_name {
+                for cls in &target_classes {
+                    // Check if the constant is an enum case — the
+                    // result type is the enum class itself.
+                    if let Some(c) = cls.constants.iter().find(|c| c.name == const_name) {
+                        if c.is_enum_case {
+                            return target_classes;
+                        }
+                        // Typed class constant — resolve via type_hint.
+                        if let Some(ref th) = c.type_hint {
+                            let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                                th,
+                                current_class_name,
+                                all_classes,
+                                class_loader,
+                            );
+                            if !resolved.is_empty() {
+                                return resolved;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return vec![];
+    }
+
     let (object_expr, prop_selector) = match access {
         Access::Property(pa) => (Some(pa.object), Some(&pa.property)),
         Access::NullSafeProperty(pa) => (Some(pa.object), Some(&pa.property)),
