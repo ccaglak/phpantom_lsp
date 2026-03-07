@@ -50,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`__invoke()` return type resolution.** Calling `$f()` where `$f` holds an object with an `__invoke()` method now resolves the return type correctly. Completion, chaining (`$f()->method()->`), foreach iteration over the return value, and docblock return types on `__invoke()` all work. Parenthesized expression invocations like `($this->factory)()` are also supported.
+- **Enum `from()` and `tryFrom()` chaining.** `MyEnum::from('value')->method()` now resolves through the enum type, so completion offers the enum's own methods and interface methods after the call.
 - **Nested closures with reused parameter names no longer crash.** Hovering or requesting diagnostics on code with nested closures that reuse the same variable name (e.g. `$q` in both an outer and inner closure callback) no longer causes a stack overflow. The callable parameter inference now caps its recursion depth to break the cycle.
 - **Scope methods on Builder variables.** Hover, signature help, and deprecation diagnostics now find model-specific members (e.g. Eloquent scope methods injected onto `Builder<Model>`) even when the resolved-class cache holds a differently-scoped entry for the same base class.
 - **Go-to-implementation no longer produces false positives across namespaces.** Two interfaces with the same short name in different namespaces (e.g. `App\Logger` and `Vendor\Logger`) no longer cross-match. Implementor scanning and deduplication now use fully-qualified names when available.

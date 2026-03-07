@@ -1,8 +1,7 @@
 // test: array shape subscript key completion
 // feature: completion
 // Adapted from phpactor WorseSubscriptCompletorTest 'subscript with type'
-// ignore: needs array shape subscript key completion support
-// expect: ['foo']
+// expect: foo
 ---
 <?php
 

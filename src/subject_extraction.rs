@@ -376,7 +376,26 @@ fn extract_call_subject(chars: &[char], paren_end: usize) -> Option<String> {
     if i == open {
         // No identifier before `(` — check if the contents inside the
         // balanced parens form a `(new ClassName(...))` expression.
-        return extract_new_expression_inside_parens(chars, open, paren_end);
+        if let Some(new_expr) = extract_new_expression_inside_parens(chars, open, paren_end) {
+            return Some(new_expr);
+        }
+
+        // ── Parenthesized expression invocation: `(expr)()` ─────
+        // When a balanced `(…)` group immediately precedes the call
+        // parens, the inner expression is the callee (e.g.
+        // `($this->formatter)()` invokes __invoke() on the property).
+        if open > 0
+            && chars[open - 1] == ')'
+            && let Some(inner_open) = skip_balanced_parens_back(chars, open)
+        {
+            let inner: String = chars[inner_open + 1..open - 1].iter().collect();
+            let inner = inner.trim();
+            if !inner.is_empty() {
+                return Some(format!("({})({})", inner, args_text));
+            }
+        }
+
+        return None;
     }
     let func_name: String = chars[i..open].iter().collect();
 

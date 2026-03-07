@@ -696,3 +696,52 @@ fn parse_static_then_arrow_chain() {
     let parsed = SubjectExpr::parse("ClassName::make()->config");
     assert!(matches!(parsed, SubjectExpr::PropertyChain { .. }));
 }
+
+#[test]
+fn parse_parenthesized_property_invocation() {
+    // `($this->formatter)()->write` — the call target is a parenthesized
+    // property access, and the outer `()` invokes it.  The result is then
+    // chained via `->write`.
+    let parsed = SubjectExpr::parse("($this->formatter)()->write");
+    // Top level: PropertyChain { base: CallExpr { … }, property: "write" }
+    match &parsed {
+        SubjectExpr::PropertyChain { base, property } => {
+            assert_eq!(property, "write");
+            match base.as_ref() {
+                SubjectExpr::CallExpr { callee, args_text } => {
+                    assert_eq!(args_text, "");
+                    // The callee should be parsed as $this->formatter
+                    // (a PropertyChain), NOT as FunctionCall("($this->formatter)")
+                    match callee.as_ref() {
+                        SubjectExpr::PropertyChain {
+                            base: inner_base,
+                            property: inner_prop,
+                        } => {
+                            assert!(matches!(inner_base.as_ref(), SubjectExpr::This));
+                            assert_eq!(inner_prop, "formatter");
+                        }
+                        other => panic!("Expected PropertyChain callee, got: {other:?}"),
+                    }
+                }
+                other => panic!("Expected CallExpr base, got: {other:?}"),
+            }
+        }
+        other => panic!("Expected PropertyChain, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_parenthesized_variable_invocation() {
+    // `($var)()` — parenthesized variable used as callee.
+    let parsed = SubjectExpr::parse("($var)()");
+    match &parsed {
+        SubjectExpr::CallExpr { callee, args_text } => {
+            assert_eq!(args_text, "");
+            assert!(
+                matches!(callee.as_ref(), SubjectExpr::Variable(v) if v == "$var"),
+                "Expected Variable($var), got: {callee:?}"
+            );
+        }
+        other => panic!("Expected CallExpr, got: {other:?}"),
+    }
+}

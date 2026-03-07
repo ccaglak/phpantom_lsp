@@ -253,7 +253,28 @@ impl SubjectExpr {
                 format!("{}->{}", base.to_subject_text(), property)
             }
             SubjectExpr::CallExpr { callee, args_text } => {
-                format!("{}({})", callee.to_subject_text(), args_text)
+                // Wrap the callee in parentheses when it is an
+                // expression form that is not naturally callable by
+                // name.  Without this, `PropertyChain { $this, "prop" }`
+                // serialises as `$this->prop(args)` (a method call)
+                // instead of the correct `($this->prop)(args)` (invoke
+                // property as callable via __invoke).
+                let needs_parens = matches!(
+                    callee.as_ref(),
+                    SubjectExpr::PropertyChain { .. }
+                        | SubjectExpr::This
+                        | SubjectExpr::SelfKw
+                        | SubjectExpr::StaticKw
+                        | SubjectExpr::Parent
+                        | SubjectExpr::ArrayAccess { .. }
+                        | SubjectExpr::InlineArray { .. }
+                        | SubjectExpr::CallExpr { .. }
+                );
+                if needs_parens {
+                    format!("({})({})", callee.to_subject_text(), args_text)
+                } else {
+                    format!("{}({})", callee.to_subject_text(), args_text)
+                }
             }
             SubjectExpr::MethodCall { base, method } => {
                 format!("{}->{}", base.to_subject_text(), method)
@@ -333,6 +354,35 @@ impl SubjectExpr {
 /// and bare function names.
 fn parse_callee(call_body: &str) -> SubjectExpr {
     let call_body = call_body.trim();
+
+    // ── Parenthesized expression: `($this->prop)`, `($var)` ─────
+    // Strip balanced outer parens so the inner expression is parsed
+    // normally.  This handles `($this->formatter)()` etc.
+    // Only strip when the opening `(` at position 0 matches the
+    // closing `)` at the end (i.e. the entire string is one
+    // parenthesized group, not something like `(foo)(bar)`).
+    if call_body.starts_with('(') && call_body.ends_with(')') {
+        let mut depth = 0i32;
+        let bytes = call_body.as_bytes();
+        let mut closes_at_end = false;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closes_at_end = i == bytes.len() - 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if closes_at_end {
+            let inner = &call_body[1..call_body.len() - 1];
+            return SubjectExpr::parse(inner);
+        }
+    }
 
     // ── `new ClassName` ─────────────────────────────────────────
     if let Some(class_name) = call_body

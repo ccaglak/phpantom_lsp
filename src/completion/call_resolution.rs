@@ -535,6 +535,27 @@ impl Backend {
                     }
                 }
 
+                // 4. Resolve the variable's type and check for __invoke().
+                //    When $f holds an object with an __invoke() method,
+                //    $f() should return __invoke()'s return type.
+                let var_classes =
+                    super::resolver::resolve_target_classes(var_name, AccessKind::Arrow, ctx);
+                for owner in &var_classes {
+                    if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                        && let Some(ref ret) = invoke.return_type
+                    {
+                        let classes = super::type_resolution::type_hint_to_classes(
+                            ret,
+                            "",
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        );
+                        if !classes.is_empty() {
+                            return classes;
+                        }
+                    }
+                }
+
                 vec![]
             }
 
@@ -548,13 +569,34 @@ impl Backend {
                 .collect(),
 
             // ── Any other callee form (e.g. a nested CallExpr used as
-            //    a callee, or a ClassName that SubjectExpr::parse
-            //    couldn't distinguish from a function name) ───────────
+            //    a callee, a PropertyChain for `($this->prop)()`, or a
+            //    ClassName that SubjectExpr::parse couldn't distinguish
+            //    from a function name) ───────────────────────────────
             _ => {
-                // Resolve via the target-classes path which handles
-                // all remaining SubjectExpr variants.  This avoids
-                // round-tripping through text and back.
-                super::resolver::resolve_target_classes_expr(callee, AccessKind::Arrow, ctx)
+                // Resolve the callee expression to class(es).
+                let callee_classes =
+                    super::resolver::resolve_target_classes_expr(callee, AccessKind::Arrow, ctx);
+
+                // When the callee resolves to an object with __invoke(),
+                // the call returns __invoke()'s return type, not the
+                // object itself.  This handles `($this->formatter)()`.
+                for owner in &callee_classes {
+                    if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                        && let Some(ref ret) = invoke.return_type
+                    {
+                        let classes = super::type_resolution::type_hint_to_classes(
+                            ret,
+                            "",
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        );
+                        if !classes.is_empty() {
+                            return classes;
+                        }
+                    }
+                }
+
+                callee_classes
             }
         }
     }

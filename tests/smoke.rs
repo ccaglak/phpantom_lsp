@@ -801,7 +801,73 @@ $db = new Database();
     );
 }
 
+#[tokio::test]
+async fn smoke_hover_parenthesized_invoke_chain() {
+    let backend = create_test_backend();
+    let (uri, line, ch) = open_with_cursor(
+        &backend,
+        "file:///smoke_hover_paren_invoke.php",
+        r#"<?php
+class HvPen { public function write(): void {} }
+class HvFormatter {
+    public function __invoke(): HvPen {}
+}
+class HvApp {
+    private HvFormatter $formatter;
+    public function demo(): void {
+        ($this->formatter)()-><>write();
+    }
+}
+"#,
+    )
+    .await;
+
+    let hover = hover_at(&backend, &uri, line, ch).await;
+    assert!(
+        hover.is_some(),
+        "Hover on write() after ($this->formatter)() should return content"
+    );
+    let text = hover.unwrap();
+    assert!(
+        text.contains("write"),
+        "Hover should mention the method name, got: {text}"
+    );
+}
+
 // ─── Go-to-definition smoke tests ──────────────────────────────────────────
+
+#[tokio::test]
+async fn smoke_definition_parenthesized_invoke_chain() {
+    let backend = create_test_backend();
+    let (uri, line, ch) = open_with_cursor(
+        &backend,
+        "file:///smoke_def_paren_invoke.php",
+        r#"<?php
+class GtdPen { public function write(): void {} }
+class GtdFormatter {
+    public function __invoke(): GtdPen {}
+}
+class GtdApp {
+    private GtdFormatter $formatter;
+    public function demo(): void {
+        ($this->formatter)()-><>write();
+    }
+}
+"#,
+    )
+    .await;
+
+    let locations = definition_at(&backend, &uri, line, ch).await;
+    assert!(
+        !locations.is_empty(),
+        "GTD on write() after ($this->formatter)() should return a location"
+    );
+    // Should point to the write() declaration inside GtdPen (line 1)
+    assert_eq!(
+        locations[0].range.start.line, 1,
+        "Should jump to write() declaration in GtdPen"
+    );
+}
 
 #[tokio::test]
 async fn smoke_definition_class_instantiation() {
@@ -1026,6 +1092,41 @@ Factory::create(<>)
     );
     let sh = sig.unwrap();
     assert!(!sh.signatures.is_empty());
+}
+
+#[tokio::test]
+async fn smoke_signature_help_parenthesized_invoke_chain() {
+    let backend = create_test_backend();
+    let (uri, line, ch) = open_with_cursor(
+        &backend,
+        "file:///smoke_sig_paren_invoke.php",
+        r#"<?php
+class SigPen { public function write(string $text): void {} }
+class SigFormatter {
+    public function __invoke(): SigPen {}
+}
+class SigApp {
+    private SigFormatter $formatter;
+    public function demo(): void {
+        ($this->formatter)()->write(<>);
+    }
+}
+"#,
+    )
+    .await;
+
+    let sig = signature_at(&backend, &uri, line, ch).await;
+    assert!(
+        sig.is_some(),
+        "Signature help on write() after ($this->formatter)() should return a result"
+    );
+    let sh = sig.unwrap();
+    assert!(!sh.signatures.is_empty());
+    assert!(
+        sh.signatures[0].label.contains("$text"),
+        "Signature should show $text parameter, got: {}",
+        sh.signatures[0].label
+    );
 }
 
 // ─── Cross-file smoke tests ────────────────────────────────────────────────

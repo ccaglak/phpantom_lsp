@@ -2053,7 +2053,16 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
         Expression::Call(Call::Function(fc)) => {
             let func_text = expr_to_subject_text(fc.function);
             let args_text = format_first_class_arg(&fc.argument_list.arguments);
-            format!("{}({})", func_text, args_text)
+            // When the callee is a parenthesized expression (e.g.
+            // `($this->formatter)()`), wrap the inner text back in
+            // parens so that `SubjectExpr::parse` sees
+            // `($this->formatter)()` rather than `$this->formatter()`
+            // (which would be parsed as a method call).
+            if matches!(fc.function, Expression::Parenthesized(_)) {
+                format!("({})({})", func_text, args_text)
+            } else {
+                format!("{}({})", func_text, args_text)
+            }
         }
 
         Expression::Instantiation(inst) => expr_to_subject_text(inst.class),

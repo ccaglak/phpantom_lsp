@@ -643,6 +643,38 @@ class ClosureInvocationDemo
 }
 
 
+// ── __invoke() Return Type Resolution ───────────────────────────────────────
+
+class InvokeReturnTypeDemo
+{
+    public function demo(): void
+    {
+        // Objects with __invoke() can be called like functions.
+        // PHPantom resolves the return type through __invoke().
+        $formatter = new ScaffoldingFormatter();
+        $formatter()->write();                    // __invoke() returns Pen
+
+        // Chaining through __invoke() return type
+        $factory = new ScaffoldingPenFactory();
+        $factory()->rename('Fine')->write();      // __invoke() → Pen → rename() → Pen
+
+        // Parenthesized property invocation: ($this->prop)()
+        ($this->formatter)()->write();            // resolves through __invoke()
+
+        // Foreach over __invoke() return type with docblock
+        $fetcher = new ScaffoldingPenFetcher();
+        foreach ($fetcher() as $item) {
+            $item->write();                       // @return Pen[] on __invoke()
+        }
+
+        // Enum from()/tryFrom() chains to instance methods
+        Status::from('Active')->label();          // from() returns Status
+    }
+
+    private ScaffoldingFormatter $formatter;
+}
+
+
 // ── Anonymous Classes ───────────────────────────────────────────────────────
 
 class AnonymousClassDemo
@@ -2147,6 +2179,22 @@ class ScaffoldingArrayAccess
 {
     /** @return Pen[] */
     public function fetchAll(): array { return []; }
+}
+
+class ScaffoldingFormatter
+{
+    public function __invoke(): Pen { return new Pen(); }
+}
+
+class ScaffoldingPenFactory
+{
+    public function __invoke(): Pen { return new Pen(); }
+}
+
+class ScaffoldingPenFetcher
+{
+    /** @return Pen[] */
+    public function __invoke(): array { return []; }
 }
 
 

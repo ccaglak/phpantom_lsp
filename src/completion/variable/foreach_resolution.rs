@@ -632,6 +632,30 @@ pub(in crate::completion) fn extract_rhs_iterable_raw_type<'b>(
         {
             return Some(ret.clone());
         }
+
+        // ── Variable / expression invocation: $fn() or ($this->foo)()
+        // Resolve the callee to classes and check for __invoke().
+        let callee_expr = match func_call.function {
+            Expression::Parenthesized(p) => p.expression,
+            other => other,
+        };
+        let callee_classes = if let Expression::Variable(Variable::Direct(dv)) = callee_expr {
+            let var = dv.name.to_string();
+            crate::completion::resolver::resolve_target_classes(
+                &var,
+                crate::types::AccessKind::Arrow,
+                &ctx.as_resolution_ctx(),
+            )
+        } else {
+            super::rhs_resolution::resolve_rhs_expression(callee_expr, ctx)
+        };
+        for cls in &callee_classes {
+            if let Some(invoke) = cls.methods.iter().find(|m| m.name == "__invoke")
+                && let Some(ref ret) = invoke.return_type
+            {
+                return Some(ret.clone());
+            }
+        }
     }
 
     // ── Method call RHS: `[$a, $b] = $this->getUsers()` ────────────

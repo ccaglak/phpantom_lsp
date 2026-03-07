@@ -362,3 +362,29 @@ fn test_collapse_blank_line_cursor_on_first_continuation() {
     let (collapsed, _col) = collapse_continuation_lines(&lines, 2, 6);
     assert_eq!(collapsed, "$obj->method()->");
 }
+
+#[test]
+fn test_parenthesized_property_invocation() {
+    // ($this->formatter)()->
+    // The subject should be `($this->formatter)()` so that the resolver
+    // can unwrap the parenthesized property, resolve its type, and check
+    // for __invoke().
+    let input = "        ($this->formatter)()->";
+    let chars: Vec<char> = input.chars().collect();
+    let col = chars.len();
+    let result = detect_access_operator(&chars, col);
+    assert!(
+        result.is_some(),
+        "Expected Some from detect_access_operator"
+    );
+    let (subject, kind) = result.unwrap();
+    assert_eq!(kind, AccessKind::Arrow);
+    assert!(
+        subject.contains("$this->formatter"),
+        "Expected subject to contain $this->formatter, got: {subject}"
+    );
+    assert!(
+        subject.contains("()"),
+        "Expected subject to contain call parens (), got: {subject}"
+    );
+}

@@ -1,7 +1,7 @@
 // test: enum from() method return type chains to instance methods
 // feature: completion
 // Adapted from phpactor enum/gh-2220.test
-// ignore: enum from()/tryFrom() static return type not resolved for method chaining
+
 // expect: foo(
 ---
 <?php

@@ -5,3 +5,6 @@
 /stubs/
 /zed-extension/extension.wasm
 sandbox.php
+.cargo
+/.phpantom.toml
+/.zed/settings.json

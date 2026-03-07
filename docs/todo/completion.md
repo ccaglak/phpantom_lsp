@@ -16,24 +16,7 @@ within the same impact tier.
 
 ---
 
-## 1. `BackedEnum::from()` / `::tryFrom()` return type refinement
-**Impact: Medium · Effort: Low**
-
-When calling `MyEnum::from($value)` or `MyEnum::tryFrom($value)`,
-PHPStan resolves the return type to `MyEnum` (or `MyEnum|null` for
-`tryFrom`) rather than the generic `BackedEnum` base type.  This is a
-static method return type that depends on the calling class — the
-same pattern as `static` return types on static methods.
-
-We already handle `new static()` and `static` return types for
-instance methods, but static method calls on enums may not flow
-through the same path.  Verify and fix if needed.
-
-See `BackedEnumFromMethodDynamicReturnTypeExtension` in PHPStan.
-
----
-
-## 2. Array functions needing new code paths
+## 1. Array functions needing new code paths
 **Impact: Medium · Effort: High**
 
 These functions have return type semantics that don't fit into either
@@ -66,7 +49,7 @@ These functions have return type semantics that don't fit into either
 
 ---
 
-## 3. `LanguageLevelTypeAware` version-aware type hints
+## 2. `LanguageLevelTypeAware` version-aware type hints
 **Impact: Medium · Effort: Medium**
 
 phpstorm-stubs use a second version attribute, `#[LanguageLevelTypeAware]`,
@@ -113,7 +96,7 @@ FQN, so all three names work automatically.
 
 ---
 
-## 4. `#[ArrayShape]` return shapes on stub functions
+## 3. `#[ArrayShape]` return shapes on stub functions
 **Impact: Medium · Effort: Medium**
 
 phpstorm-stubs annotate ~84 functions and methods with
@@ -150,7 +133,7 @@ parsing and should feed into the same `return_type` field on
 
 ---
 
-## 5. `#[Deprecated]` structured deprecation metadata
+## 4. `#[Deprecated]` structured deprecation metadata
 **Status: ✅ Implemented**
 
 PHPantom reads the `#[Deprecated]` attribute (FQN:
@@ -172,7 +155,7 @@ code action. Once the general code-action infrastructure lands, a
 
 ---
 
-## 6. Go-to-definition for array shape keys via bracket access
+## 5. Go-to-definition for array shape keys via bracket access
 **Impact: Low-Medium · Effort: Medium**
 
 Array shape keys accessed via bracket notation (`$status['code']`)
@@ -191,7 +174,7 @@ key inside the matching `array{…}` annotation.
 
 ---
 
-## 7. Non-array functions with dynamic return types
+## 6. Non-array functions with dynamic return types
 **Impact: Low · Effort: High**
 
 PHPStan also provides dynamic return type extensions for many non-array
@@ -222,7 +205,7 @@ return types (less impactful for class-based completion).
 
 ---
 
-## 8. `#[ReturnTypeContract]` parameter-dependent return types
+## 7. `#[ReturnTypeContract]` parameter-dependent return types
 **Impact: Low · Effort: Low**
 
 phpstorm-stubs use `#[ReturnTypeContract]` on 4 functions to express
@@ -265,7 +248,7 @@ type. This integrates into the call return type resolution path.
 
 ---
 
-## 9. `#[ExpectedValues]` parameter value suggestions
+## 8. `#[ExpectedValues]` parameter value suggestions
 **Impact: Low · Effort: Medium**
 
 phpstorm-stubs annotate ~62 parameters and return values with
@@ -310,7 +293,7 @@ combinations.
 
 ---
 
-## 10. `class_alias()` support
+## 9. `class_alias()` support
 **Impact: Low-Medium · Effort: Medium**
 
 Resolve `class_alias('OriginalClass', 'AliasName')` so that the alias

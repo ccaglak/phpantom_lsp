@@ -1,8 +1,7 @@
 // test: nested array shape subscript key completion
 // feature: completion
 // Adapted from phpactor WorseSubscriptCompletorTest 'nested subscript with type'
-// ignore: needs array shape subscript key completion support
-// expect: ['one']
+// expect: one
 ---
 <?php
 

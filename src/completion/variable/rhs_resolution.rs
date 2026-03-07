@@ -349,6 +349,59 @@ fn resolve_rhs_function_call<'b>(
                 return resolved;
             }
         }
+
+        // 4. Resolve the variable's type and check for __invoke().
+        //    When $f holds an object with an __invoke() method,
+        //    $f() should return __invoke()'s return type.
+        let rctx = ctx.as_resolution_ctx();
+        let var_classes = crate::completion::resolver::resolve_target_classes(
+            &var_name,
+            crate::types::AccessKind::Arrow,
+            &rctx,
+        );
+        for owner in &var_classes {
+            if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                && let Some(ref ret) = invoke.return_type
+            {
+                let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                    ret,
+                    current_class_name,
+                    all_classes,
+                    class_loader,
+                );
+                if !resolved.is_empty() {
+                    return resolved;
+                }
+            }
+        }
+    }
+
+    // ── General expression invocation: ($expr)() ────
+    // When the callee is an arbitrary expression (e.g.
+    // `($this->foo)()`, `(getFactory())()`, etc.), resolve
+    // the expression to classes and check for __invoke().
+    let callee_expr = match func_call.function {
+        Expression::Parenthesized(p) => p.expression,
+        other => other,
+    };
+    // Skip if we already handled it as a variable above.
+    if !matches!(callee_expr, Expression::Variable(Variable::Direct(_))) {
+        let callee_classes = resolve_rhs_expression(callee_expr, ctx);
+        for owner in &callee_classes {
+            if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                && let Some(ref ret) = invoke.return_type
+            {
+                let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                    ret,
+                    current_class_name,
+                    all_classes,
+                    class_loader,
+                );
+                if !resolved.is_empty() {
+                    return resolved;
+                }
+            }
+        }
     }
 
     vec![]

@@ -1,7 +1,6 @@
 // test: __invoke with Generator return type resolves item type in foreach
 // feature: completion
 // Adapted from phpactor call-expression/invoke2.test
-// ignore: needs __invoke() return type resolution and Generator generic foreach support
 // expect: format(
 ---
 <?php

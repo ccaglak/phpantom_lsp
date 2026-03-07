@@ -687,3 +687,163 @@ fn test_split_type_token_callable() {
     // Bare callable without return type
     assert_eq!(extract_callable_return_type("callable(int)"), None,);
 }
+
+// ── __invoke() return type resolution ──────────────────────────
+
+/// `$f = new Invokable(); $f()->` resolves via __invoke() return type.
+#[tokio::test]
+async fn test_invoke_return_type_simple() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_simple.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Result { public function getValue(): string {} }\n",
+        "class Invokable {\n",
+        "    public function __invoke(): Result {}\n",
+        "}\n",
+        "$f = new Invokable();\n",
+        "$f()->\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 6, 6).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"getValue"),
+        "Expected getValue from __invoke() return type, got: {methods:?}"
+    );
+}
+
+/// `$f = new Invokable(); $f()->method()->` chains through __invoke().
+#[tokio::test]
+async fn test_invoke_return_type_chain() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_chain.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Builder {\n",
+        "    public function build(): Product {}\n",
+        "}\n",
+        "class Product { public function getTitle(): string {} }\n",
+        "class Factory {\n",
+        "    public function __invoke(): Builder {}\n",
+        "}\n",
+        "$f = new Factory();\n",
+        "$f()->build()->\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 9, 15).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"getTitle"),
+        "Expected getTitle from chained __invoke()->build(), got: {methods:?}"
+    );
+}
+
+/// __invoke() on a variable assigned from a method returning an invokable.
+#[tokio::test]
+async fn test_invoke_return_type_from_method() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_method.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Output { public function render(): void {} }\n",
+        "class Renderer {\n",
+        "    public function __invoke(): Output {}\n",
+        "}\n",
+        "class App {\n",
+        "    public function getRenderer(): Renderer {}\n",
+        "}\n",
+        "$app = new App();\n",
+        "$r = $app->getRenderer();\n",
+        "$r()->\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 10, 6).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"render"),
+        "Expected render from method-returned __invoke(), got: {methods:?}"
+    );
+}
+
+/// Variable assigned an invokable via `new` at top level: `$h = new Handler(); $h()->...`
+#[tokio::test]
+async fn test_invoke_return_type_assigned_new() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_new.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Response { public function getStatus(): int {} }\n",
+        "class Handler {\n",
+        "    public function __invoke(): Response {}\n",
+        "}\n",
+        "$h = new Handler();\n",
+        "$h()->\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 6, 6).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"getStatus"),
+        "Expected getStatus from $h = new Handler(); $h(), got: {methods:?}"
+    );
+}
+
+/// __invoke() with docblock return type richer than native hint.
+#[tokio::test]
+async fn test_invoke_docblock_return_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_docblock.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Item { public function getLabel(): string {} }\n",
+        "class Fetcher {\n",
+        "    /** @return Item[] */\n",
+        "    public function __invoke(): array {}\n",
+        "}\n",
+        "$f = new Fetcher();\n",
+        "foreach ($f() as $item) {\n",
+        "    $item->\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 8, 11).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"getLabel"),
+        "Expected getLabel from __invoke() docblock @return Item[], got: {methods:?}"
+    );
+}
+
+/// `($this->prop)()->` resolves through the property's __invoke() method.
+#[tokio::test]
+async fn test_invoke_parenthesized_property() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/invoke_paren_prop.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class InvPen4 { public function write(): void {} }\n",
+        "class MyInvoker4 {\n",
+        "    public function __invoke(): InvPen4 {}\n",
+        "}\n",
+        "class InvApp4 {\n",
+        "    private MyInvoker4 $invoker;\n",
+        "    public function demo(): void {\n",
+        "        ($this->invoker)()->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, src, 8, 28).await;
+    let methods = method_names(&items);
+    assert!(
+        methods.contains(&"write"),
+        "Expected write from ($this->invoker)() __invoke(), got: {methods:?}"
+    );
+}
