@@ -163,18 +163,6 @@ is not resolved. The subject extractor does not handle a transition from
 
 ---
 
-## 11. Partial static property prefix filtering returns empty results
-**Impact: Low · Effort: Low**
-
-When typing `$foobar::$f` and triggering completion, no results are
-returned even though `$foobar` has static properties starting with `$f`.
-The prefix filtering logic for static property access does not correctly
-strip the `$` prefix when matching against property names.
-
-**Discovered via:** fixture conversion (completion/partial_static_property).
-
----
-
 ## 12. Inline `(new Foo)->method()` chaining not resolved
 **Impact: Medium · Effort: Low-Medium**
 

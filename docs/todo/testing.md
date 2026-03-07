@@ -1,11 +1,11 @@
 # PHPantom — Ignored Fixture Tasks
 
-There are **228 fixture tests** in `tests/fixtures/`. Of these, **177
-pass** and **51 are ignored** because they exercise features or bug
+There are **228 fixture tests** in `tests/fixtures/`. Of these, **178
+pass** and **50 are ignored** because they exercise features or bug
 fixes that are not yet implemented. Each ignored fixture has a
 `// ignore:` comment explaining what is missing.
 
-This document groups the 51 ignored fixtures by the underlying work
+This document groups the 50 ignored fixtures by the underlying work
 needed to un-ignore them. Tasks are ordered by the number of fixtures
 they unblock (descending), then by estimated effort. Once a task is
 complete, remove the `// ignore:` line from each fixture, verify the
@@ -367,21 +367,6 @@ class-string argument at the call site.
 
 ---
 
-## 18. Partial static property prefix filtering (1 fixture)
-
-**Ref:** [bugs.md §11](bugs.md#11-partial-static-property-prefix-filtering-returns-empty-results)
-**Impact: Low · Effort: Low**
-
-`$foobar::$f` returns empty results instead of filtering static
-properties starting with `$f`. The `$` prefix is not stripped correctly
-during matching.
-
-**Fixture:**
-
-- [ ] `completion/partial_static_property.fixture` — `$foobar::$f<>` filters static properties
-
----
-
 ## 19. Inline `(new Foo)->method()` chaining (1 fixture)
 
 **Ref:** [bugs.md §12](bugs.md#12-inline-new-foo-method-chaining-not-resolved)
@@ -518,7 +503,6 @@ Quick wins (Low effort, 1 fixture each):
 
 | Task | Fixture |
 |---|---|
-| §18 Partial static property prefix | `completion/partial_static_property` |
 | §23 `@phpstan-type` in foreach | `type/phpstan_type_alias` |
 | §12 Sequential assert accumulation | `combination/intersect_interface_assert` |
 

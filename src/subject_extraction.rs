@@ -547,6 +547,12 @@ pub(crate) fn detect_access_operator(chars: &[char], col: usize) -> Option<(Stri
         while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
             i -= 1;
         }
+        // Skip `$` prefix for partially typed static properties
+        // (e.g. `Foo::$f` — the `$` is the property sigil, not part
+        // of the operator).
+        if i > 0 && chars[i - 1] == '$' {
+            i -= 1;
+        }
         while i > 0 && chars[i - 1] == ' ' {
             i -= 1;
         }

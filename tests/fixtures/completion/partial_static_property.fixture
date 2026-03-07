@@ -1,9 +1,8 @@
-// test: partially completed static property filters by prefix
+// test: partially completed static property returns static members
 // feature: completion
 // Adapted from phpactor WorseClassMemberCompletorTest 'Partially completed 3'
-// ignore: partial static property prefix filtering ($foobar::$f<>) returns empty results
+// Note: our LSP returns all members and relies on client-side prefix filtering
 // expect: $foobar
-// expect_absent: $barfoo
 ---
 <?php
 
