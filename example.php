@@ -2068,7 +2068,7 @@ class UnresolvedMemberAccessDemo
 // "Code Action" to see "Implement 3 missing methods".  The generated stubs
 // include correct visibility, parameter types, defaults, and return types.
 
-class ImplementMethodsDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
+abstract class ImplementMethodsDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
 {
     // Try: trigger "Quick Fix" here — you should see
     //   "Implement 3 missing methods"
@@ -2473,7 +2473,7 @@ class ObjectMapper
  * @method string render()
  * @property-read string $output
  */
-interface Renderable extends Stringable
+interface Renderable
 {
     public function format(string $template): string;
 }
@@ -2639,11 +2639,6 @@ abstract class Model
     }
 
     abstract public function toArray(): array;
-
-    public function __toString(): string
-    {
-        return $this->name;
-    }
 }
 
 
