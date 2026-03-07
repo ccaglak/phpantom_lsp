@@ -1,7 +1,7 @@
 // test: narrowing with double negated instanceof shows members from both types
 // feature: completion
 // Adapted from phpactor WorseClassMemberCompletorTest 'parenthesized type'
-// ignore: double negated instanceof with early return does not narrow to remaining types
+
 // expect: foo(
 ---
 <?php

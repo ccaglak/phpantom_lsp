@@ -731,11 +731,45 @@ impl Backend {
                         resolved_class_cache: Some(&self.resolved_class_cache),
                         function_loader: Some(&function_loader),
                     };
-                    super::resolver::resolve_target_classes(
+                    let mut resolved = super::resolver::resolve_target_classes(
                         &target.subject,
                         target.access_kind,
                         &rctx,
-                    )
+                    );
+
+                    // ── Incomplete-expression retry ─────────────────
+                    // When the cursor sits right after `->` (or `?->`)
+                    // at the end of an expression with no trailing
+                    // semicolon (e.g. inside an arrow function body the
+                    // user is still typing), the PHP parser may fail to
+                    // produce the enclosing statement.  Patch the
+                    // content by appending a dummy identifier +
+                    // semicolon so the parser can recover.
+                    if resolved.is_empty() && target.subject.starts_with('$') {
+                        let patched = Self::patch_incomplete_member_access(content, position);
+                        if patched != content {
+                            let patched_classes = self.parse_php(&patched);
+                            let patched_offset = position_to_offset(&patched, position);
+                            let patched_current =
+                                find_class_at_offset(&patched_classes, patched_offset);
+                            let patched_rctx = ResolutionCtx {
+                                current_class: patched_current,
+                                all_classes: &patched_classes,
+                                content: &patched,
+                                cursor_offset: patched_offset,
+                                class_loader: &class_loader,
+                                resolved_class_cache: Some(&self.resolved_class_cache),
+                                function_loader: Some(&function_loader),
+                            };
+                            resolved = super::resolver::resolve_target_classes(
+                                &target.subject,
+                                target.access_kind,
+                                &patched_rctx,
+                            );
+                        }
+                    }
+
+                    resolved
                 };
                 if candidates.is_empty() {
                     return vec![];
@@ -1056,6 +1090,49 @@ impl Backend {
     /// (e.g. `$this->greet(|` where the closing `)` hasn't been typed
     /// yet).  Closing the call expression lets the parser recover the
     /// surrounding class/function structure.
+    /// Patch incomplete member-access expressions for parser recovery.
+    ///
+    /// When the cursor is right after `->` or `?->` and the line has no
+    /// semicolon, the PHP parser may fail to recognise the enclosing
+    /// statement (e.g. an arrow function body).  This inserts a dummy
+    /// identifier and semicolon (`_x;`) at the cursor so the parser can
+    /// recover the surrounding structure.
+    fn patch_incomplete_member_access(content: &str, position: Position) -> String {
+        let line_idx = position.line as usize;
+        let col = position.character as usize;
+        let mut result = String::with_capacity(content.len() + 4);
+
+        for (i, line) in content.lines().enumerate() {
+            if i == line_idx {
+                let byte_col = line
+                    .char_indices()
+                    .nth(col)
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(line.len());
+                // Only patch when the cursor is right after `->` or
+                // `?->` with nothing meaningful following it.
+                let before = &line[..byte_col];
+                let after = line[byte_col..].trim();
+                if (before.ends_with("->") || before.ends_with("?->")) && after.is_empty() {
+                    result.push_str(before);
+                    result.push_str("_x;");
+                    result.push_str(&line[byte_col..]);
+                } else {
+                    result.push_str(line);
+                }
+            } else {
+                result.push_str(line);
+            }
+            result.push('\n');
+        }
+
+        if !content.ends_with('\n') && result.ends_with('\n') {
+            result.pop();
+        }
+
+        result
+    }
+
     fn patch_content_at_cursor(content: &str, position: Position) -> String {
         let line_idx = position.line as usize;
         let col = position.character as usize;

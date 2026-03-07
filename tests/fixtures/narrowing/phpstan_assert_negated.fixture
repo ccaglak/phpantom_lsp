@@ -1,6 +1,5 @@
 // test: negated @phpstan-assert removes type from union
 // feature: completion
-// ignore: negated @phpstan-assert does not yet remove the asserted type from unions
 // Adapted from phpactor narrowing/narrow-negate.test
 // expect: barMethod(
 // expect_absent: fooMethod(

@@ -25,6 +25,7 @@ use mago_syntax::ast::*;
 
 use crate::Backend;
 use crate::docblock;
+use crate::parser::extract_hint_string;
 use crate::types::ClassInfo;
 
 use super::resolution::build_var_resolver_from_ctx;
@@ -173,6 +174,28 @@ fn resolve_rhs_instantiation(
 
         return classes;
     }
+
+    // ── `new $var` where `$var` holds a class-string ────────────
+    // When the class expression is a variable, resolve it to check
+    // if it holds a class-string value (e.g. `$f = Foo::class;
+    // new $f`).  Extract the class name from the class-string and
+    // use it to resolve the instantiated type.
+    if let Expression::Variable(Variable::Direct(dv)) = inst.class {
+        let var_name = dv.name.to_string();
+        let resolved =
+            crate::completion::variable::class_string_resolution::resolve_class_string_targets(
+                &var_name,
+                ctx.current_class,
+                ctx.all_classes,
+                ctx.content,
+                ctx.cursor_offset,
+                ctx.class_loader,
+            );
+        if !resolved.is_empty() {
+            return resolved;
+        }
+    }
+
     vec![]
 }
 
@@ -673,6 +696,22 @@ fn resolve_rhs_function_call<'b>(
     };
     // Skip if we already handled it as a variable above.
     if !matches!(callee_expr, Expression::Variable(Variable::Direct(_))) {
+        // ── Directly invoked closure / arrow function ────
+        // `(fn (): Foo => …)()` or `(function (): Foo { … })()`
+        // Extract the return type from the literal instead of going
+        // through `__invoke()` on the generic `Closure` stub.
+        if let Some(ret_type) = extract_closure_or_arrow_return_type(callee_expr) {
+            let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                &ret_type,
+                current_class_name,
+                all_classes,
+                class_loader,
+            );
+            if !resolved.is_empty() {
+                return resolved;
+            }
+        }
+
         let callee_classes = resolve_rhs_expression(callee_expr, ctx);
         for owner in &callee_classes {
             if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
@@ -775,6 +814,20 @@ fn resolve_rhs_static_call(
         Expression::Self_(_) => Some(current_class_name.to_string()),
         Expression::Static(_) => Some(current_class_name.to_string()),
         Expression::Identifier(ident) => Some(ident.value().to_string()),
+        // ── `$var::method()` where `$var` holds a class-string ──
+        Expression::Variable(Variable::Direct(dv)) => {
+            let var_name = dv.name.to_string();
+            let targets =
+                crate::completion::variable::class_string_resolution::resolve_class_string_targets(
+                    &var_name,
+                    ctx.current_class,
+                    ctx.all_classes,
+                    ctx.content,
+                    ctx.cursor_offset,
+                    ctx.class_loader,
+                );
+            targets.first().map(|c| c.name.clone())
+        }
         _ => None,
     };
     if let Some(cls_name) = class_name
@@ -960,4 +1013,23 @@ fn resolve_rhs_clone(clone_expr: &Clone<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<
         }
     }
     vec![]
+}
+
+/// Extract the return type hint from a closure or arrow function expression.
+///
+/// Returns the type-hint string when the expression is a `Closure` or
+/// `ArrowFunction` with an explicit return type annotation, e.g.
+/// `fn (): Foo => …` yields `"Foo"`.  Returns `None` otherwise.
+fn extract_closure_or_arrow_return_type(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::ArrowFunction(arrow) => arrow
+            .return_type_hint
+            .as_ref()
+            .map(|rth| extract_hint_string(&rth.hint)),
+        Expression::Closure(closure) => closure
+            .return_type_hint
+            .as_ref()
+            .map(|rth| extract_hint_string(&rth.hint)),
+        _ => None,
+    }
 }

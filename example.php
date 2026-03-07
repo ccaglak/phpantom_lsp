@@ -728,6 +728,65 @@ class ClosureInvocationDemo
         // Variable assigned from callable invocation
         $fromClosure = $makePen();
         $fromClosure->write();                    // $result = $fn() resolves return type
+
+        // Immediately invoked arrow function with return type
+        $result = (fn(): Pen => new Pen())();
+        $result->write();                         // resolves Pen from arrow fn return type
+
+        // Immediately invoked closure with return type
+        $obj = (function(): Pencil { return new Pencil(); })();
+        $obj->sketch();                           // resolves Pencil from closure return type
+    }
+}
+
+
+// ── class-string Variable Resolution ────────────────────────────────────────
+
+class ClassStringVarDemo
+{
+    public function demo(): void
+    {
+        // new $var where $var holds a class-string
+        $cls = Pen::class;
+        $pen = new $cls;
+        $pen->write();                            // resolves Pen from class-string
+
+        // $var::staticMethod() where $var holds a class-string
+        $userClass = User::class;
+        $found = $userClass::findByEmail('test@example.com');
+        $found->getEmail();                       // resolves User from class-string static call
+    }
+}
+
+
+// ── iterator_to_array Resolution ────────────────────────────────────────────
+
+class IteratorToArrayDemo
+{
+    public function demo(): void
+    {
+        /** @var \Iterator<int, Pen> $iter */
+        $iter = getUnknownValue();
+
+        $items = iterator_to_array($iter);
+        $items[0]->write();                       // resolves Pen from iterator value type
+    }
+}
+
+
+// ── Compound Negated Guard Clause Narrowing ─────────────────────────────────
+
+class CompoundNegatedNarrowingDemo
+{
+    /** @param Rock|Banana|Lamp $thing */
+    public function demo($thing): void
+    {
+        // After both negated instanceof checks exit, $thing is Rock|Banana
+        if (!$thing instanceof Rock && !$thing instanceof Banana) {
+            return;
+        }
+
+        $thing->weigh();                          // both Rock and Banana have weigh()
     }
 }
 

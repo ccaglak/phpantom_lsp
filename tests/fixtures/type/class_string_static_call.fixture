@@ -1,7 +1,7 @@
 // test: class-string variable used for static call resolves return type
 // feature: completion
 // Adapted from phpactor type/class-string-static-call.test
-// ignore: $classStringVar::staticMethod() does not resolve return type
+
 // expect: doSomething(
 ---
 <?php

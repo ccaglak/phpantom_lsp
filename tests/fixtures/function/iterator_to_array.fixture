@@ -1,7 +1,7 @@
 // test: iterator_to_array on typed iterator resolves to array of item type
 // feature: completion
 // Adapted from phpactor function/iterator_to_array.test
-// ignore: needs todo.md §19 (array function return type resolvers)
+
 // expect: fooMethod(
 ---
 <?php

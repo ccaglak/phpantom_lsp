@@ -1,11 +1,11 @@
 # PHPantom — Ignored Fixture Tasks
 
-There are **228 fixture tests** in `tests/fixtures/`. Of these, **207
-pass** and **21 are ignored** because they exercise features or bug
+There are **228 fixture tests** in `tests/fixtures/`. Of these, **214
+pass** and **14 are ignored** because they exercise features or bug
 fixes that are not yet implemented. Each ignored fixture has a
 `// ignore:` comment explaining what is missing.
 
-This document groups the 21 ignored fixtures by the underlying work
+This document groups the 14 ignored fixtures by the underlying work
 needed to un-ignore them. Tasks are ordered by the number of fixtures
 they unblock (descending), then by estimated effort. Once a task is
 complete, remove the `// ignore:` line from each fixture, verify the
@@ -78,52 +78,6 @@ work without further changes.
 
 ---
 
-## 7. Invoked closure/arrow function return type (2 fixtures)
-
-**Ref:** [type-inference.md §30](type-inference.md#30-invoked-closurearrow-function-return-type)
-**Impact: Low · Effort: Low-Medium**
-
-Immediately invoked closures and arrow functions do not resolve their
-return type. `(fn(): Foo => new Foo())()` and similar patterns produce
-`mixed`.
-
-**Fixtures:**
-
-- [ ] `call_expression/arrow_fn_invocation.fixture` — `(fn() => new Foo())()->` resolves
-- [ ] `arrow_function/parameter_type.fixture` — arrow function parameter type for completion inside body
-
-**Implementation notes:**
-
-In the call expression resolution path, detect when the callee is a
-parenthesized closure or arrow function expression. Extract the return
-type from its signature or body. For `arrow_function/parameter_type`,
-the arrow function parameter's type hint should be resolved the same
-way closure parameters are (likely in `variable/closure_resolution.rs`).
-
----
-
-## 8. `new $classStringVar` / `$classStringVar::staticMethod()` (2 fixtures)
-
-**Ref:** [type-inference.md §27](type-inference.md#27-new-classstringvar-and-classstringvarstaticmethod)
-**Impact: Low-Medium · Effort: Medium**
-
-When a variable holds a `class-string<Foo>`, `new $var` should resolve
-to `Foo` and `$var::staticMethod()` should resolve through `Foo`'s
-static methods.
-
-**Fixtures:**
-
-- [ ] `type/class_string_new.fixture` — `new $classStringVar` resolves to the class type
-- [ ] `type/class_string_static_call.fixture` — `$classStringVar::staticMethod()` resolves return type
-
-**Implementation notes:**
-
-In the object creation and static call resolution paths, when the class
-name is a variable, resolve the variable's type. If it is
-`class-string<T>`, extract `T` and use it as the class name.
-
----
-
 ## 11. `class-string<T>` on interface method not inherited (1 fixture)
 
 **Ref:** [type-inference.md §25](type-inference.md#25-class-stringt-on-interface-method-not-inherited)
@@ -136,38 +90,6 @@ merging.
 **Fixture:**
 
 - [ ] `generics/class_string_generic_interface.fixture` — `class-string<T>` on interface method not propagated
-
----
-
-
-
-## 13. Compound negated guard clause narrowing (1 fixture)
-
-**Ref:** [type-inference.md §23](type-inference.md#23-double-negated-instanceof-narrowing) (related)
-**Impact: Low · Effort: Low-Medium**
-
-After `if (!$x instanceof A && !$x instanceof B) { return; }`, the
-surviving code should know that `$x` is `A|B`. This requires the
-narrowing engine to invert compound negated conditions across guard
-clauses.
-
-**Fixture:**
-
-- [ ] `completion/parenthesized_narrowing.fixture` — compound negated instanceof with guard clause narrows to union
-
----
-
-## 15. Negated `@phpstan-assert !Type` (1 fixture)
-
-**Ref:** [type-inference.md §19](type-inference.md#19-negated-phpstan-assert-type)
-**Impact: Medium · Effort: Low-Medium**
-
-`@phpstan-assert !Foo $param` should remove `Foo` from the variable's
-union type. The `!` prefix is not parsed today.
-
-**Fixture:**
-
-- [ ] `narrowing/phpstan_assert_negated.fixture` — negated assert removes type from union
 
 ---
 
@@ -200,21 +122,6 @@ narrowing propagation issue rather than `is_*()` parsing.
 **Fixture:**
 
 - [ ] `function/is_type_elseif_chain.fixture` — elseif chain strips `string` and `int`, leaving `Foobar` in else
-
----
-
-## 21. `iterator_to_array()` return type (1 fixture)
-
-**Ref:** [completion.md §1](completion.md#1-array-functions-needing-new-code-paths)
-**Impact: Medium · Effort: Medium**
-
-`iterator_to_array()` should return the iterator's value type as an
-array element type. This needs a special code path similar to the
-existing `array_pop`/`array_shift` handling.
-
-**Fixture:**
-
-- [ ] `function/iterator_to_array.fixture` — `iterator_to_array($gen)` resolves element type
 
 ---
 
@@ -280,6 +187,14 @@ Moderate wins (Low-Medium effort, few fixtures):
 | §24 Variable scope isolation in closures | 1 |
 | §25 Pass-by-reference parameter type inference | 1 |
 | §26 Pipe operator (PHP 8.5) | 1 |
+
+Medium effort, single fixture:
+
+| Task | Fixtures |
+|---|---|
+| §11 `class-string<T>` on interface method | 1 |
+| §16 Generic `@phpstan-assert` with `class-string<T>` | 1 |
+| §20 Elseif chain narrowing with `is_*()` | 1 |
 
 Biggest unlocks (Medium effort, many fixtures):
 

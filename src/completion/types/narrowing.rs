@@ -1078,6 +1078,35 @@ pub(in crate::completion) fn apply_guard_clause_narrowing(
         return;
     }
 
+    // ── Compound negated AND guard clause ───────────────────────────
+    // `if (!$x instanceof A && !$x instanceof B) { return; }`
+    // The then-body exits when $x is neither A nor B.  After the if,
+    // the condition was false, so $x IS instanceof A or B → include both.
+    if let Some(classes) =
+        try_extract_compound_negated_and_instanceof(if_stmt.condition, ctx.var_name)
+        && !classes.is_empty()
+    {
+        let mut union = Vec::new();
+        for cls_name in &classes {
+            let resolved = super::resolution::type_hint_to_classes(
+                cls_name,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            for cls in resolved {
+                if !union.iter().any(|c: &ClassInfo| c.name == cls.name) {
+                    union.push(cls);
+                }
+            }
+        }
+        if !union.is_empty() {
+            results.clear();
+            *results = union;
+        }
+        return;
+    }
+
     // ── instanceof / is_a / get_class / ::class narrowing ──
     // The then-body exits, so subsequent code is the "else" — apply
     // the inverse of the condition.
@@ -1249,6 +1278,75 @@ fn collect_and_instanceof_classes<'b>(
                 && !out.contains(&cls_name)
             {
                 out.push(cls_name);
+            }
+        }
+    }
+}
+
+/// Detect a compound `&&` of negated `instanceof` checks for `var_name`.
+///
+/// Matches patterns like `!$x instanceof A && !$x instanceof B`.
+/// Returns the list of class names when every leaf of the `&&` tree is
+/// a negated instanceof for the same variable.  Returns `None` when the
+/// pattern does not match.
+fn try_extract_compound_negated_and_instanceof<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+) -> Option<Vec<String>> {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            try_extract_compound_negated_and_instanceof(inner.expression, var_name)
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            let mut classes = Vec::new();
+            if collect_negated_and_instanceof_classes(expr, var_name, &mut classes)
+                && !classes.is_empty()
+            {
+                Some(classes)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Recursively walk a tree of `&&` binary expressions, collecting
+/// instanceof class names from negated instanceof leaves.
+///
+/// Returns `true` when every leaf successfully matched `!$var instanceof Class`.
+fn collect_negated_and_instanceof_classes<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+    out: &mut Vec<String>,
+) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            collect_negated_and_instanceof_classes(inner.expression, var_name, out)
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            collect_negated_and_instanceof_classes(bin.lhs, var_name, out)
+                && collect_negated_and_instanceof_classes(bin.rhs, var_name, out)
+        }
+        _ => {
+            // Each leaf must be a negated instanceof for the target variable.
+            if let Some((cls_name, true)) = try_extract_instanceof_with_negation(expr, var_name) {
+                if !out.contains(&cls_name) {
+                    out.push(cls_name);
+                }
+                true
+            } else {
+                false
             }
         }
     }

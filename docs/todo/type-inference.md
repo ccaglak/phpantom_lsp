@@ -483,19 +483,6 @@ type:
 
 ---
 
-
-## 19. Negated `@phpstan-assert !Type`
-**Impact: Medium · Effort: Low-Medium**
-
-When a function declares `@phpstan-assert !Foo $param`, calling it
-should remove `Foo` from the variable's union type. Today the negation
-prefix is not parsed, so the assertion is either ignored or
-misinterpreted as a positive assertion.
-
-**Discovered via:** fixture conversion (phpstan_assert_negated).
-
----
-
 ## 20. Generic `@phpstan-assert` with `class-string<T>` parameter inference
 **Impact: Medium · Effort: Medium-High**
 
@@ -545,19 +532,6 @@ inheritance merging.
 
 ---
 
-
-## 27. `new $classStringVar` and `$classStringVar::staticMethod()`
-**Impact: Low-Medium · Effort: Medium**
-
-When a variable holds a `class-string<T>`, `new $var` should resolve
-to `T` and `$var::staticMethod()` should resolve through `T`'s static
-methods. Neither path is supported today.
-
-**Discovered via:** fixture conversion (type/class_string_new,
-type/class_string_static_call).
-
----
-
 ## 28. `__invoke()` return type resolution
 **Impact: Low-Medium · Effort: Low**
 
@@ -567,24 +541,6 @@ does not check for `__invoke` when the callee is a variable holding
 an object type.
 
 **Discovered via:** fixture conversion (call_expression/invoke_return_type).
-
----
-
-## 30. Invoked closure/arrow function return type
-**Impact: Low · Effort: Low-Medium**
-
-Immediately invoked closures and arrow functions do not resolve their
-return type:
-
-```php
-$result = (fn(): Foo => new Foo())();
-$result->method(); // unresolved
-```
-
-The call expression resolution does not detect that the callee is a
-parenthesized closure/arrow function expression.
-
-**Discovered via:** fixture conversion (call_expression/arrow_fn_invocation).
 
 ---
 

@@ -804,6 +804,17 @@ pub(in crate::completion) fn resolve_array_func_raw_type(
         return Some(format!("list<{}>", element_type));
     }
 
+    // iterator_to_array: converts an iterator to an array, preserving
+    // the value type.  `iterator_to_array($iter)` where `$iter` is
+    // `Iterator<int, Foo>` produces `array<int, Foo>`.
+    if func_name.eq_ignore_ascii_case("iterator_to_array") {
+        let iter_expr = super::resolution::first_arg_expr(args)?;
+        let raw = super::resolution::resolve_arg_raw_type(iter_expr, ctx)?;
+        if docblock::types::extract_generic_value_type(&raw).is_some() {
+            return Some(raw);
+        }
+    }
+
     // Element-extracting functions: wrap element type in list<> so
     // it can be used as an iterable raw type.
     if ARRAY_ELEMENT_FUNCS
@@ -845,6 +856,13 @@ pub(in crate::completion) fn resolve_array_func_element_type(
     // array_map: callback return type is the element type.
     if func_name.eq_ignore_ascii_case("array_map") {
         return extract_array_map_element_type(args, ctx);
+    }
+
+    // iterator_to_array: the element type is the iterator's value type.
+    if func_name.eq_ignore_ascii_case("iterator_to_array") {
+        let iter_expr = super::resolution::first_arg_expr(args)?;
+        let raw = super::resolution::resolve_arg_raw_type(iter_expr, ctx)?;
+        return docblock::types::extract_generic_value_type(&raw);
     }
 
     None
