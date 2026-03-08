@@ -806,4 +806,103 @@ impl Backend {
             client.log_message(typ, message).await;
         }
     }
+
+    // ── Work-done progress helpers ──────────────────────────────────
+
+    /// Create a server-initiated work-done progress token and send the
+    /// `window/workDoneProgress/create` request to the client.
+    ///
+    /// Returns `Some(token)` on success, `None` when there is no client
+    /// or the client rejects the request.  The caller should pass the
+    /// returned token to [`progress_begin`], [`progress_report`], and
+    /// [`progress_end`].
+    pub(crate) async fn progress_create(&self, token_name: &str) -> Option<NumberOrString> {
+        use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
+
+        let client = self.client.as_ref()?;
+        let token = NumberOrString::String(token_name.to_string());
+        let params = WorkDoneProgressCreateParams {
+            token: token.clone(),
+        };
+        client
+            .send_request::<WorkDoneProgressCreate>(params)
+            .await
+            .ok()?;
+        Some(token)
+    }
+
+    /// Send a `WorkDoneProgressBegin` notification for the given token.
+    ///
+    /// `title` is the short label shown by the editor (e.g. "Indexing").
+    /// `message` is an optional detail line (e.g. "Scanning subprojects").
+    pub(crate) async fn progress_begin(
+        &self,
+        token: &NumberOrString,
+        title: &str,
+        message: Option<String>,
+    ) {
+        use tower_lsp::lsp_types::notification::Progress;
+
+        let Some(client) = &self.client else { return };
+        client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                    WorkDoneProgressBegin {
+                        title: title.to_string(),
+                        cancellable: Some(false),
+                        message,
+                        percentage: Some(0),
+                    },
+                )),
+            })
+            .await;
+    }
+
+    /// Send a `WorkDoneProgressReport` notification with a percentage
+    /// and optional message.
+    ///
+    /// `percentage` should be in the range 0..=100.  `message` replaces
+    /// the previous detail line when `Some`.
+    pub(crate) async fn progress_report(
+        &self,
+        token: &NumberOrString,
+        percentage: u32,
+        message: Option<String>,
+    ) {
+        use tower_lsp::lsp_types::notification::Progress;
+
+        let Some(client) = &self.client else { return };
+        client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Report(
+                    WorkDoneProgressReport {
+                        cancellable: Some(false),
+                        message,
+                        percentage: Some(percentage),
+                    },
+                )),
+            })
+            .await;
+    }
+
+    /// Send a `WorkDoneProgressEnd` notification.
+    ///
+    /// After this call the editor removes the progress indicator.
+    /// `message` is an optional final status line (e.g. "Indexed 5,678
+    /// classes").
+    pub(crate) async fn progress_end(&self, token: &NumberOrString, message: Option<String>) {
+        use tower_lsp::lsp_types::notification::Progress;
+
+        let Some(client) = &self.client else { return };
+        client
+            .send_notification::<Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message,
+                })),
+            })
+            .await;
+    }
 }

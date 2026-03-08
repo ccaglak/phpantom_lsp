@@ -337,7 +337,10 @@ Each stage improves on the last without blocking the previous one.
    when higher-priority work arrives.
 2. Process user code first, then vendor.
 3. Report progress via `$/progress` tokens so the editor can show
-   "Indexing: 1,234 / 5,678 files".
+   "Indexing: 1,234 / 5,678 files".  The `$/progress` infrastructure
+   (token creation, begin/report/end helpers) is already in place and
+   used during workspace initialization.  The second pass just needs
+   to call `progress_report` as it processes each file.
 
 ### Memory
 

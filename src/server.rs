@@ -138,19 +138,35 @@ impl LanguageServer for Backend {
 
             let has_composer_json = root.join("composer.json").is_file();
 
+            // ── Create a progress token for indexing feedback ────────
+            let progress_token = self.progress_create("phpantom/indexing").await;
+            if let Some(ref tok) = progress_token {
+                self.progress_begin(tok, "PHPantom: Indexing", Some("Starting".to_string()))
+                    .await;
+            }
+
             if has_composer_json {
                 // ── Single-project path (root composer.json exists) ──────
-                self.init_single_project(&root, php_version).await;
+                self.init_single_project(&root, php_version, progress_token.as_ref())
+                    .await;
             } else {
                 // ── Monorepo / non-Composer path ────────────────────────
                 let subprojects = composer::discover_subproject_roots(&root);
 
                 if !subprojects.is_empty() {
-                    self.init_monorepo(&root, &subprojects, php_version).await;
+                    self.init_monorepo(&root, &subprojects, php_version, progress_token.as_ref())
+                        .await;
                 } else {
                     // No subprojects found — pure non-Composer workspace.
-                    self.init_no_composer(&root, php_version).await;
+                    self.init_no_composer(&root, php_version, progress_token.as_ref())
+                        .await;
                 }
+            }
+
+            if let Some(ref tok) = progress_token {
+                let classmap_count = self.classmap.read().len();
+                self.progress_end(tok, Some(format!("Indexed {} classes", classmap_count)))
+                    .await;
             }
         } else {
             self.log(MessageType::INFO, "PHPantom initialized!".to_string())
@@ -477,7 +493,13 @@ impl Backend {
         &self,
         root: &std::path::Path,
         php_version: crate::types::PhpVersion,
+        progress_token: Option<&NumberOrString>,
     ) {
+        if let Some(tok) = progress_token {
+            self.progress_report(tok, 10, Some("Reading composer.json".to_string()))
+                .await;
+        }
+
         let (mappings, vendor_dir) = composer::parse_composer_json(root);
         let mapping_count = mappings.len();
 
@@ -490,6 +512,11 @@ impl Backend {
 
         // ── Build the classmap ──────────────────────────────────────
         let strategy = self.config().indexing.strategy;
+
+        if let Some(tok) = progress_token {
+            self.progress_report(tok, 20, Some("Building class index".to_string()))
+                .await;
+        }
 
         let (classmap, classmap_source) = match strategy {
             IndexingStrategy::None => {
@@ -537,6 +564,11 @@ impl Backend {
         *self.classmap.write() = classmap;
 
         // ── Autoload files ──────────────────────────────────────────
+        if let Some(tok) = progress_token {
+            self.progress_report(tok, 70, Some("Scanning autoload files".to_string()))
+                .await;
+        }
+
         let autoload_count = self.scan_autoload_files(root, &vendor_dir);
 
         let func_index_count = self.autoload_function_index.read().len();
@@ -573,6 +605,7 @@ impl Backend {
         root: &std::path::Path,
         subprojects: &[(PathBuf, String)],
         php_version: crate::types::PhpVersion,
+        progress_token: Option<&NumberOrString>,
     ) {
         // Log the discovered subprojects.
         let sub_list: Vec<String> = subprojects
@@ -597,8 +630,30 @@ impl Backend {
         let mut skip_dirs: HashSet<PathBuf> = HashSet::new();
         let mut total_mapping_count = 0usize;
         let mut total_autoload_count = 0usize;
+        let sub_count = subprojects.len();
 
-        for (sub_root, vendor_dir) in subprojects {
+        for (sub_idx, (sub_root, vendor_dir)) in subprojects.iter().enumerate() {
+            // Report per-subproject progress.  Reserve 10..80 for the
+            // subproject loop, leaving 80..95 for the loose-file scan.
+            if let Some(tok) = progress_token {
+                let pct = 10 + (sub_idx as u32 * 70) / sub_count.max(1) as u32;
+                let label = sub_root
+                    .strip_prefix(root)
+                    .unwrap_or(sub_root)
+                    .display()
+                    .to_string();
+                self.progress_report(
+                    tok,
+                    pct,
+                    Some(format!(
+                        "Indexing subproject {} / {}: {}",
+                        sub_idx + 1,
+                        sub_count,
+                        label
+                    )),
+                )
+                .await;
+            }
             skip_dirs.insert(sub_root.clone());
 
             // ── PSR-4 mappings ──────────────────────────────────────
@@ -671,6 +726,11 @@ impl Backend {
         // ── Full-scan loose files ───────────────────────────────────
         // Walk the workspace for PHP files outside any subproject
         // directory, using gitignore-aware walking.
+        if let Some(tok) = progress_token {
+            self.progress_report(tok, 80, Some("Scanning loose PHP files".to_string()))
+                .await;
+        }
+
         let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs);
         self.populate_autoload_indices(&scan);
         {
@@ -709,12 +769,22 @@ impl Backend {
         &self,
         root: &std::path::Path,
         php_version: crate::types::PhpVersion,
+        progress_token: Option<&NumberOrString>,
     ) {
         self.log(
             MessageType::INFO,
             "PHPantom: No composer.json found. Scanning workspace for PHP classes.".to_string(),
         )
         .await;
+
+        if let Some(tok) = progress_token {
+            self.progress_report(
+                tok,
+                20,
+                Some("Scanning workspace for PHP files".to_string()),
+            )
+            .await;
+        }
 
         let skip_dirs = HashSet::new();
         let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs);

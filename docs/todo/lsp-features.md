@@ -581,6 +581,13 @@ The total file count is known up front (classmap size for GTI,
 workspace file list for Find References), so percentage reporting is
 straightforward.
 
+**Existing infrastructure:** The `$/progress` helper methods
+(`progress_create`, `progress_begin`, `progress_report`,
+`progress_end` on `Backend`) are already implemented and used during
+workspace initialization.  This item only needs to call those helpers
+from the GTI and Find References handlers, checking the
+`workDoneToken` from the request params.
+
 **Relationship with partial result streaming (§6):** Work-done
 progress tells the user "I'm working on it." Partial result streaming
 (§6) additionally sends results incrementally as they are found. This
