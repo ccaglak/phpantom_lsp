@@ -1,6 +1,9 @@
 mod common;
 
-use common::{create_psr4_workspace, create_test_backend, create_test_backend_with_stubs};
+use common::{
+    create_psr4_workspace, create_psr4_workspace_with_enum_stubs, create_test_backend,
+    create_test_backend_with_stubs,
+};
 
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -3174,7 +3177,7 @@ async fn test_completion_foreach_enum_cases_cross_file() {
     );
 
     let (backend, dir) =
-        create_psr4_workspace(composer_json, &[("src/Enums/Country.php", enum_content)]);
+        create_psr4_workspace_with_enum_stubs(composer_json, &[("src/Enums/Country.php", enum_content)]);
 
     let handler_uri = Url::from_file_path(dir.path().join("handler.php")).unwrap();
     let handler_text = concat!(
