@@ -567,7 +567,7 @@ At resolution time, `merge_traits_into` loads the `UnitEnum` or `BackedEnum` stu
 
 PSR-4 mappings come exclusively from the project's own `composer.json`. Vendor PSR-4 (`vendor/composer/autoload_psr4.php`) is not loaded. The Composer classmap is the sole source of truth for vendor code.
 
-**Design principle:** if the classmap is missing or stale, vendor classes fail to resolve visibly rather than being silently papered over by PSR-4. This makes the problem obvious to the user (fix: run `composer dump-autoload`). User PSR-4 roots are walked by Go-to-implementation (Phase 5) and Find References because user files change between `dump-autoload` runs.
+**Design principle:** vendor PSR-4 mappings are not loaded separately. The Composer classmap (augmented by the self-scanner, see below) is the sole source of truth for vendor code. User PSR-4 roots are walked by Go-to-implementation (Phase 5) and Find References because user files change between `dump-autoload` runs.
 
 ### Self-Generated Classmap
 
@@ -577,16 +577,18 @@ Scanning is parallelised using a two-phase approach: directory walks collect fil
 
 The indexing strategy is configurable via `[indexing] strategy` in `.phpantom.toml`:
 
-- **`"composer"`** (default) — use Composer's classmap when available and complete; fall back to self-scan when it is missing or incomplete (i.e. the project's own PSR-4 namespaces have no entries in the classmap).
-- **`"self"`** — always self-scan, ignoring Composer's classmap entirely.
+- **`"composer"`** (default) — merged classmap + self-scan. Load Composer's classmap (if it exists) as a skip set, then self-scan all PSR-4 and vendor directories for anything the classmap missed. Whatever the classmap already covers is a free performance win; whatever it's missing, we find ourselves. No completeness heuristic needed.
+- **`"self"`** — always self-scan, ignoring Composer's classmap entirely. Equivalent to the merged approach with an empty skip set.
 - **`"full"`** — same as `"self"` for now; reserved for future background indexing.
-- **`"none"`** — no proactive scanning; uses Composer's classmap if present but never falls back to self-scan.
+- **`"none"`** — no proactive scanning; uses Composer's classmap if present but never self-scans to fill gaps.
+
+The merged pipeline works in three steps: (1) load `autoload_classmap.php` into a `HashMap<String, PathBuf>`, (2) collect the classmap's file paths into a `HashSet<PathBuf>` skip set, (3) self-scan all PSR-4 and vendor directories, skipping files already in the skip set. The result is a merged index: classmap entries for everything Composer already knew about, plus self-scanned entries for everything it missed. When the classmap is complete (the common case), the self-scanner walks directories but skips every file, finishing almost instantly. When the classmap is empty or absent, it falls back to a full self-scan. When the classmap is partial (e.g. vendor classes only), vendor files are skipped and only user code is scanned. Every state of the classmap helps.
 
 When self-scanning with a `composer.json` present, the scanner reads `autoload.psr-4`, `autoload-dev.psr-4`, `autoload.classmap`, and `autoload-dev.classmap` to determine which directories to walk. PSR-4 directories are filtered: only classes whose FQN matches the namespace prefix plus the relative file path are included. Vendor packages are discovered from `vendor/composer/installed.json` (both Composer 1 and 2 formats); the JSON packages array is borrowed rather than cloned to avoid allocating a copy of the entire vendor manifest. All directory walkers (full-scan, PSR-4 scanner, vendor package scanner, and go-to-implementation file collector) use the `ignore` crate for gitignore-aware traversal. Hidden directories are skipped automatically, and `.gitignore` rules are respected at every level. When no `composer.json` exists at all, the scanner falls back to walking all `.php` files under the workspace root.
 
 The result is a `HashMap<String, PathBuf>` in the same format as the existing `Backend.classmap`. Everything downstream (resolution, diagnostics, go-to-definition) works unchanged.
 
-**Redundant I/O elimination:** `init_single_project` parses `composer.json` once and passes the pre-parsed `serde_json::Value` to both `build_self_scan_composer` and `is_classmap_incomplete_with_json`. Previously each function re-read and re-parsed the file independently.
+**Redundant I/O elimination:** `init_single_project` parses `composer.json` once and passes the pre-parsed `serde_json::Value` to `build_self_scan_composer`. Previously each function re-read and re-parsed the file independently.
 
 **Vendor dir detection:** the `config.vendor-dir` setting is read from `composer.json` once during `initialized` (via `parse_composer_json`, which returns both the PSR-4 mappings and the vendor dir name). The absolute vendor directory path is cached on `Backend.vendor_dir_paths` and a `file://` URI prefix is stored in `Backend.vendor_uri_prefixes` for fast vendor-file detection at runtime. Both fields are `Vec`s to support monorepo workspaces with multiple subprojects (see below). For single-project workspaces, each collection has exactly one entry.
 

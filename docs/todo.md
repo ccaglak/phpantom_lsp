@@ -32,17 +32,6 @@ with each step.
 
 ---
 
-## Sprint 2 — Stabilise for 0.5.0 release
-
-| # | Item | Effort | Domain | Doc Link |
-|---|---|---|---|---|
-| 106 | Thread panic in parallel file scanners crashes server | Low | Bug Fixes | [bugs.md §0](todo/bugs.md#0-thread-panic-in-parallel-file-scanners-crashes-the-server) |
-| 107 | Analyse sequential write-lock acquisition in `parse_and_cache_content_versioned` | Low | Bug Fixes | [bugs.md §1](todo/bugs.md#1-sequential-write-lock-acquisition-in-parse_and_cache_content_versioned) |
-
-**After Sprint 2:** Tag 0.5.0, write release notes, publish.
-
----
-
 ## Sprint 3 — Quick wins: close the visible gaps
 
 Every item here is Low or Low-Medium effort and directly removes
@@ -64,7 +53,6 @@ feature surface grows.
 | 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |
 | 101 | Argument count diagnostic | Low | Diagnostics | [diagnostics.md §7](todo/diagnostics.md#7-argument-count-diagnostic) |
-| 105 | Merged classmap + self-scan | Low | Indexing | [indexing.md §1.5](todo/indexing.md#phase-15-merged-classmap--self-scan) |
 | 88 | Early-exit and `Cow` return in `apply_substitution` | Low | Performance | [performance.md §7](todo/performance.md#7-recursive-string-substitution-in-apply_substitution) |
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 

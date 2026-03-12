@@ -11,7 +11,6 @@
 /// the version counter won't match and the stale handler skips publishing.
 /// tower-lsp runs each notification handler as an independent async task,
 /// so the sleep only blocks that handler, not the server.
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -552,7 +551,7 @@ impl Backend {
         let mapping_count = mappings.len();
 
         // Parse the raw composer.json once so that build_self_scan_composer
-        // and is_classmap_incomplete can reuse it without redundant I/O.
+        // can reuse it without redundant I/O.
         let composer_json: Option<serde_json::Value> =
             std::fs::read_to_string(root.join("composer.json"))
                 .ok()
@@ -584,43 +583,42 @@ impl Backend {
                 (cm, source)
             }
             IndexingStrategy::SelfScan | IndexingStrategy::Full => {
-                let scan = self.build_self_scan_composer(root, &vendor_dir, composer_json.as_ref());
+                let skip_paths = HashSet::new();
+                let scan = self.build_self_scan_composer(
+                    root,
+                    &vendor_dir,
+                    composer_json.as_ref(),
+                    &skip_paths,
+                );
                 self.populate_autoload_indices(&scan);
                 (scan.classmap, "self-scan")
             }
             IndexingStrategy::Composer => {
+                // ── Merged classmap + self-scan pipeline ─────────────
+                // Always load the Composer classmap (if it exists) and
+                // then self-scan with a skip set built from the classmap
+                // file paths.  Whatever the classmap already covers is a
+                // free performance win; whatever it's missing, we find
+                // ourselves.  No completeness heuristic needed.
                 let composer_cm = composer::parse_autoload_classmap(root, &vendor_dir);
-                if !composer_cm.is_empty() {
-                    let incomplete = Self::is_classmap_incomplete_with_json(
-                        root,
-                        &composer_cm,
-                        composer_json.as_ref(),
-                    );
-                    if incomplete {
-                        let mut cm = composer_cm;
-                        let scan = self.build_self_scan_composer(
-                            root,
-                            &vendor_dir,
-                            composer_json.as_ref(),
-                        );
-                        self.populate_autoload_indices(&scan);
-                        for (fqcn, path) in scan.classmap {
-                            cm.entry(fqcn).or_insert(path);
-                        }
-                        (cm, "composer classmap + self-scan")
-                    } else {
-                        (composer_cm, "composer classmap")
-                    }
-                } else {
-                    self.log(
-                        MessageType::INFO,
-                        "PHPantom: No Composer classmap found. Building class index. Run `composer dump-autoload -o` for faster startup.".to_string(),
-                    ).await;
-                    let scan =
-                        self.build_self_scan_composer(root, &vendor_dir, composer_json.as_ref());
-                    self.populate_autoload_indices(&scan);
-                    (scan.classmap, "self-scan")
+                let skip_paths: HashSet<PathBuf> = composer_cm.values().cloned().collect();
+                let scan = self.build_self_scan_composer(
+                    root,
+                    &vendor_dir,
+                    composer_json.as_ref(),
+                    &skip_paths,
+                );
+                self.populate_autoload_indices(&scan);
+                let mut merged = composer_cm;
+                for (fqcn, path) in scan.classmap {
+                    merged.entry(fqcn).or_insert(path);
                 }
+                let source = if skip_paths.is_empty() {
+                    "self-scan"
+                } else {
+                    "composer classmap + self-scan"
+                };
+                (merged, source)
             }
         };
 
@@ -741,24 +739,6 @@ impl Backend {
                 psr4.extend(abs_mappings);
             }
 
-            // ── Classmap ────────────────────────────────────────────
-            let cm = composer::parse_autoload_classmap(sub_root, vendor_dir);
-            if !cm.is_empty() {
-                let mut classmap = self.classmap.write();
-                for (fqcn, path) in cm {
-                    classmap.entry(fqcn).or_insert(path);
-                }
-            }
-
-            // ── Vendor packages ─────────────────────────────────────
-            let vendor_cm = classmap_scanner::scan_vendor_packages(sub_root, vendor_dir);
-            if !vendor_cm.is_empty() {
-                let mut classmap = self.classmap.write();
-                for (fqcn, path) in vendor_cm {
-                    classmap.entry(fqcn).or_insert(path);
-                }
-            }
-
             // ── Vendor dir tracking ─────────────────────────────────
             let vendor_path = sub_root.join(vendor_dir);
             self.add_vendor_dir(&vendor_path);
@@ -766,14 +746,19 @@ impl Backend {
             // ── Autoload files ──────────────────────────────────────
             total_autoload_count += self.scan_autoload_files(sub_root, vendor_dir);
 
-            // ── Self-scan subproject source dirs ────────────────────
-            // When the Composer classmap is empty/missing for this
-            // subproject, self-scan its PSR-4 directories.
-            let sub_cm_empty = composer::parse_autoload_classmap(sub_root, vendor_dir).is_empty();
-            if sub_cm_empty {
-                let scan = self.build_self_scan_composer(sub_root, vendor_dir, None);
-                self.populate_autoload_indices(&scan);
+            // ── Merged classmap + self-scan ──────────────────────────
+            // Load the subproject's Composer classmap as a skip set,
+            // then self-scan its PSR-4 directories and vendor packages
+            // for anything the classmap missed.
+            let sub_cm = composer::parse_autoload_classmap(sub_root, vendor_dir);
+            let sub_skip: HashSet<PathBuf> = sub_cm.values().cloned().collect();
+            let scan = self.build_self_scan_composer(sub_root, vendor_dir, None, &sub_skip);
+            self.populate_autoload_indices(&scan);
+            {
                 let mut classmap = self.classmap.write();
+                for (fqcn, path) in sub_cm {
+                    classmap.entry(fqcn).or_insert(path);
+                }
                 for (fqcn, path) in scan.classmap {
                     classmap.entry(fqcn).or_insert(path);
                 }
@@ -978,16 +963,22 @@ impl Backend {
     /// Build a workspace scan by self-scanning a Composer project's
     /// autoload directories (PSR-4 + classmap + vendor packages).
     ///
-    /// Used when the Composer classmap is missing/incomplete or the
-    /// indexing strategy is `"self"` / `"full"`.  The `project_root`
+    /// Used by the merged classmap + self-scan pipeline and by the
+    /// `"self"` / `"full"` indexing strategies.  The `project_root`
     /// is the directory containing `composer.json` (either the
     /// workspace root for single-project, or a subproject root for
     /// monorepo).
+    ///
+    /// `skip_paths` contains absolute file paths that should be
+    /// excluded from scanning (typically the file paths already
+    /// present in the Composer classmap).  Pass an empty set to
+    /// scan everything.
     fn build_self_scan_composer(
         &self,
         project_root: &std::path::Path,
         vendor_dir: &str,
         preloaded_json: Option<&serde_json::Value>,
+        skip_paths: &HashSet<PathBuf>,
     ) -> WorkspaceScanResult {
         // Use the pre-parsed JSON when available; only read from disk
         // as a fallback (e.g. monorepo subproject calls).
@@ -1048,11 +1039,16 @@ impl Backend {
 
         // Scan user source directories (classes only for PSR-4).
         let vendor_dir_paths = vec![project_root.join(vendor_dir)];
-        let classmap =
-            classmap_scanner::scan_psr4_directories(&psr4_dirs, &classmap_dirs, &vendor_dir_paths);
+        let classmap = classmap_scanner::scan_psr4_directories_with_skip(
+            &psr4_dirs,
+            &classmap_dirs,
+            &vendor_dir_paths,
+            skip_paths,
+        );
 
         // Scan vendor packages from installed.json.
-        let vendor_cm = classmap_scanner::scan_vendor_packages(project_root, vendor_dir);
+        let vendor_cm =
+            classmap_scanner::scan_vendor_packages_with_skip(project_root, vendor_dir, skip_paths);
 
         let mut result = WorkspaceScanResult {
             classmap,
@@ -1088,88 +1084,6 @@ impl Backend {
                 idx.entry(name.clone()).or_insert_with(|| path.clone());
             }
         }
-    }
-
-    /// Check whether the Composer classmap is incomplete.
-    ///
-    /// Reads the PSR-4 namespace prefixes from the project's own
-    /// `composer.json` and checks whether the classmap contains at
-    /// least one entry for each prefix.  If a prefix is entirely
-    /// absent, the classmap is considered incomplete (likely from a
-    /// non-optimized `composer dump-autoload` that only covers vendor
-    /// code).
-    fn is_classmap_incomplete_with_json(
-        workspace_root: &std::path::Path,
-        classmap: &HashMap<String, PathBuf>,
-        json: Option<&serde_json::Value>,
-    ) -> bool {
-        let Some(json) = json else {
-            return false;
-        };
-
-        // Collect PSR-4 namespace prefixes from the project's own autoload.
-        let mut user_prefixes: Vec<String> = Vec::new();
-        for section_key in &["autoload", "autoload-dev"] {
-            if let Some(psr4) = json
-                .get(section_key)
-                .and_then(|s| s.get("psr-4"))
-                .and_then(|p| p.as_object())
-            {
-                for prefix in psr4.keys() {
-                    if !prefix.is_empty() {
-                        let normalised = if prefix.ends_with('\\') {
-                            prefix.clone()
-                        } else {
-                            format!("{prefix}\\")
-                        };
-                        user_prefixes.push(normalised);
-                    }
-                }
-            }
-        }
-
-        if user_prefixes.is_empty() {
-            // No PSR-4 prefixes to check — can't determine completeness.
-            return false;
-        }
-
-        // Check that at least one classmap entry exists for each prefix.
-        for prefix in &user_prefixes {
-            let has_entry = classmap
-                .keys()
-                .any(|fqcn| fqcn.starts_with(prefix.as_str()));
-            if !has_entry {
-                // Check that the PSR-4 source directory actually contains
-                // PHP files.  If it does, the classmap is incomplete.
-                if let Some(psr4_obj) = json
-                    .get("autoload")
-                    .and_then(|s| s.get("psr-4"))
-                    .and_then(|p| p.as_object())
-                    .into_iter()
-                    .chain(
-                        json.get("autoload-dev")
-                            .and_then(|s| s.get("psr-4"))
-                            .and_then(|p| p.as_object()),
-                    )
-                    .next()
-                {
-                    let raw_prefix = prefix.trim_end_matches('\\');
-                    if let Some(paths) = psr4_obj
-                        .get(raw_prefix)
-                        .or_else(|| psr4_obj.get(prefix.as_str()))
-                    {
-                        for dir_str in json_value_to_strings(paths) {
-                            let dir = workspace_root.join(&dir_str);
-                            if dir.is_dir() {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        false
     }
 }
 

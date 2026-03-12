@@ -169,11 +169,12 @@ pub fn scan_directories(
     vendor_dir_paths: &[PathBuf],
 ) -> HashMap<String, PathBuf> {
     let mut php_files: Vec<PathBuf> = Vec::new();
+    let skip_paths = HashSet::new();
     for dir in dirs {
         if !dir.is_dir() {
             continue;
         }
-        collect_php_files(dir, vendor_dir_paths, &mut php_files);
+        collect_php_files(dir, vendor_dir_paths, &skip_paths, &mut php_files);
     }
     scan_files_parallel_classes(&php_files)
 }
@@ -200,13 +201,33 @@ pub fn scan_psr4_directories(
     classmap_dirs: &[PathBuf],
     vendor_dir_paths: &[PathBuf],
 ) -> HashMap<String, PathBuf> {
+    scan_psr4_directories_with_skip(psr4, classmap_dirs, vendor_dir_paths, &HashSet::new())
+}
+
+/// Like [`scan_psr4_directories`] but accepts a set of absolute file
+/// paths to skip.  Files whose canonical path appears in `skip_paths`
+/// are excluded from scanning.  This is used by the merged
+/// classmap + self-scan pipeline to avoid re-scanning files that
+/// the Composer classmap already covers.
+pub fn scan_psr4_directories_with_skip(
+    psr4: &[(String, PathBuf)],
+    classmap_dirs: &[PathBuf],
+    vendor_dir_paths: &[PathBuf],
+    skip_paths: &HashSet<PathBuf>,
+) -> HashMap<String, PathBuf> {
     // ── PSR-4 directories: collect (path, expected_fqn) pairs ───────
     let mut psr4_files: Vec<(PathBuf, String)> = Vec::new();
     for (prefix, base_path) in psr4 {
         if !base_path.is_dir() {
             continue;
         }
-        collect_psr4_php_files(base_path, prefix, vendor_dir_paths, &mut psr4_files);
+        collect_psr4_php_files(
+            base_path,
+            prefix,
+            vendor_dir_paths,
+            skip_paths,
+            &mut psr4_files,
+        );
     }
 
     // ── Plain classmap directories ──────────────────────────────────
@@ -215,7 +236,7 @@ pub fn scan_psr4_directories(
         if !dir.is_dir() {
             continue;
         }
-        collect_php_files(dir, vendor_dir_paths, &mut plain_files);
+        collect_php_files(dir, vendor_dir_paths, skip_paths, &mut plain_files);
     }
 
     // ── Scan all files in parallel ──────────────────────────────────
@@ -234,6 +255,17 @@ pub fn scan_psr4_directories(
 /// package's autoload directories.  Supports PSR-4 and classmap
 /// entries.
 pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> HashMap<String, PathBuf> {
+    scan_vendor_packages_with_skip(workspace_root, vendor_dir, &HashSet::new())
+}
+
+/// Like [`scan_vendor_packages`] but accepts a set of absolute file
+/// paths to skip.  Files whose path appears in `skip_paths` are
+/// excluded from scanning.
+pub fn scan_vendor_packages_with_skip(
+    workspace_root: &Path,
+    vendor_dir: &str,
+    skip_paths: &HashSet<PathBuf>,
+) -> HashMap<String, PathBuf> {
     let vendor_path = workspace_root.join(vendor_dir);
     let installed_path = vendor_path.join("composer").join("installed.json");
 
@@ -311,7 +343,13 @@ pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> HashMap<
                 for dir_str in value_to_strings(paths) {
                     let dir = pkg_path.join(&dir_str);
                     if dir.is_dir() {
-                        collect_psr4_php_files(&dir, &prefix, &vendor_dir_paths, &mut psr4_files);
+                        collect_psr4_php_files(
+                            &dir,
+                            &prefix,
+                            &vendor_dir_paths,
+                            skip_paths,
+                            &mut psr4_files,
+                        );
                     }
                 }
             }
@@ -323,8 +361,11 @@ pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> HashMap<
                 if let Some(dir_str) = entry.as_str() {
                     let dir = pkg_path.join(dir_str);
                     if dir.is_dir() {
-                        collect_php_files(&dir, &vendor_dir_paths, &mut plain_files);
-                    } else if dir.is_file() && dir.extension().is_some_and(|ext| ext == "php") {
+                        collect_php_files(&dir, &vendor_dir_paths, skip_paths, &mut plain_files);
+                    } else if dir.is_file()
+                        && dir.extension().is_some_and(|ext| ext == "php")
+                        && !skip_paths.contains(&dir)
+                    {
                         plain_files.push(dir);
                     }
                 }
@@ -403,7 +444,15 @@ fn scan_files_parallel_classes(files: &[PathBuf]) -> HashMap<String, PathBuf> {
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    log::error!("PHPantom: thread panic in scan_files_parallel_classes");
+                    Vec::new()
+                })
+            })
+            .collect()
     });
 
     let total: usize = results.iter().map(|v| v.len()).sum();
@@ -463,7 +512,15 @@ fn scan_files_parallel_psr4(files: &[(PathBuf, String)]) -> HashMap<String, Path
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    log::error!("PHPantom: thread panic in scan_files_parallel_psr4");
+                    Vec::new()
+                })
+            })
+            .collect()
     });
 
     let total: usize = results.iter().map(|v| v.len()).sum();
@@ -533,7 +590,15 @@ fn scan_files_parallel_full(files: &[PathBuf]) -> WorkspaceScanResult {
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    log::error!("PHPantom: thread panic in scan_files_parallel_full");
+                    Vec::new()
+                })
+            })
+            .collect()
     });
 
     let mut result = WorkspaceScanResult::default();
@@ -1489,16 +1554,20 @@ fn value_to_strings(value: &serde_json::Value) -> Vec<String> {
     }
 }
 
-/// Scan a directory for `.php` files using gitignore-aware walking and
-/// add discovered class names to the classmap.
+/// Collect all `.php` file paths under a directory using gitignore-aware
+/// walking.  Paths are appended to `out`.  No file content is read.
 ///
 /// Uses the `ignore` crate's `WalkBuilder` to respect `.gitignore`
 /// rules at every level.  Hidden directories are skipped automatically.
 /// Directories whose absolute path is in `vendor_dir_paths` are also
-/// skipped.
-/// Collect all `.php` file paths under a directory using gitignore-aware
-/// walking.  Paths are appended to `out`.  No file content is read.
-fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf], out: &mut Vec<PathBuf>) {
+/// skipped.  Individual files whose path appears in `skip_paths` are
+/// excluded (used by the merged classmap + self-scan pipeline).
+fn collect_php_files(
+    dir: &Path,
+    vendor_dir_paths: &[PathBuf],
+    skip_paths: &HashSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
     use ignore::WalkBuilder;
 
     let vendor_paths: Vec<PathBuf> = vendor_dir_paths.to_vec();
@@ -1524,7 +1593,10 @@ fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf], out: &mut Vec<Pat
     for entry in walker.flatten() {
         let path = entry.path();
         if path.is_file() && path.extension().is_some_and(|ext| ext == "php") {
-            out.push(path.to_path_buf());
+            let owned = path.to_path_buf();
+            if !skip_paths.contains(&owned) {
+                out.push(owned);
+            }
         }
     }
 }
@@ -1532,10 +1604,13 @@ fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf], out: &mut Vec<Pat
 /// Collect all `.php` file paths under a PSR-4 directory, computing the
 /// expected FQN for each file from its relative path.  Paths and
 /// expected FQNs are appended to `out`.  No file content is read.
+///
+/// Files whose path appears in `skip_paths` are excluded.
 fn collect_psr4_php_files(
     base_path: &Path,
     namespace_prefix: &str,
     vendor_dir_paths: &[PathBuf],
+    skip_paths: &HashSet<PathBuf>,
     out: &mut Vec<(PathBuf, String)>,
 ) {
     use ignore::WalkBuilder;
@@ -1563,6 +1638,10 @@ fn collect_psr4_php_files(
     for entry in walker.flatten() {
         let path = entry.path();
         if path.is_file() && path.extension().is_some_and(|ext| ext == "php") {
+            let owned = path.to_path_buf();
+            if skip_paths.contains(&owned) {
+                continue;
+            }
             // Compute expected FQN from the file path relative to the
             // PSR-4 base directory.
             let relative = match path.strip_prefix(base_path) {
@@ -1578,7 +1657,7 @@ fn collect_psr4_php_files(
             // Convert path separators to namespace separators
             let expected_fqn = format!("{}{}", namespace_prefix, stem.replace('/', "\\"));
 
-            out.push((path.to_path_buf(), expected_fqn));
+            out.push((owned, expected_fqn));
         }
     }
 }

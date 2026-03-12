@@ -174,6 +174,25 @@ impl Backend {
     /// the target version are filtered out during extraction.  Used when
     /// parsing phpstorm-stubs so that only the correct variant of each
     /// function, method, or parameter is presented.
+    ///
+    /// # Consistency model
+    ///
+    /// The five maps (`ast_map`, `use_map`, `namespace_map`, `fqn_index`,
+    /// `resolved_class_cache`) are written sequentially, not under a
+    /// single lock.  A concurrent reader could briefly observe a state
+    /// where some maps reflect the new parse while others still hold
+    /// stale data for the same URI.  This is acceptable because:
+    ///
+    /// - All writes complete within microseconds.
+    /// - Every consumer clones the data it needs from each map
+    ///   independently and does not rely on cross-map atomicity.
+    /// - An audit of all read sites (completion, diagnostics, hover,
+    ///   definition, references, highlighting) confirmed that none
+    ///   requires a consistent snapshot across multiple maps.
+    ///
+    /// If a future change adds a reader that checks two of these maps
+    /// for consistency within the same request, the writes here must
+    /// be batched under a single coordination mechanism.
     pub(crate) fn parse_and_cache_content_versioned(
         &self,
         content: &str,

@@ -59,7 +59,7 @@ Four indexing strategies, selectable via `.phpantom.toml`:
 
 ```toml
 [indexing]
-# "composer" (default) - use composer classmap, self-scan on fallback
+# "composer" (default) - merged classmap + self-scan
 # "self"    - always self-scan, ignore composer classmap
 # "full"    - background-parse all project files for rich intelligence
 # "none"    - no proactive scanning
@@ -68,17 +68,18 @@ strategy = "composer"
 
 ### `"composer"` (default)
 
-Use Composer's classmap when available and complete. Fall back to
-self-scan when the classmap is missing or incomplete. This is the
-zero-config experience. Phase 1.5 will merge these into a single
-pipeline where the classmap acts as a skip set for the self-scanner.
+Merged classmap + self-scan.  Load Composer's classmap (if it exists)
+as a skip set, then self-scan all PSR-4 and vendor directories for
+anything the classmap missed.  Whatever the classmap already covers is
+a free performance win; whatever it's missing, we find ourselves.  No
+completeness heuristic needed.  This is the zero-config experience.
 
 ### `"self"`
 
 Always build the classmap ourselves. Ignores `autoload_classmap.php`
-entirely. For users who prefer PHPantom's own scanner or who are
-actively editing `composer.json` dependencies. After Phase 1.5, this
-is equivalent to the merged approach with an empty skip set.
+entirely. Equivalent to the merged approach with an empty skip set.
+For users who prefer PHPantom's own scanner or who are actively
+editing `composer.json` dependencies.
 
 ### `"full"`
 
@@ -94,8 +95,7 @@ completion items. Memory usage grows proportionally to project size.
 No proactive file scanning. Still uses Composer's classmap if present,
 still resolves classes on demand when the user triggers completion or
 hover, still has embedded stubs. The only difference from `"composer"`
-is that it never falls back to self-scan when the classmap is missing
-or incomplete. This is essentially what PHPantom does today.
+is that it never self-scans to fill gaps.
 
 ---
 
@@ -109,70 +109,13 @@ configuration, and user feedback messages.
 ---
 
 ## Phase 1.5: Merged classmap + self-scan
-**Impact: High · Effort: Low**
 
-Instead of treating the Composer classmap and the self-scanner as
-mutually exclusive strategies (use the classmap when it looks complete,
-fall back to self-scan when it doesn't), merge them into a single
-pipeline that always runs:
-
-1. **Load the Composer classmap** if it exists. Don't validate it,
-   don't check whether it's complete, don't check whether it's stale.
-   Just parse `autoload_classmap.php` into the `HashMap<String, PathBuf>`
-   as today.
-2. **Self-scan all PSR-4 directories** (and vendor packages), but
-   **skip every file that already appears in the classmap**. The
-   classmap values are absolute paths, so the skip check is a
-   `HashSet::contains` on each walked path.
-3. The result is a merged index: classmap entries for everything
-   Composer already knew about, plus self-scanned entries for
-   everything it missed.
-
-### Why this is better
-
-- **No staleness problem.** If the classmap is out of date (new
-  classes added, old classes removed, files moved), the self-scanner
-  picks up the difference. We never serve stale data.
-- **No completeness check.** The current code inspects the classmap
-  to decide whether it's "complete enough" to trust. That heuristic
-  is fragile and was the source of the old `composer dump-autoload -o`
-  prompts. With the merged approach, we don't care. Whatever the
-  classmap has is a free performance win; whatever it's missing, we
-  find ourselves.
-- **Faster in every scenario.** When the classmap is complete (the
-  common case), the self-scanner walks directories but skips every
-  file, finishing almost instantly. When the classmap is empty or
-  absent, we fall back to a full self-scan exactly as today. When
-  the classmap is partial (e.g. vendor classes only), we skip vendor
-  files and scan only user code. Every state of the classmap helps.
-- **Less code.** The `"composer"` and `"self"` strategies collapse
-  into one path. The completeness-checking logic in `initialized`
-  can be removed. The `"none"` strategy remains for users who want
-  no proactive scanning at all.
-
-### Implementation
-
-1. In `initialized`, always load `autoload_classmap.php` when it
-   exists and collect the file paths into a `HashSet<PathBuf>`.
-2. Pass the skip set to `scan_psr4_directories` and
-   `scan_vendor_packages`. Before reading and scanning a file,
-   check whether its canonical path is in the skip set. If so,
-   skip it.
-3. Remove the "is the classmap complete?" branching. The pipeline
-   is always: load classmap → self-scan with skip set → merge.
-4. Remove the `"self"` strategy mode (or keep it as an alias for
-   the merged approach with an empty skip set, ignoring the
-   classmap entirely). Update `"composer"` to mean "merged."
-5. Update the strategy mode documentation and log messages.
-
-### Effect on Phase 2
-
-Phase 2 (staleness detection and auto-refresh) becomes much simpler.
-Single-file `did_save` refresh still applies (re-scan the saved file,
-update its classmap entries). But the expensive "did the whole
-classmap go stale?" question disappears. On `composer.lock` change,
-re-running the merged pipeline with the new classmap as the skip set
-is sufficient.
+No outstanding items. Implemented: the Composer classmap and the
+self-scanner run as a single merged pipeline. The classmap file paths
+serve as a skip set for the self-scanner, so whatever Composer already
+covers is a free performance win and whatever it missed is discovered
+automatically. The completeness heuristic has been removed. Monorepo
+subprojects use the same merged pipeline.
 
 ---
 

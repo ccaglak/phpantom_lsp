@@ -88,17 +88,21 @@ impl Default for IndexingConfig {
 /// The indexing strategy that controls class discovery behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IndexingStrategy {
-    /// Use Composer's classmap when available and complete. Fall back to
-    /// self-scan when the classmap is missing or incomplete.
+    /// Merged classmap + self-scan.  Load Composer's classmap (if it
+    /// exists) as a skip set, then self-scan all PSR-4 and vendor
+    /// directories for anything the classmap missed.  Whatever the
+    /// classmap already covers is a free performance win; whatever it's
+    /// missing, we find ourselves.  No completeness heuristic needed.
     #[default]
     Composer,
     /// Always build the classmap ourselves, ignoring Composer's generated
-    /// classmap.
+    /// classmap entirely.  Equivalent to the merged approach with an
+    /// empty skip set.
     SelfScan,
     /// Background-parse every PHP file for rich intelligence.
     Full,
-    /// No proactive scanning. Uses Composer's classmap if present but
-    /// never falls back to self-scan.
+    /// No proactive scanning.  Uses Composer's classmap if present but
+    /// never self-scans to fill gaps.
     None,
 }
 
