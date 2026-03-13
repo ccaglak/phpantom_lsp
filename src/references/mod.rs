@@ -1288,17 +1288,28 @@ impl Backend {
             files.chunks(chunk_size).map(|c| c.to_vec()).collect()
         };
 
+        // Use a 16 MB stack per thread.  The default 8 MB can overflow
+        // when parsing deeply-nested PHP files (e.g. WordPress
+        // admin-bar.php) because `extract_symbol_map` recurses through
+        // the full AST via `extract_from_expression` /
+        // `extract_from_statement`.  Stack overflows are fatal
+        // (abort, not panic) so `catch_unwind` cannot save us.
+        const PARSE_STACK_SIZE: usize = 16 * 1024 * 1024;
+
         std::thread::scope(|s| {
             for chunk in &chunks {
-                s.spawn(move || {
-                    for (uri, content) in chunk {
-                        if let Some(c) = content {
-                            self.update_ast(uri, c);
-                        } else if let Some(c) = self.get_file_content(uri) {
-                            self.update_ast(uri, &c);
+                std::thread::Builder::new()
+                    .stack_size(PARSE_STACK_SIZE)
+                    .spawn_scoped(s, move || {
+                        for (uri, content) in chunk {
+                            if let Some(c) = content {
+                                self.update_ast(uri, c);
+                            } else if let Some(c) = self.get_file_content(uri) {
+                                self.update_ast(uri, &c);
+                            }
                         }
-                    }
-                });
+                    })
+                    .expect("failed to spawn parse thread");
             }
         });
     }
@@ -1333,15 +1344,20 @@ impl Backend {
             files.chunks(chunk_size).collect()
         };
 
+        const PARSE_STACK_SIZE: usize = 16 * 1024 * 1024;
+
         std::thread::scope(|s| {
             for chunk in &chunks {
-                s.spawn(move || {
-                    for (uri, path) in *chunk {
-                        if let Ok(content) = std::fs::read_to_string(path) {
-                            self.update_ast(uri, &content);
+                std::thread::Builder::new()
+                    .stack_size(PARSE_STACK_SIZE)
+                    .spawn_scoped(s, move || {
+                        for (uri, path) in *chunk {
+                            if let Ok(content) = std::fs::read_to_string(path) {
+                                self.update_ast(uri, &content);
+                            }
                         }
-                    }
-                });
+                    })
+                    .expect("failed to spawn parse thread");
             }
         });
     }

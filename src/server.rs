@@ -97,6 +97,9 @@ impl LanguageServer for Backend {
                         work_done_progress: None,
                     },
                 })),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -398,6 +401,32 @@ impl LanguageServer for Backend {
 
         self.handle_with_position("rename", &uri, position, |content| {
             self.handle_rename(&uri, content, position, &new_name)
+        })
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri.to_string();
+
+        self.handle_with_uri("document_symbol", &uri, |content| {
+            self.handle_document_symbol(&uri, content)
+        })
+    }
+
+    #[allow(deprecated)] // SymbolInformation::deprecated is deprecated in the LSP types crate
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        Ok(self.handle_workspace_symbol(&params.query))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = params.text_document.uri.to_string();
+        self.handle_with_uri("folding_range", &uri, |content| {
+            self.handle_folding_range(content)
         })
     }
 }

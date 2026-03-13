@@ -120,25 +120,6 @@ block. This generates the entire block from scratch.
 
 ---
 
-## 4. Document Symbols (`textDocument/documentSymbol`)
-**Impact: Medium · Effort: Low**
-
-No outline view. Editors can't show a file's class/method/property structure.
-
----
-
-## 5. Workspace Symbols (`workspace/symbol`)
-**Impact: Medium · Effort: Low-Medium**
-
-Can't search for classes/functions across the project. The `ast_map`
-already contains `ClassInfo` records (with `keyword_offset`) and
-`global_functions` contains `FunctionInfo` records (with `name_offset`)
-for every parsed file. A workspace symbol handler would iterate these
-maps, filter by the query string, and convert stored byte offsets to
-LSP `Location`s.
-
----
-
 ## 6. Partial result streaming via `$/progress`
 **Impact: Medium · Effort: Medium-High**
 
@@ -348,41 +329,6 @@ built-in PHP symbols from stubs are affected.
 write them to a temporary directory and use real file URIs), or accept
 that stub go-to-definition is out of scope and document it as a known
 limitation.
-
----
-
-## 12. Folding Ranges (`textDocument/foldingRange`)
-**Impact: Medium · Effort: Low**
-
-Code folding for classes, methods, functions, arrays, comment blocks,
-and multi-line argument lists. Most editors provide basic indentation-
-based folding without LSP support, but an AST-aware provider is more
-accurate (e.g. it won't break on blank lines inside a method body).
-
-Mago's AST provides span information for every block-level construct.
-Walk the AST once and emit `FoldingRange` entries for each compound
-statement, array literal, argument list, and doc comment. Set the
-`kind` field to `FoldingRangeKind::Comment` for doc blocks and
-`FoldingRangeKind::Region` for code blocks.
-
-**Implementation:**
-
-1. **Register the capability** — set `folding_range_provider:
-   Some(FoldingRangeProviderCapability::Simple(true))` in
-   `ServerCapabilities`.
-
-2. **Handler:** Walk the file's AST and emit a `FoldingRange` for each:
-   - Class / interface / trait / enum body
-   - Method / function body (compound statement)
-   - Closure / arrow function body (if multi-line)
-   - Array literals spanning multiple lines
-   - Multi-line argument and parameter lists
-   - Doc comments (`/** ... */`)
-   - Multi-line single-line comment blocks (`// ...` sequences)
-   - `if`/`else`/`switch`/`match`/`try`/`catch`/`finally` blocks
-
-3. **Collapse text** — set `collapsed_text` to a summary where useful
-   (e.g. `"/** ... */"` for doc comments, `"{ ... }"` for code blocks).
 
 ---
 

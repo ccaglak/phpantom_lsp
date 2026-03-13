@@ -82,6 +82,8 @@ pub mod config;
 mod definition;
 pub mod diagnostics;
 pub mod docblock;
+mod document_symbols;
+mod folding;
 mod highlight;
 mod hover;
 pub(crate) mod inheritance;
@@ -98,6 +100,7 @@ pub(crate) mod symbol_map;
 pub mod types;
 mod util;
 pub(crate) mod virtual_members;
+mod workspace_symbols;
 
 #[cfg(test)]
 pub mod test_fixtures;
@@ -507,6 +510,12 @@ impl Backend {
     /// to simulate Composer autoload file discovery).
     pub fn autoload_file_paths(&self) -> &Arc<RwLock<Vec<PathBuf>>> {
         &self.autoload_file_paths
+    }
+
+    /// Borrow the open files map (used by integration tests to inject
+    /// file content without going through the LSP `didOpen` path).
+    pub fn open_files(&self) -> &Arc<RwLock<HashMap<String, Arc<String>>>> {
+        &self.open_files
     }
 
     /// Return the configured PHP version.

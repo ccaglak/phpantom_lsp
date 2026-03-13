@@ -3,7 +3,7 @@
 A fast, lightweight PHP language server written in Rust. Ready in seconds, uses a fraction of the RAM other language servers need, and stays responsive throughout. No indexing phase, no waiting.
 
 > [!NOTE]
-> PHPantom is in active development. The core editing features are solid and used daily on production codebases. Extract Function, workspace symbols, and broader refactoring tools are still on the roadmap.
+> PHPantom is in active development. The core editing features are solid and used daily on production codebases. Extract Function, formatting proxy, and broader refactoring tools are still on the roadmap.
 
 ## Features
 
@@ -19,8 +19,9 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Auto-import | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Go-to-implementation | ✅ | 💰 | ❌ | ✅ | ✅ |
 | Go-to-type-definition | ✅ | 💰 | ✅ | ✅ | ✅ |
-| Workspace symbols | ❌ | ✅ | ✅ | ✅ | ✅ |
-| Document symbols / outline | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Workspace symbols | 🚧 | ✅ | ✅ | ✅ | ✅ |
+| Document symbols / outline | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Folding ranges | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Formatting | ❌ | ✅ | ✅ | 🧩 | ✅ |
 | Code lens | ❌ | 💰 | ✅ | ❌ | ✅ |
 | Inlay hints | ❌ | 💰 | ❌ | ❌ | ✅ |

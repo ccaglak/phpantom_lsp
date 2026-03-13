@@ -48,11 +48,7 @@ feature surface grows.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
-| 19 | Document Symbols (`textDocument/documentSymbol`) | Low | LSP Features | [lsp-features.md §4](todo/lsp-features.md#4-document-symbols-textdocumentdocumentsymbol) |
-| 20 | Workspace Symbols (`workspace/symbol`) | Low-Medium | LSP Features | [lsp-features.md §5](todo/lsp-features.md#5-workspace-symbols-workspacesymbol) |
 | 113 | Semantic Tokens (`textDocument/semanticTokens/full`) | Medium | LSP Features | [lsp-features.md §21](todo/lsp-features.md#21-semantic-tokens-textdocumentsemantictokensfull) |
-| 21 | Folding Ranges (`textDocument/foldingRange`) | Low | LSP Features | [lsp-features.md §12](todo/lsp-features.md#12-folding-ranges-textdocumentfoldingrange) |
 | 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
 | 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
 | 81 | Work-done progress for GTI and Find References | Low | LSP Features | [lsp-features.md §18](todo/lsp-features.md#18-work-done-progress-for-gti-and-find-references) |

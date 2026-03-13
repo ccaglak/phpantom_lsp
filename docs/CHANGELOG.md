@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Document Symbols.** The outline sidebar and breadcrumbs now show classes, interfaces, traits, enums, methods, properties, constants, and standalone functions with correct nesting, icons, visibility detail, and deprecation tags.
+- **Workspace Symbols.** "Go to Symbol in Workspace" (Ctrl+T / Cmd+T) searches classes, interfaces, traits, enums, functions, and constants across all indexed files. Vendor classes from the Composer classmap and discovered classes from the class index are included when a query is provided. Results include namespace context and deprecation markers.
+- **Folding Ranges.** AST-aware code folding for class bodies, method/function bodies, closures, arrays, argument/parameter lists, if/else/switch/match/try/catch/finally blocks, doc comments, and consecutive single-line comment groups.
+
 ### Changed
 
 - **Cross-file resolution.** Fully-qualified class names are now stored in a single canonical form throughout the system, eliminating a class of bugs where name comparisons failed because one side had a leading backslash and the other did not. This improves reliability of completion, hover, go-to-definition, and cache invalidation across files.
