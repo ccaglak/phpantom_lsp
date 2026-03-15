@@ -7235,3 +7235,134 @@ class Shelter {
         text
     );
 }
+
+// ─── Array shape element type inference ─────────────────────────────────────
+
+/// Hovering on a variable assigned from an array literal should show
+/// resolved types for parameter variables, property accesses, and method
+/// calls instead of `mixed`.
+#[test]
+fn hover_array_shape_infers_parameter_and_property_types() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Decimal {
+    public function toFixed(int $decimals): string { return ''; }
+}
+class Tracker {
+    private string $websiteUuid = 'abc';
+    public function cartTracking(string $trackingUserId, string $url, Decimal $total, array $productIds): void {
+        $params = [
+            'websiteUuid'    => $this->websiteUuid,
+            'trackingUserId' => $trackingUserId,
+            'total'          => $total->toFixed(2),
+            'url'            => $url,
+        ];
+        $params;
+    }
+}
+"#;
+
+    // Hover on `$params` at line 13 (the bare `$params;` usage)
+    let hover = hover_at(&backend, uri, content, 13, 9).expect("expected hover on $params");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array{"),
+        "Hover should show array shape, got: {}",
+        text
+    );
+    assert!(
+        text.contains("websiteUuid: string"),
+        "websiteUuid should be string (from property), got: {}",
+        text
+    );
+    assert!(
+        text.contains("trackingUserId: string"),
+        "trackingUserId should be string (from parameter), got: {}",
+        text
+    );
+    assert!(
+        text.contains("total: string"),
+        "total should be string (from toFixed return type), got: {}",
+        text
+    );
+    assert!(
+        text.contains("url: string"),
+        "url should be string (from parameter), got: {}",
+        text
+    );
+    assert!(
+        !text.contains("mixed"),
+        "No values should be mixed, got: {}",
+        text
+    );
+}
+
+/// Property access on `$this` inside an array literal value should resolve
+/// to the property's declared type.
+#[test]
+fn hover_array_shape_infers_this_property_access() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    private int $retries = 3;
+    private string $host = 'localhost';
+    public function toArray(): array {
+        $data = [
+            'retries' => $this->retries,
+            'host'    => $this->host,
+        ];
+        $data;
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $data");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("retries: int"),
+        "retries should be int, got: {}",
+        text
+    );
+    assert!(
+        text.contains("host: string"),
+        "host should be string, got: {}",
+        text
+    );
+}
+
+/// Method call return types used as array literal values should be
+/// resolved in the array shape.
+#[test]
+fn hover_array_shape_infers_method_call_return_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Clock {
+    public function now(): int { return time(); }
+}
+class Logger {
+    public function build(Clock $clock): void {
+        $meta = [
+            'timestamp' => $clock->now(),
+            'level'     => 'info',
+        ];
+        $meta;
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 10, 9).expect("expected hover on $meta");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("timestamp: int"),
+        "timestamp should be int (from Clock::now()), got: {}",
+        text
+    );
+    assert!(
+        text.contains("level: string"),
+        "level should be string (from literal), got: {}",
+        text
+    );
+}

@@ -960,11 +960,39 @@ fn infer_element_type<'b>(value: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
         Expression::Variable(Variable::Direct(dv)) => {
             let var_text = dv.name.to_string();
             let offset = value.span().start.offset as usize;
-            docblock::find_iterable_raw_type_in_source(ctx.content, offset, &var_text)
+            // Try iterable docblock first (e.g. `@var list<User> $items`).
+            if let Some(t) =
+                docblock::find_iterable_raw_type_in_source(ctx.content, offset, &var_text)
+            {
+                return Some(t);
+            }
+            // Fall back to the full variable type resolution pipeline
+            // (parameter type hints, @param docblocks, assignments,
+            // foreach bindings, etc.).  This handles cases like
+            // `string $trackingUserId` where the variable is a scalar
+            // parameter, not an iterable.
+            let current_class = ctx
+                .all_classes
+                .iter()
+                .find(|c| c.name == ctx.current_class.name)
+                .map(|c| c.as_ref());
+            crate::hover::variable_type::resolve_variable_type_string(
+                &var_text,
+                ctx.content,
+                offset as u32,
+                current_class,
+                ctx.all_classes,
+                ctx.class_loader,
+                ctx.function_loader,
+            )
         }
         // ── Parenthesized ──
         Expression::Parenthesized(p) => infer_element_type(p.expression, ctx),
-        _ => None,
+        // ── Property access, method calls on objects, etc. ──
+        // Delegate to the iterable extractor which already resolves
+        // property type hints and method return types through the
+        // class hierarchy.
+        _ => super::foreach_resolution::extract_rhs_iterable_raw_type(value, ctx),
     }
 }
 
