@@ -88,7 +88,13 @@ impl Backend {
                             span.end as usize,
                         )
                     {
-                        out.push(deprecated_diagnostic(range, &cls.name, None, msg));
+                        out.push(deprecated_diagnostic(
+                            range,
+                            &cls.name,
+                            None,
+                            msg,
+                            &cls.see_refs,
+                        ));
                     }
                 }
 
@@ -180,6 +186,7 @@ impl Backend {
                                 member_name,
                                 Some(&resolved.name),
                                 msg,
+                                &method.see_refs,
                             ));
                         }
                     } else {
@@ -203,6 +210,7 @@ impl Backend {
                                 member_name,
                                 Some(&resolved.name),
                                 msg,
+                                &prop.see_refs,
                             ));
                             continue;
                         }
@@ -223,13 +231,21 @@ impl Backend {
                                 member_name,
                                 Some(&resolved.name),
                                 msg,
+                                &constant.see_refs,
                             ));
                         }
                     }
                 }
 
                 // ── Standalone function calls ────────────────────────────
-                SymbolKind::FunctionCall { name, .. } => {
+                SymbolKind::FunctionCall {
+                    name,
+                    is_definition,
+                } => {
+                    // Skip the declaration site — only flag call sites.
+                    if *is_definition {
+                        continue;
+                    }
                     if let Some(func_info) =
                         self.resolve_function_name(name, &file_use_map, &file_namespace)
                         && let Some(msg) = &func_info.deprecation_message
@@ -239,7 +255,13 @@ impl Backend {
                             span.end as usize,
                         )
                     {
-                        out.push(deprecated_diagnostic(range, name, None, msg));
+                        out.push(deprecated_diagnostic(
+                            range,
+                            name,
+                            None,
+                            msg,
+                            &func_info.see_refs,
+                        ));
                     }
                 }
 
@@ -258,6 +280,7 @@ fn deprecated_diagnostic(
     symbol_name: &str,
     class_name: Option<&str>,
     deprecation_message: &str,
+    see_refs: &[String],
 ) -> Diagnostic {
     let display = if let Some(cls) = class_name {
         format!("{}::{}", cls, symbol_name)
@@ -265,10 +288,23 @@ fn deprecated_diagnostic(
         symbol_name.to_string()
     };
 
-    let message = if deprecation_message.is_empty() {
+    // Combine the deprecation message with @see references so the
+    // diagnostic tooltip includes pointers to replacement APIs.
+    let full_message = if see_refs.is_empty() {
+        deprecation_message.to_string()
+    } else {
+        let see_list = see_refs.join(", ");
+        if deprecation_message.is_empty() {
+            format!("See: {}", see_list)
+        } else {
+            format!("{} (see: {})", deprecation_message, see_list)
+        }
+    };
+
+    let message = if full_message.is_empty() {
         format!("'{}' is deprecated", display)
     } else {
-        format!("'{}' is deprecated: {}", display, deprecation_message)
+        format!("'{}' is deprecated: {}", display, full_message)
     };
 
     Diagnostic {

@@ -80,6 +80,8 @@ struct ClassDocblockInfo {
     mixins: Vec<String>,
     /// URLs from `@link` and `@see` tags in the class-level docblock.
     links: Vec<String>,
+    /// `@see` references from the class-level docblock.
+    see_refs: Vec<String>,
     /// Raw class-level docblock text, preserved for deferred `@method` /
     /// `@property` parsing by the `PHPDocProvider`.
     raw_docblock: Option<String>,
@@ -109,7 +111,7 @@ fn extract_class_docblock<'a>(
         .collect();
 
     ClassDocblockInfo {
-        deprecation_message: docblock::extract_deprecation_with_see(doc_text),
+        deprecation_message: docblock::extract_deprecation_message(doc_text),
         template_params,
         template_param_bounds,
         extends_generics: docblock::extract_generics_tag(doc_text, "@extends"),
@@ -118,6 +120,7 @@ fn extract_class_docblock<'a>(
         type_aliases: docblock::extract_type_aliases(doc_text),
         mixins: docblock::extract_mixin_tags(doc_text),
         links: docblock::extract_link_urls(doc_text),
+        see_refs: docblock::extract_see_references(doc_text),
         raw_docblock: Some(doc_text.to_string()),
     }
 }
@@ -714,6 +717,7 @@ impl Backend {
                         deprecation_message: class_depr.message,
                         deprecated_replacement: class_depr.replacement,
                         links: doc_info.links,
+                        see_refs: doc_info.see_refs,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: doc_info.extends_generics,
@@ -800,6 +804,7 @@ impl Backend {
                         deprecation_message: iface_depr.message,
                         deprecated_replacement: iface_depr.replacement,
                         links: doc_info.links,
+                        see_refs: doc_info.see_refs,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: doc_info.extends_generics,
@@ -867,6 +872,7 @@ impl Backend {
                         deprecation_message: trait_depr.message,
                         deprecated_replacement: trait_depr.replacement,
                         links: doc_info.links,
+                        see_refs: doc_info.see_refs,
                         template_params: doc_info.template_params,
                         template_param_bounds: doc_info.template_param_bounds,
                         extends_generics: vec![],
@@ -959,6 +965,7 @@ impl Backend {
                         deprecation_message: enum_depr.message,
                         deprecated_replacement: enum_depr.replacement,
                         links: doc_info.links,
+                        see_refs: doc_info.see_refs,
                         template_params: vec![],
                         template_param_bounds: HashMap::new(),
                         extends_generics: vec![],
@@ -1067,6 +1074,7 @@ impl Backend {
             trait_precedences,
             trait_aliases,
             links: Vec::new(),
+            see_refs: Vec::new(),
             class_docblock: None,
             file_namespace: None,
             backed_type: None,
@@ -1624,7 +1632,7 @@ impl Backend {
                         });
 
                         let depr_info = merge_deprecation_info(
-                            docblock_text.and_then(docblock::extract_deprecation_with_see),
+                            docblock_text.and_then(docblock::extract_deprecation_message),
                             &method.attribute_lists,
                             doc_ctx,
                         );
@@ -1717,6 +1725,7 @@ impl Backend {
                                     visibility: prop_visibility,
                                     deprecation_message: None,
                                     deprecated_replacement: None,
+                                    see_refs: Vec::new(),
                                     is_virtual: false,
                                 });
                             }
@@ -1790,6 +1799,10 @@ impl Backend {
                         .map(docblock::extract_link_urls)
                         .unwrap_or_default();
 
+                    let see_refs = method_docblock_text
+                        .map(docblock::extract_see_references)
+                        .unwrap_or_default();
+
                     // Populate per-parameter descriptions from `@param` tags.
                     if let Some(doc_text) = method_docblock_text {
                         for param in &mut parameters {
@@ -1815,6 +1828,7 @@ impl Backend {
                         description: method_description,
                         return_description,
                         links,
+                        see_refs,
                         is_static,
                         visibility,
                         conditional_return,
@@ -1839,13 +1853,19 @@ impl Backend {
                         Property::Hooked(h) => Some(&h.attribute_lists),
                     };
 
-                    // Apply PHPDoc `@var` override, `@deprecated`, and description
-                    // for each property.
+                    // Apply PHPDoc `@var` override, `@deprecated`, `@see`, and
+                    // description for each property.
                     if let Some(ctx) = doc_ctx
                         && let Some(doc_text) =
                             docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
                     {
-                        let docblock_msg = docblock::extract_deprecation_with_see(doc_text);
+                        let docblock_msg = docblock::extract_deprecation_message(doc_text);
+                        let see_refs = docblock::extract_see_references(doc_text);
+                        if !see_refs.is_empty() {
+                            for prop in &mut prop_infos {
+                                prop.see_refs = see_refs.clone();
+                            }
+                        }
                         // Use merge_deprecation_info for version-aware suppression
                         // and replacement extraction.  Re-use the attribute lists
                         // from the property variant.
@@ -1910,21 +1930,20 @@ impl Backend {
                 ClassLikeMember::Constant(constant) => {
                     let type_hint = constant.hint.as_ref().map(|h| extract_hint_string(h));
                     let visibility = extract_visibility(constant.modifiers.iter());
+                    let const_docblock_text = doc_ctx.and_then(|ctx| {
+                        docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
+                    });
                     let depr_info = {
-                        let docblock_msg = if let Some(ctx) = doc_ctx {
-                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
-                                .and_then(docblock::extract_deprecation_with_see)
-                        } else {
-                            None
-                        };
+                        let docblock_msg =
+                            const_docblock_text.and_then(docblock::extract_deprecation_message);
                         merge_deprecation_info(docblock_msg, &constant.attribute_lists, doc_ctx)
                     };
                     let deprecation_message = depr_info.message;
                     let constant_deprecated_replacement = depr_info.replacement;
-                    let const_description = doc_ctx
-                        .and_then(|ctx| {
-                            docblock::get_docblock_text_for_node(ctx.trivias, ctx.content, member)
-                        })
+                    let const_see_refs = const_docblock_text
+                        .map(docblock::extract_see_references)
+                        .unwrap_or_default();
+                    let const_description = const_docblock_text
                         .and_then(|doc| crate::hover::extract_docblock_description(Some(doc)));
                     for item in constant.items.iter() {
                         let value = doc_ctx.and_then(|ctx| {
@@ -1939,6 +1958,7 @@ impl Backend {
                             visibility,
                             deprecation_message: deprecation_message.clone(),
                             deprecated_replacement: constant_deprecated_replacement.clone(),
+                            see_refs: const_see_refs.clone(),
                             description: const_description.clone(),
                             is_enum_case: false,
                             enum_value: None,
@@ -1966,6 +1986,7 @@ impl Backend {
                         visibility: Visibility::Public,
                         deprecation_message: None,
                         deprecated_replacement: None,
+                        see_refs: Vec::new(),
                         description: None,
                         is_enum_case: true,
                         enum_value,

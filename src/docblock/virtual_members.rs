@@ -210,6 +210,7 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
             description: None,
             return_description: None,
             links: Vec::new(),
+            see_refs: Vec::new(),
             is_static,
             visibility: Visibility::Public,
             conditional_return: None,

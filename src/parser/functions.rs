@@ -65,6 +65,7 @@ impl Backend {
                         description,
                         return_description,
                         link_urls,
+                        see_refs,
                         func_template_params,
                         func_template_bindings,
                     ) = if let Some(ctx) = doc_ctx {
@@ -120,7 +121,7 @@ impl Backend {
                             .unwrap_or_default();
 
                         let depr_info = merge_deprecation_info(
-                            docblock_text.and_then(docblock::extract_deprecation_with_see),
+                            docblock_text.and_then(docblock::extract_deprecation_message),
                             &func.attribute_lists,
                             Some(ctx),
                         );
@@ -136,6 +137,10 @@ impl Backend {
                             .map(docblock::extract_link_urls)
                             .unwrap_or_default();
 
+                        let see_refs = docblock_text
+                            .map(docblock::extract_see_references)
+                            .unwrap_or_default();
+
                         (
                             effective,
                             conditional,
@@ -145,6 +150,7 @@ impl Backend {
                             desc,
                             ret_desc,
                             link_urls,
+                            see_refs,
                             tpl_params,
                             tpl_bindings,
                         )
@@ -161,6 +167,7 @@ impl Backend {
                             None,
                             None,
                             None,
+                            Vec::new(),
                             Vec::new(),
                             Vec::new(),
                             Vec::new(),
@@ -213,6 +220,7 @@ impl Backend {
                         description,
                         return_description,
                         links: link_urls,
+                        see_refs,
                         namespace: current_namespace.clone(),
                         conditional_return,
                         type_assertions,

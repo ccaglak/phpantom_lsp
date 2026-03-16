@@ -180,6 +180,7 @@ fn type_hint_to_classes_depth(
                 visibility: Visibility::Public,
                 deprecation_message: None,
                 deprecated_replacement: None,
+                see_refs: Vec::new(),
                 is_virtual: true,
             })
             .collect();

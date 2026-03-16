@@ -325,7 +325,10 @@ pub(super) fn build_class_member_block_with_var(
 }
 
 /// Build hover content for a standalone function.
-pub(super) fn hover_for_function(func: &FunctionInfo) -> Hover {
+pub(super) fn hover_for_function(
+    func: &FunctionInfo,
+    resolved_see: Option<&[ResolvedSeeRef]>,
+) -> Hover {
     let native_params = format_native_params(&func.parameters);
 
     // Use native return type in the code block.
@@ -352,6 +355,21 @@ pub(super) fn hover_for_function(func: &FunctionInfo) -> Hover {
         lines.push(format!("[{}]({})", url, url));
     }
 
+    if let Some(refs) = resolved_see {
+        format_see_refs(refs, &func.links, &mut lines);
+    } else {
+        // Fallback: render raw @see refs without location links.
+        let unresolved: Vec<ResolvedSeeRef> = func
+            .see_refs
+            .iter()
+            .map(|raw| ResolvedSeeRef {
+                raw: raw.clone(),
+                location_uri: None,
+            })
+            .collect();
+        format_see_refs(&unresolved, &func.links, &mut lines);
+    }
+
     // Build the readable param/return section as markdown.
     if let Some(section) = build_param_return_section(
         &func.parameters,
@@ -367,6 +385,61 @@ pub(super) fn hover_for_function(func: &FunctionInfo) -> Hover {
     lines.push(code);
 
     make_hover(lines.join("\n\n"))
+}
+
+/// A `@see` reference that has been resolved to an optional file location.
+///
+/// When `location_uri` is `Some`, the symbol name is rendered as a
+/// clickable link that opens the target file at the definition site.
+pub(super) struct ResolvedSeeRef {
+    /// The raw text after `@see` (e.g. `"UnsetDemo"`,
+    /// `"MyClass::method() Use this instead"`,
+    /// `"https://example.com/docs"`).
+    pub raw: String,
+    /// File URI with line fragment (e.g. `"file:///path/to/file.php#L42"`)
+    /// for symbol references that could be resolved to a definition site.
+    /// `None` for URLs or unresolvable symbols.
+    pub location_uri: Option<String>,
+}
+
+/// Format `@see` references as hover lines.
+///
+/// URL references are rendered as clickable markdown links.
+/// Symbol references with a resolved location are rendered as clickable
+/// file links that jump to the definition site.  Unresolved symbols are
+/// rendered as inline code.
+/// Each entry becomes a separate line in the hover popup.
+pub(super) fn format_see_refs(
+    see_refs: &[ResolvedSeeRef],
+    existing_links: &[String],
+    lines: &mut Vec<String>,
+) {
+    for entry in see_refs {
+        // Split into the first token (symbol or URL) and optional description.
+        let (target, description) = match entry.raw.split_once(|c: char| c.is_whitespace()) {
+            Some((t, d)) => (t.trim(), Some(d.trim())),
+            None => (entry.raw.as_str(), None),
+        };
+
+        let desc_suffix = description.map(|d| format!(" {}", d)).unwrap_or_default();
+
+        if target.starts_with("http://") || target.starts_with("https://") {
+            // Skip URL references that already appear as @link entries.
+            if existing_links.iter().any(|l| l == target) {
+                continue;
+            }
+            // URL reference — render as a clickable markdown link,
+            // same style as @link.
+            lines.push(format!("[{}]({}){}", target, target, desc_suffix));
+        } else if let Some(ref uri) = entry.location_uri {
+            // Symbol reference with resolved location — render as a
+            // clickable link that opens the file at the definition line.
+            lines.push(format!("[`{}`]({}){}", target, uri, desc_suffix));
+        } else {
+            // Symbol reference without a known location — inline code.
+            lines.push(format!("`{}`{}", target, desc_suffix));
+        }
+    }
 }
 
 /// Extract the trailing description from a `@var` tag line.

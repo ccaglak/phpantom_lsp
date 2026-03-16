@@ -639,6 +639,7 @@ pub(crate) fn extract_property_info(property: &Property) -> Vec<PropertyInfo> {
                 visibility,
                 deprecation_message: None,
                 deprecated_replacement: None,
+                see_refs: Vec::new(),
                 is_virtual: false,
             }
         })

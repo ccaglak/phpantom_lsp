@@ -314,6 +314,13 @@ pub struct MethodInfo {
     /// For `@link https://php.net/...` and `@see https://example.com/`,
     /// this collects all URLs found. Empty when no link/see URL tags are present.
     pub links: Vec<String>,
+    /// Symbol and URL references from `@see` tags in the docblock.
+    ///
+    /// Each entry is the raw text after `@see`, which may be a symbol
+    /// reference (e.g. `"UnsetDemo"`, `"MyClass::method()"`) or a URL
+    /// (e.g. `"https://example.com/docs"`).  Rendered in hover below
+    /// `@link` entries.
+    pub see_refs: Vec<String>,
     /// Whether the method is static.
     pub is_static: bool,
     /// Visibility of the method (public, protected, or private).
@@ -454,6 +461,7 @@ impl MethodInfo {
             description: None,
             return_description: None,
             links: Vec::new(),
+            see_refs: Vec::new(),
             is_static: false,
             visibility: Visibility::Public,
             conditional_return: None,
@@ -512,6 +520,13 @@ pub struct PropertyInfo {
     ///
     /// `None` when no replacement is specified.
     pub deprecated_replacement: Option<String>,
+    /// Symbol and URL references from `@see` tags in the property's docblock.
+    ///
+    /// Each entry is the raw text after `@see`, which may be a symbol
+    /// reference (e.g. `"NewProp"`, `"MyClass::$newProp"`) or a URL
+    /// (e.g. `"https://example.com/docs"`).  Rendered in hover below
+    /// `@link` entries, and appended to deprecation diagnostics.
+    pub see_refs: Vec<String>,
     /// Whether this property is a virtual (synthesized) member.
     ///
     /// Virtual properties come from `@property` / `@property-read` /
@@ -565,6 +580,7 @@ impl PropertyInfo {
             visibility: Visibility::Public,
             deprecation_message: None,
             deprecated_replacement: None,
+            see_refs: Vec::new(),
             is_virtual: true,
         }
     }
@@ -594,6 +610,13 @@ pub struct ConstantInfo {
     ///
     /// `None` when no replacement is specified.
     pub deprecated_replacement: Option<String>,
+    /// Symbol and URL references from `@see` tags in the constant's docblock.
+    ///
+    /// Each entry is the raw text after `@see`, which may be a symbol
+    /// reference (e.g. `"NEW_FLAG"`, `"MyClass::NEW_CONST"`) or a URL
+    /// (e.g. `"https://example.com/docs"`).  Rendered in hover below
+    /// `@link` entries, and appended to deprecation diagnostics.
+    pub see_refs: Vec<String>,
     /// Human-readable description extracted from the constant's docblock.
     ///
     /// This is the free-text portion of the docblock (before any `@tag` lines).
@@ -747,6 +770,13 @@ pub struct FunctionInfo {
     /// For `@link https://php.net/...` and `@see https://example.com/`,
     /// this collects all URLs found. Empty when no link/see URL tags are present.
     pub links: Vec<String>,
+    /// Symbol and URL references from `@see` tags in the docblock.
+    ///
+    /// Each entry is the raw text after `@see`, which may be a symbol
+    /// reference (e.g. `"UnsetDemo"`, `"MyClass::method()"`) or a URL
+    /// (e.g. `"https://example.com/docs"`).  Rendered in hover below
+    /// `@link` entries.
+    pub see_refs: Vec<String>,
     /// The namespace this function is declared in, if any.
     /// For example, `Amp\delay` would have namespace `Some("Amp")`.
     pub namespace: Option<String>,
@@ -1083,6 +1113,13 @@ pub struct ClassInfo {
     /// For `@link https://php.net/...` and `@see https://example.com/`,
     /// this collects all URLs found. Empty when no link/see URL tags are present.
     pub links: Vec<String>,
+    /// Symbol and URL references from `@see` tags in the class-level docblock.
+    ///
+    /// Each entry is the raw text after `@see`, which may be a symbol
+    /// reference (e.g. `"UnsetDemo"`, `"MyClass::method()"`) or a URL
+    /// (e.g. `"https://example.com/docs"`).  Rendered in hover below
+    /// `@link` entries.
+    pub see_refs: Vec<String>,
     /// Template parameter names declared via `@template` / `@template-covariant`
     /// / `@template-contravariant` tags in the class-level docblock.
     ///
@@ -1435,6 +1472,7 @@ mod tests {
             visibility: Visibility::Public,
             deprecation_message: None,
             deprecated_replacement: None,
+            see_refs: Vec::new(),
             description: None,
             is_enum_case: false,
             enum_value: None,

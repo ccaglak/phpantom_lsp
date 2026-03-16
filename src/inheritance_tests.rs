@@ -280,6 +280,7 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
         description: None,
         return_description: None,
         links: Vec::new(),
+        see_refs: Vec::new(),
         is_static: false,
         visibility: Visibility::Public,
         conditional_return: None,

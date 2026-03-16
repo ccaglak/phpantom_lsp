@@ -196,6 +196,107 @@ enum HoverMemberHit {
 }
 
 impl Backend {
+    /// Resolve `@see` references to file locations where possible.
+    ///
+    /// For each raw `@see` string, attempts to resolve symbol references
+    /// (class names, `Class::member()`, `Class::$prop`) to a `file://`
+    /// URI with a line fragment so that the hover popup renders them as
+    /// clickable links.  URLs and unresolvable symbols get `None`.
+    fn resolve_see_refs(
+        &self,
+        see_refs: &[String],
+        uri: &str,
+        content: &str,
+    ) -> Vec<ResolvedSeeRef> {
+        see_refs
+            .iter()
+            .map(|raw| {
+                // Extract the first token (the symbol or URL).
+                let target = raw
+                    .split_once(|c: char| c.is_whitespace())
+                    .map(|(t, _)| t.trim())
+                    .unwrap_or(raw.as_str());
+
+                // URLs don't need resolution.
+                if target.starts_with("http://") || target.starts_with("https://") {
+                    return ResolvedSeeRef {
+                        raw: raw.clone(),
+                        location_uri: None,
+                    };
+                }
+
+                // Try to resolve as a class or class::member reference.
+                let location_uri = self.resolve_see_target(target, uri, content);
+
+                ResolvedSeeRef {
+                    raw: raw.clone(),
+                    location_uri,
+                }
+            })
+            .collect()
+    }
+
+    /// Resolve a single `@see` target to a `file://` URI with line fragment.
+    ///
+    /// Handles:
+    /// - `ClassName` → class keyword offset
+    /// - `ClassName::method()` → method name offset
+    /// - `ClassName::$property` → property name offset
+    /// - `ClassName::CONSTANT` → constant name offset
+    fn resolve_see_target(&self, target: &str, uri: &str, content: &str) -> Option<String> {
+        // Check for Class::member syntax.
+        if let Some(sep) = target.find("::") {
+            let class_name = &target[..sep];
+            let mut member_part = target[sep + 2..].to_string();
+            // Strip trailing "()" from method references.
+            if member_part.ends_with("()") {
+                member_part.truncate(member_part.len() - 2);
+            }
+            // Strip leading "$" from property references.
+            let member_name = member_part.strip_prefix('$').unwrap_or(&member_part);
+
+            let cls = self.find_or_load_class(class_name)?;
+            let (class_uri, class_content) =
+                self.find_class_file_content(&cls.name, uri, content)?;
+
+            // Find the member's name_offset.
+            let offset = cls
+                .methods
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(member_name))
+                .map(|m| m.name_offset)
+                .or_else(|| {
+                    cls.properties
+                        .iter()
+                        .find(|p| p.name == member_name)
+                        .map(|p| p.name_offset)
+                })
+                .or_else(|| {
+                    cls.constants
+                        .iter()
+                        .find(|c| c.name == member_name)
+                        .map(|c| c.name_offset)
+                })
+                .filter(|&off| off > 0)?;
+
+            let pos = crate::util::offset_to_position(&class_content, offset as usize);
+            let parsed_uri = Url::parse(&class_uri).ok()?;
+            Some(format!("{}#L{}", parsed_uri, pos.line + 1))
+        } else {
+            // Plain class name.
+            let cls = self.find_or_load_class(target)?;
+            let (class_uri, class_content) =
+                self.find_class_file_content(&cls.name, uri, content)?;
+
+            if cls.keyword_offset == 0 {
+                return None;
+            }
+            let pos = crate::util::offset_to_position(&class_content, cls.keyword_offset as usize);
+            let parsed_uri = Url::parse(&class_uri).ok()?;
+            Some(format!("{}#L{}", parsed_uri, pos.line + 1))
+        }
+    }
+
     /// Search `class` for a member matching `member_name`.
     ///
     /// When `is_method_call` is true, only methods are considered.
@@ -368,7 +469,13 @@ impl Backend {
 
                     match member_result {
                         Some(HoverMemberHit::Method(ref method)) => {
-                            return Some(self.hover_for_method(method, &owner, &class_loader));
+                            return Some(self.hover_for_method(
+                                method,
+                                &owner,
+                                &class_loader,
+                                uri,
+                                content,
+                            ));
                         }
                         Some(HoverMemberHit::Property(prop)) => {
                             return Some(self.hover_for_property(&prop, &owner, &class_loader));
@@ -382,7 +489,7 @@ impl Backend {
                 None
             }
 
-            SymbolKind::ClassReference { name, is_fqn } => {
+            SymbolKind::ClassReference { name, is_fqn: _ } => {
                 // Check whether this class reference is in a `new ClassName` context.
                 // If so, show the __construct method hover instead of the class hover.
                 let before = &content[..symbol.start as usize];
@@ -404,11 +511,17 @@ impl Backend {
                         .iter()
                         .find(|m| m.name.eq_ignore_ascii_case("__construct"))
                     {
-                        return Some(self.hover_for_method(constructor, &merged, &class_loader));
+                        return Some(self.hover_for_method(
+                            constructor,
+                            &merged,
+                            &class_loader,
+                            uri,
+                            content,
+                        ));
                     }
                 }
 
-                self.hover_class_reference(name, *is_fqn, uri, &ctx, &class_loader, cursor_offset)
+                self.hover_class_reference(name, uri, content, &class_loader, cursor_offset)
             }
 
             SymbolKind::ClassDeclaration { .. } | SymbolKind::MemberDeclaration { .. } => {
@@ -418,7 +531,7 @@ impl Backend {
             }
 
             SymbolKind::FunctionCall { name, .. } => {
-                self.hover_function_call(name, &ctx, &function_loader)
+                self.hover_function_call(name, uri, content, &ctx, &function_loader)
             }
 
             SymbolKind::SelfStaticParent { keyword } => {
@@ -632,16 +745,15 @@ impl Backend {
     fn hover_class_reference(
         &self,
         name: &str,
-        _is_fqn: bool,
         uri: &str,
-        _ctx: &FileContext,
+        content: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
         cursor_offset: u32,
     ) -> Option<Hover> {
         let class_info = class_loader(name);
 
         if let Some(cls) = class_info {
-            Some(self.hover_for_class_info(&cls))
+            Some(self.hover_for_class_info(&cls, uri, content))
         } else {
             // Check whether this is a template parameter in scope.
             if let Some(tpl) = self.find_template_def_for_hover(uri, name, cursor_offset) {
@@ -724,11 +836,14 @@ impl Backend {
     fn hover_function_call(
         &self,
         name: &str,
+        uri: &str,
+        content: &str,
         _ctx: &FileContext,
         function_loader: &dyn Fn(&str) -> Option<FunctionInfo>,
     ) -> Option<Hover> {
         if let Some(func) = function_loader(name) {
-            Some(hover_for_function(&func))
+            let resolved_see = self.resolve_see_refs(&func.see_refs, uri, content);
+            Some(hover_for_function(&func, Some(&resolved_see)))
         } else {
             Some(make_hover(format!(
                 "```php\n<?php\nfunction {}();\n```",
@@ -743,6 +858,8 @@ impl Backend {
         method: &MethodInfo,
         owner: &ClassInfo,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+        uri: &str,
+        content: &str,
     ) -> Hover {
         let visibility = format_visibility(method.visibility);
         let static_kw = if method.is_static { "static " } else { "" };
@@ -807,6 +924,9 @@ impl Backend {
         for url in &method.links {
             lines.push(format!("[{}]({})", url, url));
         }
+
+        let resolved_see = self.resolve_see_refs(&method.see_refs, uri, content);
+        format_see_refs(&resolved_see, &method.links, &mut lines);
 
         // Build the readable param/return section as markdown.
         if let Some(section) = build_param_return_section(
@@ -971,7 +1091,7 @@ impl Backend {
     }
 
     /// Build hover content for a class/interface/trait/enum.
-    fn hover_for_class_info(&self, cls: &ClassInfo) -> Hover {
+    fn hover_for_class_info(&self, cls: &ClassInfo, uri: &str, content: &str) -> Hover {
         let kind_str = match cls.kind {
             ClassLikeKind::Class => {
                 if cls.is_abstract {
@@ -1024,6 +1144,9 @@ impl Backend {
         for url in &cls.links {
             lines.push(format!("[{}]({})", url, url));
         }
+
+        let resolved_see = self.resolve_see_refs(&cls.see_refs, uri, content);
+        format_see_refs(&resolved_see, &cls.links, &mut lines);
 
         // Show template parameters with variance and bounds.
         if let Some(ref docblock) = cls.class_docblock {

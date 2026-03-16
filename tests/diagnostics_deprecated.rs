@@ -913,6 +913,35 @@ class DeprecatedClass {
     );
 }
 
+#[test]
+fn deprecated_function_declaration_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_deprecated_func_decl.php";
+    let text = r#"<?php
+/** @deprecated We don't need time! */
+function formatUtfDate(string $tz): void {}
+
+formatUtfDate('');
+"#;
+
+    let diags = deprecated_diagnostics(&backend, uri, text);
+    let deprecated: Vec<_> = diags.iter().filter(|d| has_deprecated_tag(d)).collect();
+
+    // Only the call site should be flagged, not the declaration.
+    assert_eq!(
+        deprecated.len(),
+        1,
+        "Expected exactly 1 deprecated diagnostic (the call site), got: {:?}",
+        deprecated
+    );
+    // The diagnostic should be on line 4 (the call), not line 2 (the declaration).
+    assert_eq!(
+        deprecated[0].range.start.line, 4,
+        "Deprecated diagnostic should be on the call site (line 4), not the declaration, got: {:?}",
+        deprecated[0]
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Catch clause union type import detection
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2090,6 +2119,7 @@ fn replace_deprecated_function_call_action_offered() {
                     description: None,
                     return_description: None,
                     links: vec![],
+                    see_refs: vec![],
                     namespace: None,
                     conditional_return: None,
                     type_assertions: vec![],

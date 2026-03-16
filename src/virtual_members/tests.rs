@@ -47,6 +47,7 @@ fn virtual_members_not_empty_with_constant() {
             visibility: Visibility::Public,
             deprecation_message: None,
             deprecated_replacement: None,
+            see_refs: Vec::new(),
             description: None,
             is_enum_case: false,
             enum_value: None,

@@ -736,14 +736,6 @@ pub fn extract_link_urls(docblock: &str) -> Vec<String> {
             {
                 urls.push(url.to_string());
             }
-        } else if let Some(rest) = trimmed.strip_prefix("@see") {
-            let rest = rest.trim_start();
-            // Only treat @see values that look like URLs, not symbol references.
-            if let Some(url) = rest.split_whitespace().next()
-                && (url.starts_with("http://") || url.starts_with("https://"))
-            {
-                urls.push(url.to_string());
-            }
         }
     }
 

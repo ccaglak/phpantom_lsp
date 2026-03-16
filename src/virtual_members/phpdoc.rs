@@ -184,6 +184,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     visibility: Visibility::Public,
                     deprecation_message: None,
                     deprecated_replacement: None,
+                    see_refs: Vec::new(),
                     is_virtual: true,
                 });
             }
@@ -228,6 +229,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                             visibility: Visibility::Public,
                             deprecation_message: None,
                             deprecated_replacement: None,
+                            see_refs: Vec::new(),
                             is_virtual: true,
                         });
                     }
@@ -282,6 +284,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                                 visibility: Visibility::Public,
                                 deprecation_message: None,
                                 deprecated_replacement: None,
+                                see_refs: Vec::new(),
                                 is_virtual: true,
                             });
                         }

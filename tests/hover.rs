@@ -3376,6 +3376,298 @@ function demo(): void {
 }
 
 #[test]
+fn hover_function_shows_see_symbol_reference() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @param string $tz
+ *
+ * @deprecated So old, how old is it!
+ * @see UnsetDemo
+ * @see https://google.com/
+ */
+function formatUtfDate(string $tz): void {}
+
+formatUtfDate('');
+"#;
+
+    let hover = hover_at(&backend, uri, content, 10, 2).expect("expected hover on formatUtfDate");
+    let text = hover_text(&hover);
+    // Deprecation message should NOT contain @see references
+    assert!(
+        text.contains("So old, how old is it!"),
+        "should show deprecation message, got: {}",
+        text
+    );
+    assert!(
+        !text.contains("(see:"),
+        "deprecation line should not contain inline @see, got: {}",
+        text
+    );
+    // Symbol @see should be rendered with inline code
+    assert!(
+        text.contains("`UnsetDemo`"),
+        "should show @see symbol reference as inline code, got: {}",
+        text
+    );
+    // URL @see should be rendered as a clickable link
+    assert!(
+        text.contains("[https://google.com/](https://google.com/)"),
+        "should show @see URL as clickable link, got: {}",
+        text
+    );
+    // Both @see entries should appear before the code block
+    let see_pos = text.find("`UnsetDemo`").unwrap();
+    let code_pos = text.find("```php").unwrap();
+    assert!(
+        see_pos < code_pos,
+        "@see should appear before the code block: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_method_shows_see_reference() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Formatter {
+    /**
+     * Format a date.
+     * @see OtherFormatter::format()
+     */
+    public function formatDate(): string { return ''; }
+    public function run(): void {
+        $this->formatDate();
+    }
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 8, 16).expect("expected hover on formatDate");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("`OtherFormatter::format()`"),
+        "should show @see symbol for method hover, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_shows_see_reference() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * Old auth handler.
+ * @see NewAuthService
+ * @see https://docs.example.com/auth
+ */
+class OldAuth {}
+
+function demo(): void {
+    $a = new OldAuth();
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 9, 14).expect("expected hover on OldAuth");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("`NewAuthService`"),
+        "should show @see symbol for class hover, got: {}",
+        text
+    );
+    assert!(
+        text.contains("[https://docs.example.com/auth](https://docs.example.com/auth)"),
+        "should show @see URL for class hover, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_see_with_description_shows_description() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @see MyClass::newMethod() Use this instead.
+ */
+function oldFunc(): void {}
+
+oldFunc();
+"#;
+
+    let hover = hover_at(&backend, uri, content, 6, 2).expect("expected hover on oldFunc");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("`MyClass::newMethod()` Use this instead."),
+        "should show @see symbol with trailing description, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_see_url_not_duplicated_in_link_section() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @link https://php.net/manual/en/function.array-map.php
+ * @see https://example.com/docs
+ */
+function myFunc(): void {}
+
+myFunc();
+"#;
+
+    let hover = hover_at(&backend, uri, content, 7, 2).expect("expected hover on myFunc");
+    let text = hover_text(&hover);
+    // @link should appear as a plain link
+    assert!(
+        text.contains("[https://php.net/manual/en/function.array-map.php](https://php.net/manual/en/function.array-map.php)"),
+        "should show @link URL, got: {}",
+        text
+    );
+    // @see URL (different from @link) should also appear as a plain link
+    assert!(
+        text.contains("[https://example.com/docs](https://example.com/docs)"),
+        "should show @see URL as plain link, got: {}",
+        text
+    );
+    // The @see URL should appear exactly once (no duplication)
+    let plain_link_count = text.matches("[https://example.com/docs]").count();
+    assert_eq!(
+        plain_link_count, 1,
+        "@see URL should appear exactly once, got {} occurrences in: {}",
+        plain_link_count, text
+    );
+}
+
+#[test]
+fn hover_see_symbol_renders_clickable_file_link() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class UnsetDemo {
+    public function reset(): void {}
+}
+
+/**
+ * @param string $tz
+ *
+ * @deprecated So old, how old is it!
+ * @see UnsetDemo
+ */
+function formatUtfDate(string $tz): void {}
+
+formatUtfDate('');
+"#;
+
+    let hover = hover_at(&backend, uri, content, 13, 2).expect("expected hover on formatUtfDate");
+    let text = hover_text(&hover);
+    // The @see reference to UnsetDemo should be a clickable link
+    // because the class exists in the workspace.
+    assert!(
+        text.contains("[`UnsetDemo`](file:///test.php#L2)"),
+        "should render @see symbol as clickable file link, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_see_class_member_renders_clickable_file_link() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class NewFormatter {
+    public function format(): string { return ''; }
+}
+
+/**
+ * @see NewFormatter::format()
+ */
+function oldFormat(): string { return ''; }
+
+oldFormat();
+"#;
+
+    let hover = hover_at(&backend, uri, content, 10, 2).expect("expected hover on oldFormat");
+    let text = hover_text(&hover);
+    // The @see reference to NewFormatter::format() should be a clickable
+    // link that points to the method's definition line.
+    assert!(
+        text.contains("[`NewFormatter::format()`](file:///test.php#L3)"),
+        "should render @see class::method as clickable file link, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_see_unresolvable_symbol_falls_back_to_inline_code() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @see NonExistentClass
+ */
+function myFunc(): void {}
+
+myFunc();
+"#;
+
+    let hover = hover_at(&backend, uri, content, 6, 2).expect("expected hover on myFunc");
+    let text = hover_text(&hover);
+    // When the class can't be found, fall back to inline code (no link).
+    assert!(
+        text.contains("`NonExistentClass`"),
+        "unresolvable @see should render as inline code, got: {}",
+        text
+    );
+    // Make sure it's NOT rendered as a link.
+    assert!(
+        !text.contains("](file://"),
+        "unresolvable @see should not have a file link, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_see_url_deduplicated_when_same_as_link() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @param string $tz
+ *
+ * @deprecated So old, how old is it!
+ * @see http://google.com/
+ * @link http://google.com/
+ */
+function formatUtfDate(string $tz): void {}
+
+formatUtfDate('');
+"#;
+
+    let hover = hover_at(&backend, uri, content, 10, 2).expect("expected hover on formatUtfDate");
+    let text = hover_text(&hover);
+    // The @link URL should appear as a clickable link
+    assert!(
+        text.contains("[http://google.com/](http://google.com/)"),
+        "should show @link URL, got: {}",
+        text
+    );
+    // The same URL from @see should NOT appear a second time
+    let link_count = text
+        .matches("[http://google.com/](http://google.com/)")
+        .count();
+    assert_eq!(
+        link_count, 1,
+        "URL appearing in both @link and @see should render only once, got {} in: {}",
+        link_count, text
+    );
+}
+
+#[test]
 fn hover_closure_in_parenthesized_callable_union() {
     let backend = create_test_backend_with_closure_stub();
     let uri = "file:///test.php";
