@@ -17,12 +17,23 @@
 //! - **PHPStan ignore** — when the cursor is on a line with a PHPStan
 //!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
 //!   reports an unnecessary ignore, offer to remove it.
+//! - **Change visibility** — when the cursor is on a method, property,
+//!   constant, or promoted constructor parameter with an explicit
+//!   visibility modifier, offer to change it to each alternative
+//!   (`public` ↔ `protected` ↔ `private`).
+//! - **Update docblock** — when the cursor is on a function or method
+//!   whose existing docblock's `@param`/`@return` tags don't match the
+//!   signature, offer to patch the docblock (add missing params, remove
+//!   stale ones, reorder, fix contradicted types, remove redundant
+//!   `@return void`).
 
+mod change_visibility;
 pub(crate) mod implement_methods;
 mod import_class;
 mod phpstan_ignore;
 mod remove_unused_import;
 mod replace_deprecated;
+mod update_docblock;
 
 use tower_lsp::lsp_types::*;
 
@@ -54,6 +65,12 @@ impl Backend {
 
         // ── PHPStan ignore / remove unnecessary ignore ──────────────────
         self.collect_phpstan_ignore_actions(uri, content, params, &mut actions);
+
+        // ── Change visibility ───────────────────────────────────────────
+        self.collect_change_visibility_actions(uri, content, params, &mut actions);
+
+        // ── Update docblock to match signature ──────────────────────────
+        self.collect_update_docblock_actions(uri, content, params, &mut actions);
 
         actions
     }

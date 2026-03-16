@@ -22,29 +22,6 @@ Stubs, **P** = Performance, **X** = Indexing, **B** = Bug Fixes,
 
 # Scheduled Sprints
 
-## Sprint 3 — Quick wins: close the visible gaps
-
-Every item here directly removes something a Neovim/Zed/VS Code user
-would notice as missing on day one. Update Docblock (A8) is a natural
-companion to the now-complete PHPDoc generation (F1) since they share
-docblock manipulation code, and Change Visibility (A9) is a low-effort
-quick win. Neither depends on scope analysis or the refactoring
-toolkit, so they belong here rather than waiting for later sprints.
-
-| #   | Item                               | Effort | Domain       | Doc Link                                                               |
-| --- | ---------------------------------- | ------ | ------------ | ---------------------------------------------------------------------- |
-| A8  | Update docblock to match signature | Medium | Code Actions | [actions.md A8](todo/actions.md#a8-update-docblock-to-match-signature) |
-| A9  | Change visibility                  | Low    | Code Actions | [actions.md A9](todo/actions.md#a9-change-visibility)                  |
-
-**After Sprint 3:** PHPantom feels like a complete LSP to everyday
-users. Outline, breadcrumbs, workspace search, semantic highlighting,
-folding, formatting, inlay hints, type hierarchy, document links,
-and smart select all work. PHPDoc generation and docblock maintenance
-work. Basic code actions (change visibility) are in place. No one
-says "it's missing X" for basic editing workflows.
-
----
-
 ## Sprint 4 — Refactoring toolkit
 
 Extract Function is the #1 personal feature request and something

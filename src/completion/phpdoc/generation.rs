@@ -25,7 +25,7 @@
 //!   `Closure` / `callable`, union containing any of those, or a
 //!   class that has `@template` parameters.
 //! - `Closure` and `callable` get a callable-signature placeholder
-//!   wrapped in parentheses: `(Closure())`, `(callable())`.
+//!   wrapped in parentheses: `(Closure(): mixed)`, `(callable(): mixed)`.
 //! - Union types containing `array`, `Closure`, or `callable` echo
 //!   the raw type string so the user can refine the relevant part.
 //! - `@throws` tags are always added for uncaught exception types.
@@ -1003,7 +1003,7 @@ pub(crate) fn enrichment_snippet(
     // `Closure` / `callable` need a callable-signature placeholder.
     let clean = th.trim_start_matches('\\');
     if CALLABLE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(clean)) {
-        let s = format!("(${{{}:{}()}})", *tab_stop, clean);
+        let s = format!("({}(): ${{{}:mixed}})", clean, *tab_stop);
         *tab_stop += 1;
         return Some(s);
     }
@@ -1069,7 +1069,7 @@ pub(crate) fn enrichment_plain(
 
     let clean = th.trim_start_matches('\\');
     if CALLABLE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(clean)) {
-        return Some(format!("({}())", clean));
+        return Some(format!("({}(): mixed)", clean));
     }
 
     // Union types containing `array`, `Closure`, or `callable` — echo raw type.
@@ -2126,7 +2126,7 @@ mod tests {
     fn enrichment_closure_produces_callable_placeholder() {
         let mut ts = 1;
         let result = enrichment_snippet(&Some("Closure".to_string()), &mut ts, &no_classes);
-        assert_eq!(result, Some("(${1:Closure()})".to_string()));
+        assert_eq!(result, Some("(Closure(): ${1:mixed})".to_string()));
         assert_eq!(ts, 2);
     }
 
@@ -2134,7 +2134,7 @@ mod tests {
     fn enrichment_callable_produces_callable_placeholder() {
         let mut ts = 1;
         let result = enrichment_snippet(&Some("callable".to_string()), &mut ts, &no_classes);
-        assert_eq!(result, Some("(${1:callable()})".to_string()));
+        assert_eq!(result, Some("(callable(): ${1:mixed})".to_string()));
         assert_eq!(ts, 2);
     }
 

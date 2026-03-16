@@ -2488,6 +2488,71 @@ class InlayHintsDemo
 }
 
 
+// ── Change Visibility ───────────────────────────────────────────────────────
+// Place cursor on any member and trigger code actions (Ctrl+. / Cmd+.).
+// PHPantom offers "Make protected", "Make private", etc.
+
+class ChangeVisibilityDemo
+{
+    public string $title = '';
+    protected int $count = 0;
+    private bool $active = true;
+
+    public function getTitle(): string { return $this->title; }
+    protected function increment(): void { $this->count++; }
+    private function toggle(): void { $this->active = !$this->active; }
+
+    public const VERSION = 1;
+    protected const LIMIT = 100;
+    private const SECRET = 'shh';
+
+    // Promoted constructor parameters also support visibility change:
+    public function __construct(
+        private string $name,
+        protected int $age,
+        public string $role = 'user',
+    ) {}
+}
+
+
+// ── Update Docblock ─────────────────────────────────────────────────────────
+// Place cursor on a method with a stale docblock and trigger code actions.
+// PHPantom offers "Update docblock to match signature" when the @param
+// tags are out of sync with the actual parameters.
+
+class UpdateDocblockDemo
+{
+    /**
+     * This docblock is out of date: $old was removed, $added is new,
+     * and $renamed had its type changed from string to int.
+     *
+     * @param string $old This param was removed
+     * @param string $renamed Wrong type, should be int
+     * @return string Wrong return type, should be array
+     */
+    public function staleDocblock(int $renamed, bool $added): array
+    {
+        return [];
+    }
+
+    /**
+     * Redundant @return void is removed when the signature already says void.
+     *
+     * @param string $name
+     * @return void
+     */
+    public function redundantReturn(string $name): void {}
+
+    /**
+     * Refinement types in docblocks are preserved (not overwritten).
+     *
+     * @param non-empty-string $label A descriptive label
+     * @param array<int, string> $tags Tag list
+     */
+    public function refinementsPreserved(string $label, array $tags): void {}
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃

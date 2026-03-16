@@ -32,7 +32,7 @@ use crate::completion::resolver::{
     ResolutionCtx, resolve_target_classes, resolve_target_classes_expr,
 };
 use crate::completion::variable::raw_type_inference::resolve_variable_assignment_raw_type;
-use crate::docblock::type_strings::{is_scalar, strip_generics, PHPDOC_TYPE_KEYWORDS};
+use crate::docblock::type_strings::{PHPDOC_TYPE_KEYWORDS, is_scalar, strip_generics};
 use crate::hover::variable_type::resolve_variable_type_string;
 use crate::inheritance::resolve_property_type_hint;
 use crate::subject_expr::SubjectExpr;
@@ -653,9 +653,7 @@ fn resolve_unresolvable_class_subject(
     // that `class-string<BackedEnum>` is recognised as `class-string`.
     let base = strip_generics(&cleaned);
     let base_lower = base.to_ascii_lowercase();
-    if is_scalar(&cleaned)
-        || PHPDOC_TYPE_KEYWORDS.contains(&base_lower.as_str())
-    {
+    if is_scalar(&cleaned) || PHPDOC_TYPE_KEYWORDS.contains(&base_lower.as_str()) {
         return None;
     }
 
