@@ -90,23 +90,6 @@ from the "missing" set.
 
 ---
 
-## B6. No cycle protection in `has_method_in_chain` / `has_abstract_method_in_chain`
-
-**Impact: Medium · Effort: Low**
-
-The recursive functions that walk class/interface hierarchies in the
-implementation error diagnostic have no visited set. A cyclic
-hierarchy caused by user error (e.g. `interface A extends B` +
-`interface B extends A`) will recurse until stack overflow, crashing
-the LSP server.
-
-**Fix:** Pass a `HashSet<String>` of visited class names through the
-recursion and skip already-seen entries.
-
-**File:** `src/diagnostics/implementation_errors.rs` L179-232.
-
----
-
 ## B7. Inlay hints: wrong parameter name with mixed named and positional arguments
 
 **Impact: Medium · Effort: Medium**

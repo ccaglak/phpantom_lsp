@@ -5,6 +5,7 @@
 //! missing-method detection logic as the "Implement missing methods"
 //! code action (`code_actions::implement_methods::collect_missing_methods`).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
@@ -155,7 +156,7 @@ fn method_source_description(
     // Check interfaces first.
     for iface_name in &class.interfaces {
         if let Some(iface) = class_loader(iface_name)
-            && has_method_in_chain(&iface, method_name, class_loader)
+            && has_method_in_chain(&iface, method_name, class_loader, &mut HashSet::new())
         {
             let short = short_name(iface_name);
             return format!("interface '{}'", short);
@@ -165,7 +166,7 @@ fn method_source_description(
     // Check parent chain for abstract methods.
     if let Some(ref parent_name) = class.parent_class
         && let Some(parent) = class_loader(parent_name)
-        && has_abstract_method_in_chain(&parent, method_name, class_loader)
+        && has_abstract_method_in_chain(&parent, method_name, class_loader, &mut HashSet::new())
     {
         let short = short_name(parent_name);
         return format!("class '{}'", short);
@@ -180,7 +181,12 @@ fn has_method_in_chain(
     class: &crate::types::ClassInfo,
     method_name: &str,
     class_loader: &dyn Fn(&str) -> Option<Arc<crate::types::ClassInfo>>,
+    visited: &mut HashSet<String>,
 ) -> bool {
+    if !visited.insert(class.name.clone()) {
+        return false;
+    }
+
     let lower = method_name.to_lowercase();
     if class.methods.iter().any(|m| m.name.to_lowercase() == lower) {
         return true;
@@ -189,7 +195,7 @@ fn has_method_in_chain(
     // Check parent interfaces.
     for iface_name in &class.interfaces {
         if let Some(iface) = class_loader(iface_name)
-            && has_method_in_chain(&iface, method_name, class_loader)
+            && has_method_in_chain(&iface, method_name, class_loader, visited)
         {
             return true;
         }
@@ -198,7 +204,7 @@ fn has_method_in_chain(
     // Check parent class.
     if let Some(ref parent_name) = class.parent_class
         && let Some(parent) = class_loader(parent_name)
-        && has_method_in_chain(&parent, method_name, class_loader)
+        && has_method_in_chain(&parent, method_name, class_loader, visited)
     {
         return true;
     }
@@ -211,7 +217,12 @@ fn has_abstract_method_in_chain(
     class: &crate::types::ClassInfo,
     method_name: &str,
     class_loader: &dyn Fn(&str) -> Option<Arc<crate::types::ClassInfo>>,
+    visited: &mut HashSet<String>,
 ) -> bool {
+    if !visited.insert(class.name.clone()) {
+        return false;
+    }
+
     let lower = method_name.to_lowercase();
     if class
         .methods
@@ -223,7 +234,7 @@ fn has_abstract_method_in_chain(
 
     if let Some(ref parent_name) = class.parent_class
         && let Some(parent) = class_loader(parent_name)
-        && has_abstract_method_in_chain(&parent, method_name, class_loader)
+        && has_abstract_method_in_chain(&parent, method_name, class_loader, visited)
     {
         return true;
     }
@@ -554,6 +565,36 @@ class Baz implements Foo {
             "Abstract trait methods should not satisfy interface requirements"
         );
         assert!(diags[0].message.contains("bar()"));
+    }
+
+    #[test]
+    fn cyclic_interface_hierarchy_does_not_stack_overflow() {
+        // interface A extends B, interface B extends A — user error, but
+        // should not crash the LSP server.
+        let php = r#"<?php
+interface A extends B { public function foo(): void; }
+interface B extends A { public function bar(): void; }
+class C implements A {
+    public function foo(): void {}
+    public function bar(): void {}
+}
+"#;
+        let diags = collect(php);
+        // We only care that it doesn't hang or crash.  Whether a
+        // diagnostic is emitted is secondary.
+        let _ = diags;
+    }
+
+    #[test]
+    fn cyclic_parent_class_does_not_stack_overflow() {
+        // class A extends B, class B extends A — user error.
+        let php = r#"<?php
+interface I { public function work(): void; }
+class A extends B implements I {}
+class B extends A {}
+"#;
+        let diags = collect(php);
+        let _ = diags;
     }
 
     #[test]
