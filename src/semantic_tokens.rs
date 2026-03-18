@@ -10,6 +10,10 @@
 //! `MemberAccess`, `PropertyAccess`, `VariableReference`, etc.) with
 //! byte offsets.  The main work is mapping these to LSP semantic token
 //! types and computing the delta encoding.
+//!
+//! Language builtins (`self`, `static`, `parent`, `$this`) carry the
+//! `defaultLibrary` modifier so that themes can distinguish them from
+//! user-defined symbols.
 
 use tower_lsp::lsp_types::*;
 
@@ -46,6 +50,7 @@ const TM_READONLY: u32 = 1 << 2;
 const TM_DEPRECATED: u32 = 1 << 3;
 const TM_ABSTRACT: u32 = 1 << 4;
 const TM_DEFINITION: u32 = 1 << 5;
+const TM_DEFAULT_LIBRARY: u32 = 1 << 6;
 
 /// Build the semantic token legend that is advertised in `initialize`.
 ///
@@ -88,12 +93,13 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::ENUM_MEMBER,    // 12
         ],
         token_modifiers: vec![
-            SemanticTokenModifier::DECLARATION, // bit 0
-            SemanticTokenModifier::STATIC,      // bit 1
-            SemanticTokenModifier::READONLY,    // bit 2
-            SemanticTokenModifier::DEPRECATED,  // bit 3
-            SemanticTokenModifier::ABSTRACT,    // bit 4
-            SemanticTokenModifier::DEFINITION,  // bit 5
+            SemanticTokenModifier::DECLARATION,     // bit 0
+            SemanticTokenModifier::STATIC,          // bit 1
+            SemanticTokenModifier::READONLY,        // bit 2
+            SemanticTokenModifier::DEPRECATED,      // bit 3
+            SemanticTokenModifier::ABSTRACT,        // bit 4
+            SemanticTokenModifier::DEFINITION,      // bit 5
+            SemanticTokenModifier::DEFAULT_LIBRARY, // bit 6
         ],
     }
 }
@@ -237,11 +243,15 @@ impl Backend {
                         .get(span.start as usize..span.end as usize)
                         .unwrap_or("");
                     if source_text == "$this" {
-                        (TT_VARIABLE, TM_READONLY)
-                    } else {
-                        // self, static, parent are type references.
+                        (TT_VARIABLE, TM_READONLY | TM_DEFAULT_LIBRARY)
+                    } else if keyword == "parent" {
+                        // Resolve to the parent class kind when possible.
                         let tt = self.resolve_self_static_parent_token_type(keyword, uri, ctx);
-                        (tt, 0)
+                        (tt, TM_DEFAULT_LIBRARY)
+                    } else {
+                        // self, static — resolve to enclosing class kind.
+                        let tt = self.resolve_self_static_parent_token_type(keyword, uri, ctx);
+                        (tt, TM_DEFAULT_LIBRARY)
                     }
                 }
 
@@ -481,9 +491,6 @@ impl Backend {
         _uri: &str,
         ctx: &crate::types::FileContext,
     ) -> u32 {
-        // These keywords refer to the enclosing class. We could resolve
-        // the exact kind, but for simplicity just emit TYPE (since they
-        // are type references in a class context).
         if keyword == "parent" {
             // Try to resolve the parent class kind.
             if let Some(class) = ctx.classes.first()
@@ -570,7 +577,7 @@ mod tests {
         // Ensure the legend has all the token types we reference.
         assert!(l.token_types.len() > TT_ENUM_MEMBER as usize);
         assert_eq!(l.token_types.len(), 13);
-        assert_eq!(l.token_modifiers.len(), 6);
+        assert_eq!(l.token_modifiers.len(), 7);
     }
 
     #[test]

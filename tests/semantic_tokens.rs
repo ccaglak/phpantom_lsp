@@ -43,6 +43,14 @@ const TM_READONLY: u32 = 1 << 2;
 const TM_DEPRECATED: u32 = 1 << 3;
 const TM_ABSTRACT: u32 = 1 << 4;
 const TM_DEFINITION: u32 = 1 << 5;
+const TM_DEFAULT_LIBRARY: u32 = 1 << 6;
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Assert that a decoded token has a specific modifier bit set.
+fn has_modifier(tok: &DecodedToken, modifier: u32) -> bool {
+    tok.modifiers & modifier != 0
+}
 
 /// Decode all tokens to absolute positions for easier assertion.
 #[derive(Debug)]
@@ -184,7 +192,7 @@ function make() {
 "#;
     let tokens = get_tokens(php);
     let decoded = decode_tokens(&tokens);
-    // "Item" on line 3 (after `new `)
+    // "Item" on line 3 (after `new `) should be a class reference.
     let item_refs: Vec<_> = decoded
         .iter()
         .filter(|t| t.token_type == TT_CLASS && t.length == 4 && t.line == 3)
@@ -396,7 +404,7 @@ function main() {
 }
 
 #[test]
-fn this_is_variable_with_readonly() {
+fn this_is_variable_with_readonly_and_default_library() {
     let php = r#"<?php
 class Foo {
     public function bar(): void {
@@ -406,42 +414,76 @@ class Foo {
 "#;
     let tokens = get_tokens(php);
     let decoded = decode_tokens(&tokens);
-    // "$this" on line 3 should be a variable with readonly modifier
+    // "$this" on line 3 should be a variable with readonly + defaultLibrary
     let this_tokens: Vec<_> = decoded
         .iter()
         .filter(|t| t.token_type == TT_VARIABLE && t.length == 5 && t.line == 3)
         .collect();
     assert!(!this_tokens.is_empty(), "expected variable token for $this");
     assert!(
-        this_tokens.iter().any(|t| t.modifiers & TM_READONLY != 0),
-        "expected readonly modifier on $this"
+        this_tokens
+            .iter()
+            .any(|t| has_modifier(t, TM_READONLY) && has_modifier(t, TM_DEFAULT_LIBRARY)),
+        "expected readonly + defaultLibrary modifiers on $this"
     );
 }
 
 #[test]
-fn self_static_parent_are_type_tokens() {
+fn self_static_are_type_with_default_library() {
     let php = r#"<?php
-class Base {}
-class Child extends Base {
+class Foo {
     public static function make(): static {
         return new static();
     }
-    public function parent_ref(): void {
+    public function selfRef(): self {
+        return $this;
+    }
+}
+"#;
+    let tokens = get_tokens(php);
+    let decoded = decode_tokens(&tokens);
+    // "static" in return type hint (line 2) → type + defaultLibrary
+    let static_types: Vec<_> = decoded
+        .iter()
+        .filter(|t| t.token_type == TT_TYPE && t.length == 6 && has_modifier(t, TM_DEFAULT_LIBRARY))
+        .collect();
+    assert!(
+        !static_types.is_empty(),
+        "expected type + defaultLibrary token for static keyword"
+    );
+    // "self" in return type hint (line 5) → type + defaultLibrary
+    let self_types: Vec<_> = decoded
+        .iter()
+        .filter(|t| t.token_type == TT_TYPE && t.length == 4 && has_modifier(t, TM_DEFAULT_LIBRARY))
+        .collect();
+    assert!(
+        !self_types.is_empty(),
+        "expected type + defaultLibrary token for self keyword"
+    );
+}
+
+#[test]
+fn parent_has_default_library() {
+    let php = r#"<?php
+class Base {}
+class Child extends Base {
+    public function test(): void {
         parent::class;
     }
 }
 "#;
     let tokens = get_tokens(php);
     let decoded = decode_tokens(&tokens);
-    // "self", "static", and "parent" are type references (TT_TYPE or class-kind).
-    // "static" appears in type hint position on line 3
-    let static_types: Vec<_> = decoded
+    // "parent" on line 4 should carry the defaultLibrary modifier.
+    // The token type is resolved from the parent class kind (TT_CLASS
+    // for Base) or falls back to TT_TYPE.
+    let parent_tokens: Vec<_> = decoded
         .iter()
-        .filter(|t| t.token_type == TT_TYPE && t.length == 6)
+        .filter(|t| t.length == 6 && t.line == 4 && has_modifier(t, TM_DEFAULT_LIBRARY))
         .collect();
     assert!(
-        !static_types.is_empty(),
-        "expected type token for static keyword"
+        !parent_tokens.is_empty(),
+        "expected defaultLibrary modifier on parent keyword"
     );
 }
 
