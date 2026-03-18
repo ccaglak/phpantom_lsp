@@ -1522,10 +1522,23 @@ impl Backend {
                         php_version,
                         doc_ctx,
                     );
-                    let native_return_type = method
+                    let raw_native_return_type = method
                         .return_type_hint
                         .as_ref()
                         .map(|rth| extract_hint_string(&rth.hint));
+
+                    // Check for a #[LanguageLevelTypeAware] override on the
+                    // method's return type.  When present, it replaces the
+                    // native type hint with the version-appropriate string.
+                    let native_return_type = if let Some(ctx) = doc_ctx
+                        && let Some(ver) = ctx.php_version
+                        && let Some(override_type) =
+                            super::extract_language_level_type(&method.attribute_lists, ctx, ver)
+                    {
+                        Some(override_type)
+                    } else {
+                        raw_native_return_type
+                    };
                     let is_static = method.modifiers.iter().any(|m| m.is_static());
                     let visibility = extract_visibility(method.modifiers.iter());
 
@@ -1874,6 +1887,21 @@ impl Backend {
                         Property::Plain(p) => Some(&p.attribute_lists),
                         Property::Hooked(h) => Some(&h.attribute_lists),
                     };
+
+                    // Apply #[LanguageLevelTypeAware] override to property types.
+                    // When present, the attribute's version-appropriate type
+                    // string replaces the native type hint.
+                    if let Some(ctx) = doc_ctx
+                        && let Some(ver) = ctx.php_version
+                        && let Some(attr_lists) = prop_attr_lists
+                        && let Some(override_type) =
+                            super::extract_language_level_type(attr_lists, ctx, ver)
+                    {
+                        for prop in &mut prop_infos {
+                            prop.type_hint = Some(override_type.clone());
+                            prop.native_type_hint = Some(override_type.clone());
+                        }
+                    }
 
                     // Apply PHPDoc `@var` override, `@deprecated`, `@see`, and
                     // description for each property.

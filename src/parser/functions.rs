@@ -48,10 +48,23 @@ impl Backend {
                         php_version,
                         doc_ctx,
                     );
-                    let native_return_type = func
+                    let raw_native_return_type = func
                         .return_type_hint
                         .as_ref()
                         .map(|rth| extract_hint_string(&rth.hint));
+
+                    // Check for a #[LanguageLevelTypeAware] override on the
+                    // function's return type.  When present, it replaces the
+                    // native type hint with the version-appropriate string.
+                    let native_return_type = if let Some(ctx) = doc_ctx
+                        && let Some(ver) = ctx.php_version
+                        && let Some(override_type) =
+                            super::extract_language_level_type(&func.attribute_lists, ctx, ver)
+                    {
+                        Some(override_type)
+                    } else {
+                        raw_native_return_type
+                    };
 
                     // Apply PHPDoc `@return` override for the function.
                     // Also extract PHPStan conditional return types,

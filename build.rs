@@ -42,7 +42,16 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 use tar::Archive;
 
-const GITHUB_REPO: &str = "JetBrains/phpstorm-stubs";
+/// Direct tarball URL for the `master` branch.
+///
+/// Unlike the releases API endpoint this does not require authentication
+/// and always points at the latest commit.  PHPStan uses the same
+/// approach (see their `update-phpstorm-stubs.yml` workflow).
+const MASTER_TARBALL_URL: &str =
+    "https://github.com/JetBrains/phpstorm-stubs/archive/refs/heads/master.tar.gz";
+
+/// GitHub API URL to query the latest commit SHA on `master`.
+const MASTER_SHA_URL: &str = "https://api.github.com/repos/JetBrains/phpstorm-stubs/commits/master";
 
 /// Relative path from the crate root to the stubs map file.
 const MAP_FILE: &str = "stubs/jetbrains/phpstorm-stubs/PhpStormStubsMap.php";
@@ -51,11 +60,10 @@ const MAP_FILE: &str = "stubs/jetbrains/phpstorm-stubs/PhpStormStubsMap.php";
 /// relative paths found in the map file).
 const STUBS_DIR: &str = "stubs/jetbrains/phpstorm-stubs";
 
-/// GitHub API response for latest release.
+/// GitHub API response for a single commit (only the fields we need).
 #[derive(Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    tarball_url: String,
+struct GitHubCommit {
+    sha: String,
 }
 
 fn main() {
@@ -229,23 +237,26 @@ fn main() {
 }
 
 fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let api_url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        GITHUB_REPO
-    );
-
-    let mut response = ureq::get(&api_url)
+    // Try to fetch the commit SHA for a meaningful version string.
+    // This is best-effort — if it fails we still download the tarball.
+    let commit_sha = match ureq::get(MASTER_SHA_URL)
         .header("User-Agent", "phpantom-lsp-build")
         .header("Accept", "application/vnd.github.v3+json")
-        .call()?;
+        .call()
+    {
+        Ok(mut resp) => {
+            let commit: GitHubCommit = resp.body_mut().read_json()?;
+            commit.sha
+        }
+        Err(_) => String::from("unknown"),
+    };
 
-    let release: GitHubRelease = response.body_mut().read_json()?;
     eprintln!(
-        "cargo:warning=Downloading phpstorm-stubs {}",
-        release.tag_name
+        "cargo:warning=Downloading phpstorm-stubs master ({})",
+        &commit_sha[..commit_sha.len().min(10)]
     );
 
-    let mut tarball_response = ureq::get(&release.tarball_url)
+    let mut tarball_response = ureq::get(MASTER_TARBALL_URL)
         .header("User-Agent", "phpantom-lsp-build")
         .call()?;
 
@@ -290,11 +301,12 @@ fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Record which version was fetched so subsequent builds (that skip
     // the download because stubs/ already exists) can still read it.
     let version_file = Path::new(manifest_dir).join("stubs/.version");
-    let _ = fs::write(&version_file, &release.tag_name);
+    let version_label = format!("master@{}", &commit_sha[..commit_sha.len().min(10)]);
+    let _ = fs::write(&version_file, &version_label);
 
     eprintln!(
         "cargo:warning=Successfully downloaded phpstorm-stubs {}",
-        release.tag_name
+        version_label
     );
     Ok(())
 }

@@ -59,6 +59,9 @@ pub(crate) struct DocblockCtx<'a> {
 /// and any `use ... as Alias` form all work.
 const ATTR_ELEMENT_AVAILABLE: &str = "PhpStormStubsElementAvailable";
 
+/// Last segment of the `LanguageLevelTypeAware` attribute FQN.
+const ATTR_LANGUAGE_LEVEL_TYPE_AWARE: &str = "LanguageLevelTypeAware";
+
 /// Fully-qualified names (without leading `\`) that we recognise as
 /// deprecation attributes.  Only the native PHP 8.4 `\Deprecated` and
 /// the JetBrains stubs `\JetBrains\PhpStorm\Deprecated` should match.
@@ -86,6 +89,14 @@ impl DocblockCtx<'_> {
             .resolve_attr_last_segment(attr_short_name)
             .unwrap_or(attr_short_name);
         canonical == ATTR_ELEMENT_AVAILABLE
+    }
+
+    /// Check whether `attr_short_name` resolves to `LanguageLevelTypeAware`.
+    fn is_language_level_type_aware_attr(&self, attr_short_name: &str) -> bool {
+        let canonical = self
+            .resolve_attr_last_segment(attr_short_name)
+            .unwrap_or(attr_short_name);
+        canonical == ATTR_LANGUAGE_LEVEL_TYPE_AWARE
     }
 }
 
@@ -197,6 +208,115 @@ fn extract_version_availability(
     }
 
     None
+}
+
+// ─── LanguageLevelTypeAware Attribute Parsing ───────────────────────────────
+
+/// Extract the type override from a `#[LanguageLevelTypeAware]` attribute
+/// on a function, method, or property.
+///
+/// The attribute maps PHP version strings to type annotations:
+/// ```php
+/// #[LanguageLevelTypeAware(['8.0' => 'string|false', '8.1' => 'string'], default: 'string')]
+/// ```
+///
+/// For the given `php_version`, selects the entry with the highest version
+/// key that is `<=` the target.  Falls back to `default` when no entry
+/// matches.  Returns `None` when the attribute is absent.
+pub(crate) fn extract_language_level_type(
+    attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
+    ctx: &DocblockCtx<'_>,
+    php_version: PhpVersion,
+) -> Option<String> {
+    for attr_list in attribute_lists.iter() {
+        for attr in attr_list.attributes.iter() {
+            if !ctx.is_language_level_type_aware_attr(attr.name.last_segment()) {
+                continue;
+            }
+
+            let arg_list = attr.argument_list.as_ref()?;
+            let mut default_type: Option<String> = None;
+            let mut version_map: Vec<(PhpVersion, String)> = Vec::new();
+
+            for arg in arg_list.arguments.iter() {
+                match arg {
+                    argument::Argument::Named(named) => {
+                        let name = named.name.value.to_string();
+                        if name == "default" {
+                            default_type = extract_string_literal_value(named.value, ctx.content);
+                        }
+                    }
+                    argument::Argument::Positional(positional) => {
+                        // The positional argument is the version → type array.
+                        extract_version_type_pairs(positional.value, ctx.content, &mut version_map);
+                    }
+                }
+            }
+
+            // Select the best match: highest version key <= target.
+            let mut best: Option<(PhpVersion, &str)> = None;
+            for (ver, type_str) in &version_map {
+                if *ver <= php_version && (best.is_none() || best.is_some_and(|(b, _)| *ver > b)) {
+                    best = Some((*ver, type_str));
+                }
+            }
+
+            if let Some((_, type_str)) = best {
+                let s = type_str.to_string();
+                // Empty string means "no type" (untyped in older PHP).
+                return if s.is_empty() { None } else { Some(s) };
+            }
+
+            // No version matched — use the default.
+            if let Some(ref d) = default_type {
+                return if d.is_empty() { None } else { Some(d.clone()) };
+            }
+
+            // Attribute present but couldn't parse — return None to keep
+            // the native type hint unchanged.
+            return None;
+        }
+    }
+
+    None
+}
+
+/// Extract the type override from `#[LanguageLevelTypeAware]` on a
+/// function-like parameter's attribute lists.
+pub(crate) fn extract_language_level_type_for_param(
+    param: &function_like::parameter::FunctionLikeParameter<'_>,
+    ctx: &DocblockCtx<'_>,
+    php_version: PhpVersion,
+) -> Option<String> {
+    extract_language_level_type(&param.attribute_lists, ctx, php_version)
+}
+
+/// Parse the version → type array inside `LanguageLevelTypeAware`.
+///
+/// Handles both `['8.0' => 'string']` (short array) and
+/// `array('8.0' => 'string')` (legacy array) syntax.
+fn extract_version_type_pairs(
+    expr: &Expression<'_>,
+    content: &str,
+    out: &mut Vec<(PhpVersion, String)>,
+) {
+    let elements: Box<dyn Iterator<Item = &ArrayElement<'_>>> = match expr {
+        Expression::Array(arr) => Box::new(arr.elements.iter()),
+        Expression::LegacyArray(arr) => Box::new(arr.elements.iter()),
+        _ => return,
+    };
+
+    for elem in elements {
+        if let ArrayElement::KeyValue(kv) = elem {
+            let key = extract_string_literal_value(kv.key, content);
+            let value = extract_string_literal_value(kv.value, content);
+            if let (Some(ver_str), Some(type_str)) = (key, value)
+                && let Some(ver) = PhpVersion::from_composer_constraint(&ver_str)
+            {
+                out.push((ver, type_str));
+            }
+        }
+    }
 }
 
 /// Deprecation metadata extracted from a `#[Deprecated]` attribute.
@@ -565,7 +685,19 @@ pub(crate) fn extract_parameters(
             let has_default = param.default_value.is_some();
             let is_required = !has_default && !is_variadic;
 
-            let type_hint = param.hint.as_ref().map(|h| extract_hint_string(h));
+            let native_type_hint = param.hint.as_ref().map(|h| extract_hint_string(h));
+
+            // Check for a #[LanguageLevelTypeAware] override on the
+            // parameter.  When present, it replaces the native type hint
+            // with the version-appropriate type string.
+            let type_hint = if let Some(ver) = php_version
+                && let Some(ctx) = doc_ctx
+                && let Some(override_type) = extract_language_level_type_for_param(param, ctx, ver)
+            {
+                Some(override_type)
+            } else {
+                native_type_hint.clone()
+            };
 
             let default_value = content.and_then(|src| {
                 let dv = param.default_value.as_ref()?;
@@ -578,7 +710,7 @@ pub(crate) fn extract_parameters(
             ParameterInfo {
                 name,
                 is_required,
-                native_type_hint: type_hint.clone(),
+                native_type_hint: native_type_hint.clone(),
                 type_hint,
                 description: None,
                 default_value,

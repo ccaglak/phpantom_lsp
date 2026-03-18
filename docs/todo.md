@@ -19,12 +19,6 @@ within the same impact tier.
 
 # Scheduled Sprints
 
-## Sprint 3 — Diagnostics quality (finishing touches)
-
-| #   | Item                                                                                                                                                           | Impact | Effort |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-| E0  | [Switch embedded stubs to master + LanguageLevelTypeAware](todo/external-stubs.md#e0-switch-embedded-stubs-to-master-and-apply-languageleveltypeaware-patches) | High   | Low    |
-
 ## Sprint 4 — Refactoring toolkit
 
 | #   | Item                                                                               | Impact | Effort |

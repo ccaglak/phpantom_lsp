@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// The version is detected from `composer.json` (`require.php`) during
 /// server initialization. When no version is found, [`PhpVersion::default`]
 /// returns PHP 8.5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhpVersion {
     /// Major version number (e.g. `8` in PHP 8.4).
     pub major: u8,

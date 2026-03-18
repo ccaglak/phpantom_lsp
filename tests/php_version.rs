@@ -764,3 +764,335 @@ fn php_version_display() {
     assert_eq!(PhpVersion::new(8, 4).to_string(), "8.4");
     assert_eq!(PhpVersion::new(7, 0).to_string(), "7.0");
 }
+
+// ─── LanguageLevelTypeAware — function return types ─────────────────────────
+
+#[test]
+fn language_level_function_return_type_selects_matching_version() {
+    let backend = create_test_backend();
+
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+#[LanguageLevelTypeAware(["8.0" => "int"], default: "int|false")]
+function sleep(int $seconds): int|false {}
+"#;
+
+    // PHP 8.0+ should get "int"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
+    assert_eq!(functions.len(), 1);
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int"),
+        "PHP 8.0 should select the 8.0 variant"
+    );
+
+    // PHP 7.4 should get the default "int|false"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
+    assert_eq!(functions.len(), 1);
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int|false"),
+        "PHP 7.4 should fall back to default"
+    );
+}
+
+#[test]
+fn language_level_function_return_type_multi_version() {
+    let backend = create_test_backend();
+
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+#[LanguageLevelTypeAware(['8.0' => 'int|false', '8.1' => 'int'], default: 'int')]
+function bzerror(): int {}
+"#;
+
+    // PHP 8.1+ should get "int" (highest matching)
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int"),
+        "PHP 8.4 should select 8.1 variant (highest <= target)"
+    );
+
+    // PHP 8.0 should get "int|false" (exact match for 8.0)
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int|false"),
+        "PHP 8.0 should select the 8.0 variant"
+    );
+
+    // PHP 7.4 should get the default "int"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int"),
+        "PHP 7.4 should fall back to default"
+    );
+}
+
+#[test]
+fn language_level_function_return_type_empty_default() {
+    let backend = create_test_backend();
+
+    // Empty default means "no type" for older PHP versions.
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+#[LanguageLevelTypeAware(['8.2' => 'true'], default: '')]
+function phpinfo(int $flags = 0): bool {}
+"#;
+
+    // PHP 8.2+ should get "true"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 2)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("true"),
+        "PHP 8.2 should select the 8.2 variant"
+    );
+
+    // PHP 8.1 should fall back to the native type since default is empty
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 1)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("bool"),
+        "PHP 8.1 should fall back to native type when default is empty"
+    );
+}
+
+#[test]
+fn language_level_without_attribute_keeps_native_type() {
+    let backend = create_test_backend();
+
+    let stub = r#"<?php
+function normal_function(string $arg): string {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("string"),
+        "Functions without LanguageLevelTypeAware keep native type"
+    );
+}
+
+// ─── LanguageLevelTypeAware — parameter types ───────────────────────────────
+
+#[test]
+fn language_level_param_type_selects_matching_version() {
+    let backend = create_test_backend();
+
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+function pspell_check(
+    #[LanguageLevelTypeAware(['8.1' => 'PSpell\Dictionary'], default: 'int')] $dictionary,
+    string $word
+): bool {}
+"#;
+
+    // PHP 8.1+ should get PSpell\Dictionary
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions[0].parameters.len(), 2);
+    assert_eq!(
+        functions[0].parameters[0].type_hint.as_deref(),
+        Some("PSpell\\Dictionary"),
+        "PHP 8.4 should select 8.1 variant for parameter"
+    );
+
+    // PHP 8.0 should get default "int"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
+    assert_eq!(
+        functions[0].parameters[0].type_hint.as_deref(),
+        Some("int"),
+        "PHP 8.0 should fall back to default for parameter"
+    );
+}
+
+#[test]
+fn language_level_param_empty_default_keeps_native_hint() {
+    let backend = create_test_backend();
+
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+function filter(
+    $in,
+    $out,
+    &$consumed,
+    #[LanguageLevelTypeAware(['8.0' => 'bool'], default: '')] $closing
+): int {}
+"#;
+
+    // PHP 8.0+ should get "bool"
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 0)));
+    assert_eq!(
+        functions[0].parameters[3].type_hint.as_deref(),
+        Some("bool"),
+        "PHP 8.0 should select the 8.0 variant"
+    );
+
+    // PHP 7.4 — empty default means no type override; native hint is None
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(7, 4)));
+    assert_eq!(
+        functions[0].parameters[3].type_hint.as_deref(),
+        None,
+        "PHP 7.4 should have no type when default is empty and native is untyped"
+    );
+}
+
+// ─── LanguageLevelTypeAware — method return types ───────────────────────────
+
+#[test]
+fn language_level_method_return_type() {
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+class SplFileObject {
+    #[LanguageLevelTypeAware(['8.0' => 'string|false'], default: 'string')]
+    public function fgets(): string {}
+}
+"#;
+
+    let classes = Backend::parse_php_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(classes.len(), 1);
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "fgets")
+        .unwrap();
+    assert_eq!(
+        method.return_type.as_deref(),
+        Some("string|false"),
+        "PHP 8.4 should select the 8.0 variant for method return"
+    );
+
+    let classes = Backend::parse_php_versioned(stub, Some(PhpVersion::new(7, 4)));
+    let method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "fgets")
+        .unwrap();
+    assert_eq!(
+        method.return_type.as_deref(),
+        Some("string"),
+        "PHP 7.4 should fall back to default for method return"
+    );
+}
+
+// ─── LanguageLevelTypeAware — property types ────────────────────────────────
+
+#[test]
+fn language_level_property_type() {
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+class php_user_filter {
+    #[LanguageLevelTypeAware(['8.1' => 'string'], default: '')]
+    public $filtername;
+
+    #[LanguageLevelTypeAware(['8.1' => 'mixed'], default: '')]
+    public $params;
+
+    public $stream;
+}
+"#;
+
+    // PHP 8.1+ should get the typed properties
+    let classes = Backend::parse_php_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(classes.len(), 1);
+
+    let filtername = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "filtername")
+        .unwrap();
+    assert_eq!(
+        filtername.type_hint.as_deref(),
+        Some("string"),
+        "PHP 8.4 should select 8.1 type for $filtername"
+    );
+
+    let params = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "params")
+        .unwrap();
+    assert_eq!(
+        params.type_hint.as_deref(),
+        Some("mixed"),
+        "PHP 8.4 should select 8.1 type for $params"
+    );
+
+    let stream = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "stream")
+        .unwrap();
+    assert_eq!(
+        stream.type_hint.as_deref(),
+        None,
+        "$stream has no LanguageLevelTypeAware and no native type"
+    );
+
+    // PHP 7.4 — empty default means no type
+    let classes = Backend::parse_php_versioned(stub, Some(PhpVersion::new(7, 4)));
+    let filtername = classes[0]
+        .properties
+        .iter()
+        .find(|p| p.name == "filtername")
+        .unwrap();
+    assert_eq!(
+        filtername.type_hint.as_deref(),
+        None,
+        "PHP 7.4 should have no type when default is empty"
+    );
+}
+
+// ─── LanguageLevelTypeAware — no version (user code) ────────────────────────
+
+#[test]
+fn language_level_no_version_keeps_native_type() {
+    let backend = create_test_backend();
+
+    // When php_version is None (user code), LanguageLevelTypeAware is ignored
+    // and the native type hint is preserved.
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+#[LanguageLevelTypeAware(["8.0" => "int"], default: "int|false")]
+function sleep(int $seconds): int|false {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub, None);
+    assert_eq!(functions.len(), 1);
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("int|false"),
+        "Without a target version, native type should be kept"
+    );
+}
+
+// ─── LanguageLevelTypeAware — double-quoted strings ─────────────────────────
+
+#[test]
+fn language_level_double_quoted_strings() {
+    let backend = create_test_backend();
+
+    // Some stubs use double-quoted strings in the attribute.
+    let stub = r#"<?php
+use JetBrains\PhpStorm\Internal\LanguageLevelTypeAware;
+
+#[LanguageLevelTypeAware(["8.0" => "string"], default: "string|false")]
+function my_func(): string|false {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub, Some(PhpVersion::new(8, 4)));
+    assert_eq!(
+        functions[0].return_type.as_deref(),
+        Some("string"),
+        "Double-quoted strings in attribute should work"
+    );
+}
