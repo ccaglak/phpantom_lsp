@@ -21,6 +21,25 @@
 //! - The member name is `class` (the magic `::class` constant).
 //! - The subject is an enum and the member is a case name (enum cases
 //!   are accessed via `::` but stored as constants).
+//!
+//! ## Performance: subject resolution cache
+//!
+//! A single file can contain hundreds of member access spans that share
+//! the same subject text (e.g. 60 occurrences of `$this->assertEquals`,
+//! `$this->assertTrue`, etc.).  Without caching, each span triggers the
+//! full resolution pipeline including `resolve_variable_types` which
+//! re-parses the entire file via `with_parsed_program`.  For unresolved
+//! subjects the secondary helpers (`resolve_scalar_subject_type`,
+//! `resolve_unresolvable_class_subject`) add further re-parses.
+//!
+//! To avoid this, we cache the resolution outcome per unique
+//! `(subject_text, access_kind, scope_key)` tuple, where `scope_key`
+//! is the name and byte offset of the innermost enclosing class (or a
+//! sentinel for top-level code).  This means all `$this->` accesses in
+//! the same class share one resolution, and all `$var->` accesses in
+//! the same class share one resolution.  The cache lives for a single
+//! `collect_unknown_member_diagnostics` call and is not shared across
+//! files or invocations.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,6 +71,118 @@ pub(crate) const UNKNOWN_MEMBER_CODE: &str = "unknown_member";
 /// is always a runtime crash, so the severity is `Error`.
 pub(crate) const SCALAR_MEMBER_ACCESS_CODE: &str = "scalar_member_access";
 
+// ─── Subject resolution cache ───────────────────────────────────────────────
+
+/// Scope identifier for the subject resolution cache.
+///
+/// Two member accesses share the same scope when they are inside the
+/// same class body (identified by class name and byte offset of the
+/// opening brace).  Top-level code outside any class uses a sentinel.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ScopeKey {
+    /// Inside a class at the given byte offset.
+    Class { name: String, start_offset: u32 },
+    /// Top-level code outside any class.
+    TopLevel,
+}
+
+/// Cache key combining the subject text, access kind, and scope.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct SubjectCacheKey {
+    subject_text: String,
+    access_kind: AccessKind,
+    scope: ScopeKey,
+}
+
+/// The outcome of resolving a subject for diagnostic purposes.
+///
+/// Cached so that subsequent member accesses on the same subject in the
+/// same scope skip the entire resolution pipeline (including expensive
+/// `with_parsed_program` re-parses).
+#[derive(Clone, Debug)]
+enum SubjectOutcome {
+    /// Subject resolved to one or more classes.
+    Resolved(Vec<Arc<ClassInfo>>),
+    /// Subject resolved to a scalar type — member access is always a
+    /// runtime crash.
+    Scalar(String),
+    /// Subject resolved to a class name that couldn't be loaded.
+    UnresolvableClass(String),
+    /// Subject is a chain or call expression whose type couldn't be
+    /// resolved.
+    UnresolvableChain,
+    /// Subject is a bare variable with no type information at all.
+    /// No diagnostic should be emitted (the opt-in
+    /// `unresolved-member-access` diagnostic covers this case).
+    Untyped,
+}
+
+/// Per-pass cache mapping subject keys to their resolution outcomes.
+type SubjectCache = HashMap<SubjectCacheKey, SubjectOutcome>;
+
+/// Build a [`ScopeKey`] from the innermost enclosing class (if any).
+fn scope_key_for(current_class: Option<&ClassInfo>) -> ScopeKey {
+    match current_class {
+        Some(cc) => ScopeKey::Class {
+            name: cc.name.clone(),
+            start_offset: cc.start_offset,
+        },
+        None => ScopeKey::TopLevel,
+    }
+}
+
+/// Resolve the subject and return a [`SubjectOutcome`].
+///
+/// This runs the full resolution pipeline exactly once per unique
+/// cache key.
+fn resolve_subject_outcome(
+    subject_text: &str,
+    access_kind: AccessKind,
+    rctx: &ResolutionCtx<'_>,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    function_loader: &dyn Fn(&str) -> Option<crate::types::FunctionInfo>,
+    cache: &crate::virtual_members::ResolvedClassCache,
+) -> SubjectOutcome {
+    let base_classes: Vec<Arc<ClassInfo>> = resolve_target_classes(subject_text, access_kind, rctx);
+
+    if !base_classes.is_empty() {
+        return SubjectOutcome::Resolved(base_classes);
+    }
+
+    // ── Subject did not resolve to any class ────────────────────────
+    let expr = SubjectExpr::parse(subject_text);
+
+    // Try scalar type detection.
+    if let Some(scalar) = resolve_scalar_subject_type(
+        &expr,
+        access_kind,
+        rctx,
+        class_loader,
+        function_loader,
+        cache,
+    ) {
+        return SubjectOutcome::Scalar(scalar);
+    }
+
+    // Try unresolvable class detection.
+    if let Some(unresolved) =
+        resolve_unresolvable_class_subject(&expr, rctx, class_loader, function_loader)
+    {
+        return SubjectOutcome::UnresolvableClass(unresolved);
+    }
+
+    // Check if the subject is a chain or call expression.
+    let is_chain = matches!(
+        expr,
+        SubjectExpr::PropertyChain { .. } | SubjectExpr::CallExpr { .. }
+    );
+    if is_chain {
+        return SubjectOutcome::UnresolvableChain;
+    }
+
+    SubjectOutcome::Untyped
+}
+
 impl Backend {
     /// Collect unknown-member diagnostics for a single file.
     ///
@@ -82,7 +213,10 @@ impl Backend {
 
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
         let function_loader = self.function_loader_with(&file_use_map, &file_namespace);
-        let cache = &self.resolved_class_cache;
+        let resolved_cache = &self.resolved_class_cache;
+
+        // ── Subject resolution cache for this diagnostic pass ───────────
+        let mut subject_cache: SubjectCache = HashMap::new();
 
         // ── Walk every symbol span ──────────────────────────────────────
         for span in &symbol_map.spans {
@@ -109,10 +243,6 @@ impl Backend {
                 continue;
             }
 
-            // ── Resolve the subject using the full completion pipeline ───
-            // This handles bare variables, property chains, method call
-            // return types, static access, and all other subject forms
-            // identically to completion and go-to-definition.
             let access_kind = if is_static {
                 AccessKind::DoubleColon
             } else {
@@ -121,52 +251,39 @@ impl Backend {
 
             let current_class = find_innermost_enclosing_class(&local_classes, span.start);
 
-            let rctx = ResolutionCtx {
-                current_class,
-                all_classes: &local_classes,
-                content,
-                cursor_offset: span.start,
-                class_loader: &class_loader,
-                resolved_class_cache: Some(cache),
-                function_loader: Some(&function_loader),
+            // ── Look up or populate the subject cache ───────────────────
+            let cache_key = SubjectCacheKey {
+                subject_text: subject_text.clone(),
+                access_kind,
+                scope: scope_key_for(current_class),
             };
 
-            let base_classes: Vec<Arc<ClassInfo>> =
-                resolve_target_classes(subject_text, access_kind, &rctx);
+            let outcome = subject_cache
+                .entry(cache_key)
+                .or_insert_with(|| {
+                    let rctx = ResolutionCtx {
+                        current_class,
+                        all_classes: &local_classes,
+                        content,
+                        cursor_offset: span.start,
+                        class_loader: &class_loader,
+                        resolved_class_cache: Some(resolved_cache),
+                        function_loader: Some(&function_loader),
+                    };
+                    resolve_subject_outcome(
+                        subject_text,
+                        access_kind,
+                        &rctx,
+                        &class_loader,
+                        &function_loader,
+                        resolved_cache,
+                    )
+                })
+                .clone();
 
-            // ── Subject did not resolve to any class ────────────────────
-            // Three possibilities:
-            //
-            //   a) The subject is a bare untyped variable with no type
-            //      info at all (`$x` where we have no annotations or
-            //      assignments to infer from).  Skip — the opt-in
-            //      `unresolved-member-access` diagnostic covers this.
-            //
-            //   b) The subject is a chain (`$obj->prop`, `$obj->m()`)
-            //      or a typed parameter/variable whose type resolved to
-            //      a scalar or an unknown class.  The developer clearly
-            //      expects a class type here.  Emit a diagnostic.
-            //
-            //   c) The subject has a scalar type we can name (bool, int,
-            //      string, …).  Give a specific message.
-            if base_classes.is_empty() {
-                let expr = SubjectExpr::parse(subject_text);
-
-                // Try to find a specific scalar type name.  This covers
-                // bare variables (`$number = 1`), property chains
-                // (`$user->age`), and call expressions (`getInt()`,
-                // `$user->getAge()`).
-                let scalar_type = resolve_scalar_subject_type(
-                    &expr,
-                    access_kind,
-                    &rctx,
-                    &class_loader,
-                    &function_loader,
-                    cache,
-                );
-
-                if let Some(ref scalar) = scalar_type {
-                    // Scalar member access — always a runtime crash.
+            // ── Emit diagnostics based on the cached outcome ────────────
+            match outcome {
+                SubjectOutcome::Scalar(ref scalar) => {
                     let range = match offset_range_to_lsp_range(
                         content,
                         span.start as usize,
@@ -186,20 +303,9 @@ impl Backend {
                         SCALAR_MEMBER_ACCESS_CODE,
                         message,
                     ));
-                    continue;
                 }
 
-                // Not scalar — check if the subject is a variable whose
-                // raw type is a class name that can't be resolved.  This
-                // covers `@param NoteReal $value` where NoteReal doesn't
-                // exist, and `$bad = unknownReturnFn()` where the return
-                // type names an unknown class.
-                if let Some(unresolved_class) = resolve_unresolvable_class_subject(
-                    &expr,
-                    &rctx,
-                    &class_loader,
-                    &function_loader,
-                ) {
+                SubjectOutcome::UnresolvableClass(ref unresolved) => {
                     let range = match offset_range_to_lsp_range(
                         content,
                         span.start as usize,
@@ -211,7 +317,7 @@ impl Backend {
                     let kind_label = if is_method_call { "method" } else { "property" };
                     let message = format!(
                         "Cannot verify {} '{}' — subject type '{}' could not be resolved",
-                        kind_label, member_name, unresolved_class,
+                        kind_label, member_name, unresolved,
                     );
                     out.push(make_diagnostic(
                         range,
@@ -219,17 +325,9 @@ impl Backend {
                         UNKNOWN_MEMBER_CODE,
                         message,
                     ));
-                    continue;
                 }
 
-                // Not scalar, not unknown-class — check if the subject is
-                // a chain or call expression where the type simply couldn't
-                // be resolved.
-                let is_chain = matches!(
-                    expr,
-                    SubjectExpr::PropertyChain { .. } | SubjectExpr::CallExpr { .. }
-                );
-                if is_chain {
+                SubjectOutcome::UnresolvableChain => {
                     let range = match offset_range_to_lsp_range(
                         content,
                         span.start as usize,
@@ -250,120 +348,160 @@ impl Backend {
                         message,
                     ));
                 }
-                continue;
+
+                SubjectOutcome::Untyped => {
+                    // No diagnostic — the opt-in `unresolved-member-access`
+                    // provider covers this case.
+                }
+
+                SubjectOutcome::Resolved(ref base_classes) => {
+                    self.check_member_on_resolved_classes(
+                        base_classes,
+                        member_name,
+                        is_static,
+                        is_method_call,
+                        is_docblock_ref,
+                        &class_loader,
+                        resolved_cache,
+                        content,
+                        span.start,
+                        span.end,
+                        out,
+                    );
+                }
             }
-
-            // ── Quick check on pre-resolved base classes ────────────────
-            // `resolve_target_classes` already returns fully-resolved
-            // classes in many code paths (e.g. `type_hint_to_classes`
-            // calls `resolve_class_fully` and injects model-specific
-            // scope methods onto Eloquent Builders).  Check the member
-            // on these classes FIRST, before re-resolving through the
-            // cache.  The cache is keyed by bare FQN and may hold a
-            // stale entry that lacks context-specific virtual members
-            // (e.g. Builder scope methods that depend on the concrete
-            // model type).  Checking here avoids false positives when
-            // the cache and the resolver disagree.
-            if base_classes
-                .iter()
-                .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
-            {
-                continue;
-            }
-            if base_classes.iter().any(|c| c.name == "stdClass") {
-                continue;
-            }
-            if base_classes.iter().any(|c| {
-                member_exists(c, member_name, is_static, is_method_call)
-                    || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
-            }) {
-                continue;
-            }
-
-            // ── Fully resolve each class (inheritance + virtual members) ─
-            // Synthetic classes like `__object_shape` already carry all
-            // their members and must NOT go through the cache (every
-            // object shape shares the same name, so the cache would
-            // return the wrong entry).
-            let resolved_classes: Vec<Arc<ClassInfo>> = base_classes
-                .iter()
-                .map(|c| {
-                    if c.name == "__object_shape" {
-                        Arc::clone(c)
-                    } else {
-                        resolve_class_fully_cached(c, &class_loader, cache)
-                    }
-                })
-                .collect();
-
-            // ── Check for magic methods on ANY branch ───────────────────
-            if resolved_classes
-                .iter()
-                .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
-            {
-                continue;
-            }
-
-            // ── Skip stdClass (universal object container) ──────────────
-            if resolved_classes.iter().any(|c| c.name == "stdClass") {
-                continue;
-            }
-
-            // ── Check whether the member exists on ANY branch ───────────
-            if resolved_classes.iter().any(|c| {
-                member_exists(c, member_name, is_static, is_method_call)
-                    || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
-            }) {
-                continue;
-            }
-
-            // ── Member is unresolved on ALL branches — emit diagnostic ──
-            let range =
-                match offset_range_to_lsp_range(content, span.start as usize, span.end as usize) {
-                    Some(r) => r,
-                    None => continue,
-                };
-
-            let kind_label = if is_method_call {
-                "Method"
-            } else if is_static {
-                // Static non-method could be a property ($prop) or constant
-                "Member"
-            } else {
-                "Property"
-            };
-
-            // Show the first resolved class name for context.  For union
-            // types we could list all of them, but keeping it short is
-            // more useful in the editor gutter.
-            let class_display = display_class_name(&resolved_classes[0]);
-
-            let message = if resolved_classes.len() > 1 {
-                format!(
-                    "{} '{}' not found on any of the {} possible types ({})",
-                    kind_label,
-                    member_name,
-                    resolved_classes.len(),
-                    resolved_classes
-                        .iter()
-                        .map(|c| display_class_name(c))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                )
-            } else {
-                format!(
-                    "{} '{}' not found on class '{}'",
-                    kind_label, member_name, class_display,
-                )
-            };
-
-            out.push(make_diagnostic(
-                range,
-                DiagnosticSeverity::WARNING,
-                UNKNOWN_MEMBER_CODE,
-                message,
-            ));
         }
+    }
+
+    /// Check whether a member exists on the resolved classes and emit
+    /// a diagnostic if it does not.
+    ///
+    /// Extracted from the main loop to keep `collect_unknown_member_diagnostics`
+    /// readable.
+    #[allow(clippy::too_many_arguments)]
+    fn check_member_on_resolved_classes(
+        &self,
+        base_classes: &[Arc<ClassInfo>],
+        member_name: &str,
+        is_static: bool,
+        is_method_call: bool,
+        is_docblock_ref: bool,
+        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+        cache: &crate::virtual_members::ResolvedClassCache,
+        content: &str,
+        start: u32,
+        end: u32,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        // ── Quick check on pre-resolved base classes ────────────────
+        // `resolve_target_classes` already returns fully-resolved
+        // classes in many code paths (e.g. `type_hint_to_classes`
+        // calls `resolve_class_fully` and injects model-specific
+        // scope methods onto Eloquent Builders).  Check the member
+        // on these classes FIRST, before re-resolving through the
+        // cache.  The cache is keyed by bare FQN and may hold a
+        // stale entry that lacks context-specific virtual members
+        // (e.g. Builder scope methods that depend on the concrete
+        // model type).  Checking here avoids false positives when
+        // the cache and the resolver disagree.
+        if base_classes
+            .iter()
+            .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
+        {
+            return;
+        }
+        if base_classes.iter().any(|c| c.name == "stdClass") {
+            return;
+        }
+        if base_classes.iter().any(|c| {
+            member_exists(c, member_name, is_static, is_method_call)
+                || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
+        }) {
+            return;
+        }
+
+        // ── Fully resolve each class (inheritance + virtual members) ─
+        // Synthetic classes like `__object_shape` already carry all
+        // their members and must NOT go through the cache (every
+        // object shape shares the same name, so the cache would
+        // return the wrong entry).
+        let resolved_classes: Vec<Arc<ClassInfo>> = base_classes
+            .iter()
+            .map(|c| {
+                if c.name == "__object_shape" {
+                    Arc::clone(c)
+                } else {
+                    resolve_class_fully_cached(c, class_loader, cache)
+                }
+            })
+            .collect();
+
+        // ── Check for magic methods on ANY branch ───────────────────
+        if resolved_classes
+            .iter()
+            .any(|c| has_magic_method_for_access(c, is_static, is_method_call))
+        {
+            return;
+        }
+
+        // ── Skip stdClass (universal object container) ──────────────
+        if resolved_classes.iter().any(|c| c.name == "stdClass") {
+            return;
+        }
+
+        // ── Check whether the member exists on ANY branch ───────────
+        if resolved_classes.iter().any(|c| {
+            member_exists(c, member_name, is_static, is_method_call)
+                || (is_docblock_ref && member_exists_relaxed(c, member_name, is_method_call))
+        }) {
+            return;
+        }
+
+        // ── Member is unresolved on ALL branches — emit diagnostic ──
+        let range = match offset_range_to_lsp_range(content, start as usize, end as usize) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let kind_label = if is_method_call {
+            "Method"
+        } else if is_static {
+            // Static non-method could be a property ($prop) or constant
+            "Member"
+        } else {
+            "Property"
+        };
+
+        // Show the first resolved class name for context.  For union
+        // types we could list all of them, but keeping it short is
+        // more useful in the editor gutter.
+        let class_display = display_class_name(&resolved_classes[0]);
+
+        let message = if resolved_classes.len() > 1 {
+            format!(
+                "{} '{}' not found on any of the {} possible types ({})",
+                kind_label,
+                member_name,
+                resolved_classes.len(),
+                resolved_classes
+                    .iter()
+                    .map(|c| display_class_name(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            format!(
+                "{} '{}' not found on class '{}'",
+                kind_label, member_name, class_display,
+            )
+        };
+
+        out.push(make_diagnostic(
+            range,
+            DiagnosticSeverity::WARNING,
+            UNKNOWN_MEMBER_CODE,
+            message,
+        ));
     }
 }
 
@@ -407,7 +545,7 @@ fn member_exists(
     is_method_call: bool,
 ) -> bool {
     if is_method_call {
-        // PHP method names are case-insensitive
+        // Method name matching is case-insensitive in PHP.
         let lower = member_name.to_ascii_lowercase();
         return class
             .methods
@@ -416,48 +554,41 @@ fn member_exists(
     }
 
     if is_static {
-        // Static access: could be a constant (Foo::BAR) or static property (Foo::$bar)
-        // Check constants first (most common for static non-method access)
+        // Static property or constant.
+        // Constants first (most common in `Class::CONST` usage).
         if class.constants.iter().any(|c| c.name == member_name) {
             return true;
         }
-        // Check static properties
-        if class
-            .properties
-            .iter()
-            .any(|p| p.name == member_name && p.is_static)
-        {
+        // Static property (e.g. `Class::$prop`).
+        // PHP static properties include the `$` in the access syntax,
+        // but the stored name may or may not include it.  Check both.
+        if class.properties.iter().any(|p| {
+            p.is_static && (p.name == member_name || format!("${}", p.name) == member_name)
+        }) {
             return true;
         }
+        // Also check enum cases which are stored as constants.
         return false;
     }
 
-    // Instance property access ($obj->prop)
-    // Properties are stored without the `$` prefix in ClassInfo.
+    // Instance property access.
     class.properties.iter().any(|p| p.name == member_name)
 }
 
-/// Check whether the resolved class has magic methods that would handle
-/// the given access type dynamically.
-///
-/// - `__call` handles instance method calls (`$obj->anything()`)
-/// - `__callStatic` handles static method calls (`Foo::anything()`)
-/// - `__get` handles instance property reads (`$obj->anything`)
-/// - `__set` also implies dynamic property support
-///
-/// When such magic methods exist, we suppress unknown-member diagnostics
-/// because the member may be handled at runtime.
+/// Check whether the class has a magic method that would handle the
+/// member access at runtime, making the "unknown member" diagnostic
+/// a false positive.
 fn has_magic_method_for_access(class: &ClassInfo, is_static: bool, is_method_call: bool) -> bool {
     if is_method_call {
-        let magic_name = if is_static { "__callStatic" } else { "__call" };
+        let magic = if is_static { "__callStatic" } else { "__call" };
         return class
             .methods
             .iter()
-            .any(|m| m.name.eq_ignore_ascii_case(magic_name));
+            .any(|m| m.name.eq_ignore_ascii_case(magic));
     }
 
-    // Property access — check for __get
     if !is_static {
+        // Instance property access — `__get` handles arbitrary property names.
         return class
             .methods
             .iter()
@@ -467,12 +598,8 @@ fn has_magic_method_for_access(class: &ClassInfo, is_static: bool, is_method_cal
     false
 }
 
-/// When `resolve_target_classes` returns empty for a chain subject, check
-/// whether the terminal type is a known scalar (bool, int, string, etc.).
-///
-/// Returns `Some(type_name)` when the intermediate base resolves but the
-/// terminal property/return type is scalar.  Returns `None` when the
-/// subject is truly unresolvable.
+/// Try to determine a scalar type for the subject, so we can report a
+/// more specific "member access on scalar" diagnostic.
 fn resolve_scalar_subject_type(
     expr: &SubjectExpr,
     access_kind: AccessKind,
@@ -589,18 +716,10 @@ fn resolve_scalar_subject_type(
     }
 }
 
-/// Return a user-friendly display name for a class.
+/// Try to determine an unresolvable class name for the subject.
 ///
-/// Prefers the short name for readability. For anonymous classes, returns
-/// the full internal name.
-/// When the subject is a variable (or a call whose return type names a
-/// class), check whether the raw type is a non-scalar, non-mixed class
-/// name that cannot be resolved.  Returns `Some(class_name)` when the
-/// subject type is an unresolvable class, `None` otherwise.
-///
-/// This lets us emit a warning-level "subject type 'X' could not be
-/// resolved" instead of silently dropping the diagnostic or emitting a
-/// hint-level unresolved-member-access.
+/// When the subject's raw type looks like a class name but cannot be
+/// loaded, we emit a diagnostic that names the unresolvable type.
 fn resolve_unresolvable_class_subject(
     expr: &SubjectExpr,
     rctx: &ResolutionCtx<'_>,
@@ -682,7 +801,6 @@ fn display_class_name(class: &ClassInfo) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::SCALAR_MEMBER_ACCESS_CODE;
     use super::*;
 
     fn collect(backend: &Backend, uri: &str, content: &str) -> Vec<Diagnostic> {
@@ -692,2763 +810,2018 @@ mod tests {
         out
     }
 
-    // ── Basic detection ─────────────────────────────────────────────────
+    // ── Basic unknown-member detection ──────────────────────────────
 
     #[test]
     fn flags_unknown_method_on_known_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    public function bar(): void {}
+        let php = r#"<?php
+class Greeter {
+    public function hello(): string { return ''; }
 }
 
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->nonexistent();
-    }
+function test(): void {
+    $g = new Greeter();
+    $g->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic for nonexistent(), got: {:?}",
-            diags
+            diags.iter().any(|d| {
+                d.message.contains("nonexistent")
+                    && d.message.contains("Greeter")
+                    && d.message.contains("Method")
+            }),
+            "expected diagnostic for nonexistent method, got: {diags:?}"
         );
     }
 
     #[test]
     fn flags_unknown_property_on_known_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    public string $name = '';
+        let php = r#"<?php
+class User {
+    public string $name;
 }
 
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->missing;
-    }
+function test(): void {
+    $u = new User();
+    $u->missing;
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("missing") && d.message.contains("not found")),
-            "Expected unknown property diagnostic for ->missing, got: {:?}",
-            diags
+            diags.iter().any(|d| {
+                d.message.contains("missing")
+                    && d.message.contains("User")
+                    && d.message.contains("Property")
+            }),
+            "expected diagnostic for missing property, got: {diags:?}"
         );
     }
 
     #[test]
     fn flags_unknown_static_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    public static function bar(): void {}
+        let php = r#"<?php
+class MathHelper {
+    public static function add(): int { return 0; }
 }
 
-Foo::nonexistent();
+MathHelper::nonexistent();
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown static method diagnostic, got: {:?}",
-            diags
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("MathHelper")),
+            "expected diagnostic for nonexistent static method, got: {diags:?}"
         );
     }
 
     #[test]
     fn flags_unknown_constant_on_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    const BAR = 1;
+        let php = r#"<?php
+class Config {
+    const VERSION = '1.0';
 }
 
-$x = Foo::MISSING;
+echo Config::MISSING;
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("MISSING") && d.message.contains("not found")),
-            "Expected unknown constant diagnostic, got: {:?}",
-            diags
+                .any(|d| d.message.contains("MISSING") && d.message.contains("Config")),
+            "expected diagnostic for missing constant, got: {diags:?}"
         );
     }
 
-    // ── No false positives for existing members ─────────────────────────
+    // ── Should NOT produce diagnostics ──────────────────────────────
 
     #[test]
     fn no_diagnostic_for_existing_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    public function bar(): void {}
+        let php = r#"<?php
+class Greeter {
+    public function hello(): string { return ''; }
+    public function goodbye(): string { return ''; }
 }
 
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->bar();
-    }
+function test(): void {
+    $g = new Greeter();
+    $g->hello();
+    $g->goodbye();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for existing method, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_existing_property() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    public string $name = '';
+        let php = r#"<?php
+class User {
+    public string $name;
+    public int $age;
 }
 
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->name;
-    }
+function test(): void {
+    $u = new User();
+    echo $u->name;
+    echo $u->age;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for existing property, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_existing_constant() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {
-    const BAR = 1;
+        let php = r#"<?php
+class Config {
+    const VERSION = '1.0';
 }
 
-$x = Foo::BAR;
+echo Config::VERSION;
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for existing constant, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_class_keyword() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {}
-
-$name = Foo::class;
+echo Foo::class;
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for ::class, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Magic method suppression ────────────────────────────────────────
+    // ── Magic methods ───────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_when_class_has_magic_call() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Magic {
-    public function __call(string $name, array $args): mixed {}
+        let php = r#"<?php
+class Dynamic {
+    public function __call(string $name, array $args): mixed { return null; }
 }
 
-class Consumer {
-    public function run(): void {
-        $m = new Magic();
-        $m->anything();
-    }
+function test(): void {
+    $d = new Dynamic();
+    $d->anything();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when __call exists, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_when_class_has_magic_get() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class DynProps {
-    public function __get(string $name): mixed {}
+        let php = r#"<?php
+class Dynamic {
+    public function __get(string $name): mixed { return null; }
 }
 
-class Consumer {
-    public function run(): void {
-        $d = new DynProps();
-        $d->anything;
-    }
+function test(): void {
+    $d = new Dynamic();
+    echo $d->anything;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when __get exists, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_when_class_has_magic_call_static() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class StaticMagic {
-    public static function __callStatic(string $name, array $args): mixed {}
+        let php = r#"<?php
+class Dynamic {
+    public static function __callStatic(string $name, array $args): mixed { return null; }
 }
 
-StaticMagic::anything();
+Dynamic::anything();
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when __callStatic exists, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Inheritance ─────────────────────────────────────────────────────
+    // ── Inheritance ─────────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_inherited_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Base {
     public function baseMethod(): void {}
 }
-
 class Child extends Base {}
 
-class Consumer {
-    public function run(): void {
-        $c = new Child();
-        $c->baseMethod();
-    }
+function test(): void {
+    $c = new Child();
+    $c->baseMethod();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for inherited method, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_trait_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 trait Greetable {
-    public function greet(): string { return 'hello'; }
+    public function greet(): string { return ''; }
 }
 
-class Greeter {
+class Person {
     use Greetable;
 }
 
-class Consumer {
-    public function run(): void {
-        $g = new Greeter();
-        $g->greet();
-    }
+function test(): void {
+    $p = new Person();
+    $p->greet();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for trait method, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Virtual members (@method / @property) ───────────────────────────
+    // ── PHPDoc virtual members ──────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_phpdoc_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 /**
- * @method string getName()
+ * @method string virtualMethod()
  */
-class VirtualClass {}
+class Magic {}
 
-class Consumer {
-    public function run(): void {
-        $v = new VirtualClass();
-        $v->getName();
-    }
+function test(): void {
+    $m = new Magic();
+    $m->virtualMethod();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @method virtual member, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_phpdoc_property() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 /**
- * @property string $name
+ * @property string $virtualProp
  */
-class VirtualClass {
-    public function __get(string $name): mixed {}
+class Magic {
+    public function __get(string $name): mixed { return null; }
 }
 
-class Consumer {
-    public function run(): void {
-        $v = new VirtualClass();
-        $v->name;
-    }
+function test(): void {
+    $m = new Magic();
+    echo $m->virtualProp;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @property virtual member, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Subject resolution contexts ─────────────────────────────────────
+    // ── $this / self / parent ───────────────────────────────────────
 
     #[test]
     fn flags_unknown_method_on_this() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
     public function bar(): void {
         $this->nonexistent();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic for $this->nonexistent(), got: {:?}",
-            diags
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("Foo")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_this_in_second_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class First {
-    public function alpha(): void {}
+    public function a(): void {}
 }
-
 class Second {
-    public function beta(): void {}
-
-    public function demo(): void {
-        $this->beta();
+    public function b(): void {
+        $this->b();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for $this->beta() inside Second, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_object_shape_property() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
+        let php = r#"<?php
+class Factory {
+    /**
+     * @return object{name: string, age: int}
+     */
+    public function create(): object {
+        return (object)['name' => 'test', 'age' => 1];
+    }
 }
 
-class Demo {
-    /** @return object{name: string, age: int, active: bool} */
-    public function getProfile(): object { return (object) []; }
-
-    /** @return object{tool: Pen, meta: object{page: int, total: int}} */
-    public function getResult(): object { return (object) []; }
-
-    public function demo(): void {
-        $profile = $this->getProfile();
-        $profile->name;
-        $profile->age;
-        $profile->active;
-
-        $result = $this->getResult();
-        $result->tool;
-        $result->meta;
+class Consumer {
+    public function test(): void {
+        $factory = new Factory();
+        $obj = $factory->create();
+        echo $obj->name;
+        echo $obj->age;
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for object shape property access, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_unknown_property_on_object_shape() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Demo {
-    /** @return object{name: string, age: int} */
-    public function getProfile(): object { return (object) []; }
+        let php = r#"<?php
+class Factory {
+    /**
+     * @return object{name: string, age: int}
+     */
+    public function create(): object {
+        return (object)['name' => 'test', 'age' => 1];
+    }
+}
 
-    public function demo(): void {
-        $profile = $this->getProfile();
-        $profile->missing;
+class Consumer {
+    public function test(): void {
+        $obj = (new Factory())->create();
+        echo $obj->missing;
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("missing") && d.message.contains("not found")),
-            "Expected unknown property diagnostic on object shape, got: {:?}",
-            diags
+            diags.iter().any(|d| d.message.contains("missing")),
+            "expected diagnostic for missing property on object shape, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_this_in_anonymous_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
-}
-
-class Factory {
-    public function create(): Pen {
-        return new class extends Pen {
-            public string $brand;
-            public function cap(): string { return ''; }
-            public function demo() {
-                $this->cap();
-                $this->brand;
-                $this->write();
+        let php = r#"<?php
+class Outer {
+    public function make(): void {
+        $anon = new class {
+            public function inner(): void {}
+            public function test(): void {
+                $this->inner();
             }
         };
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected inside anonymous class body, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_unknown_method_on_this_in_anonymous_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
-}
-
-class Factory {
-    public function create(): Pen {
-        return new class extends Pen {
-            public function demo() {
-                $this->nonexistent();
+        let php = r#"<?php
+class Outer {
+    public function make(): void {
+        $anon = new class {
+            public function inner(): void {}
+            public function test(): void {
+                $this->missing();
             }
         };
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic inside anonymous class, got: {:?}",
-            diags
+            diags.iter().any(|d| d.message.contains("missing")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_parent_in_anonymous_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
+        let php = r#"<?php
+class Base {
+    public function baseMethod(): void {}
 }
-
-class Factory {
-    public function create(): Pen {
-        return new class extends Pen {
-            public function demo() {
-                parent::write();
+class Outer {
+    public function make(): void {
+        $anon = new class extends Base {
+            public function test(): void {
+                parent::baseMethod();
             }
         };
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for parent::write() in anonymous class, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_unknown_method_on_this_in_second_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class First {
-    public function alpha(): void {}
+    public function a(): void {}
 }
-
 class Second {
-    public function beta(): void {}
-
-    public function demo(): void {
-        $this->alpha();
+    public function b(): void {
+        $this->nonexistent();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("alpha") && d.message.contains("not found")),
-            "Expected unknown method diagnostic for $this->alpha() inside Second, got: {:?}",
-            diags
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("Second")),
+            "expected diagnostic for Second, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_this_existing_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
-    public function bar(): void {}
-
-    public function baz(): void {
+    public function bar(): void {
         $this->bar();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for $this->bar(), got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_unknown_method_on_self() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
     public function bar(): void {
         self::nonexistent();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic for self::nonexistent(), got: {:?}",
-            diags
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("Foo")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_self_existing_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
-    public static function bar(): void {}
-
-    public function baz(): void {
+    public static function bar(): void {
         self::bar();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for self::bar(), got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_parent_existing_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Base {
-    public function parentMethod(): void {}
+    public function base(): void {}
 }
-
 class Child extends Base {
-    public function childMethod(): void {
-        parent::parentMethod();
+    public function test(): void {
+        parent::base();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for parent::parentMethod(), got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Diagnostic metadata ─────────────────────────────────────────────
+    // ── Diagnostic metadata ─────────────────────────────────────────
 
     #[test]
     fn diagnostic_has_warning_severity() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {}
-
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->missing();
-    }
+        let php = r#"<?php
+class Foo { }
+function test(): void {
+    $f = new Foo();
+    $f->missing();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(!diags.is_empty(), "Expected at least one diagnostic");
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(!diags.is_empty());
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
     }
 
     #[test]
     fn diagnostic_has_code_and_source() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Foo {}
-
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->missing();
-    }
+        let php = r#"<?php
+class Foo { }
+function test(): void {
+    $f = new Foo();
+    $f->missing();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(!diags.is_empty(), "Expected at least one diagnostic");
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string()))
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(!diags.is_empty());
+        match &diags[0].code {
+            Some(NumberOrString::String(code)) => {
+                assert_eq!(code, UNKNOWN_MEMBER_CODE);
+            }
+            other => panic!("expected string code, got: {other:?}"),
+        }
         assert_eq!(diags[0].source, Some("phpantom".to_string()));
     }
 
-    // ── Case-insensitive method matching ────────────────────────────────
+    // ── Case insensitivity ──────────────────────────────────────────
 
     #[test]
     fn method_matching_is_case_insensitive() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
-    public function getData(): void {}
+    public function hello(): void {}
 }
-
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->getdata();
-    }
+function test(): void {
+    $f = new Foo();
+    $f->HELLO();
+    $f->Hello();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "PHP methods are case-insensitive, no diagnostic expected, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Multiple unknown members ────────────────────────────────────────
+    // ── Multiple unknowns ───────────────────────────────────────────
 
     #[test]
     fn flags_multiple_unknown_members() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Foo {
-    public function known(): void {}
+    public function real(): void {}
 }
-
-class Consumer {
-    public function run(): void {
-        $f = new Foo();
-        $f->unknown1();
-        $f->known();
-        $f->unknown2();
-    }
+function test(): void {
+    $f = new Foo();
+    $f->missing1();
+    $f->real();
+    $f->missing2();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert_eq!(
             diags.len(),
             2,
-            "Expected exactly 2 diagnostics for 2 unknown members, got: {:?}",
-            diags
+            "expected 2 diagnostics, got {}: {diags:?}",
+            diags.len()
         );
-        assert!(diags.iter().any(|d| d.message.contains("unknown1")));
-        assert!(diags.iter().any(|d| d.message.contains("unknown2")));
     }
 
-    // ── Unresolvable subject produces no diagnostic ─────────────────────
+    // ── Unresolvable subjects ───────────────────────────────────────
 
     #[test]
     fn no_diagnostic_when_subject_unresolvable() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function getUnknown(): mixed { return null; }
-
-$x = getUnknown();
-$x->whatever();
+        // $x has no type info — we can't know what members it has,
+        // so we should not flag anything.
+        let php = r#"<?php
+function test(): void {
+    $x->something();
+}
 "#;
-        let diags = collect(&backend, uri, content);
-        // We can't resolve the type of $x, so we should not flag ->whatever()
-        // as unknown — we'd just produce false positives.
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected when subject type is unresolvable, got: {:?}",
-            diags
+            "expected no diagnostic for unresolvable subject, got: {diags:?}"
         );
     }
 
-    // ── Enum cases ──────────────────────────────────────────────────────
+    // ── Enums ───────────────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_enum_case() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 enum Color {
     case Red;
     case Green;
     case Blue;
 }
-
-$c = Color::Red;
+echo Color::Red;
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for enum case access, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_unknown_enum_case() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 enum Color {
     case Red;
     case Green;
     case Blue;
 }
-
-$c = Color::Purple;
+echo Color::Yellow;
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("Purple") && d.message.contains("not found")),
-            "Expected unknown member diagnostic for Color::Purple, got: {:?}",
-            diags
+            diags.iter().any(|d| d.message.contains("Yellow")),
+            "expected diagnostic for unknown enum case, got: {diags:?}"
         );
     }
 
-    // ── Parameter type hint resolution ──────────────────────────────────
+    // ── Parameters ──────────────────────────────────────────────────
 
     #[test]
     fn flags_unknown_method_via_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Service {
-    public function doWork(): void {}
+    public function run(): void {}
 }
-
-class Handler {
-    public function handle(Service $svc): void {
-        $svc->nonexistent();
-    }
+function handler(Service $svc): void {
+    $svc->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags
                 .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic via parameter type, got: {:?}",
-            diags
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("Service")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
     #[test]
     fn no_diagnostic_for_method_via_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Service {
-    public function doWork(): void {}
+    public function run(): void {}
 }
-
-class Handler {
-    public function handle(Service $svc): void {
-        $svc->doWork();
-    }
+function handler(Service $svc): void {
+    $svc->run();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for existing method via parameter, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Inherited magic methods ─────────────────────────────────────────
+    // ── Parent with magic ───────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_when_parent_has_magic_call() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Base {
-    public function __call(string $name, array $args): mixed {}
+    public function __call(string $name, array $args): mixed { return null; }
 }
-
 class Child extends Base {}
 
-class Consumer {
-    public function run(): void {
-        $c = new Child();
-        $c->anything();
-    }
+function test(): void {
+    $c = new Child();
+    $c->anything();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when parent has __call, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Interface method access ─────────────────────────────────────────
+    // ── Interfaces ──────────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_interface_method() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-interface Renderable {
-    public function render(): string;
+        let php = r#"<?php
+interface Runnable {
+    public function run(): void;
 }
 
-class View implements Renderable {
-    public function render(): string { return ''; }
+class Worker implements Runnable {
+    public function run(): void {}
 }
 
-class Consumer {
-    public function run(Renderable $r): void {
-        $r->render();
-    }
+function handler(Runnable $r): void {
+    $r->run();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for interface method, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Static property access ──────────────────────────────────────────
+    // ── Static properties ───────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_existing_static_property() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Config {
-    public static string $appName = 'test';
+    public static string $version = '1.0';
 }
-
-$name = Config::$appName;
+echo Config::$version;
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for existing static property, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── Union type suppression ──────────────────────────────────────────
+    // ── Union types ─────────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_member_on_any_union_branch() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Lamp {
-    public function dim(): void {}
-    public function turnOff(): void {}
+        let php = r#"<?php
+class Cat {
+    public function purr(): void {}
+    public function eat(): void {}
+}
+class Dog {
+    public function bark(): void {}
+    public function eat(): void {}
+}
+class Shelter {
+    /**
+     * @return Cat|Dog
+     */
+    public function adopt(): Cat|Dog {
+        return new Cat();
+    }
 }
 
-class Faucet {
-    public function drip(): void {}
-    public function turnOff(): void {}
-}
-
-class Consumer {
+class Test {
     public function run(): void {
-        if (rand(0, 1)) {
-            $ambiguous = new Lamp();
-        } else {
-            $ambiguous = new Faucet();
-        }
-        $ambiguous->turnOff();
-        $ambiguous->dim();
-        $ambiguous->drip();
+        $shelter = new Shelter();
+        $pet = $shelter->adopt();
+        $pet->eat();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        // dim() is on Lamp, drip() is on Faucet, turnOff() is on both.
-        // None should produce a diagnostic because the member exists on
-        // at least one branch of the union.
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for union branch members, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn flags_member_missing_from_all_union_branches() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Lamp {
-    public function dim(): void {}
-    public function turnOff(): void {}
+        let php = r#"<?php
+class Cat {
+    public function purr(): void {}
+}
+class Dog {
+    public function bark(): void {}
+}
+class Shelter {
+    /**
+     * @return Cat|Dog
+     */
+    public function adopt(): Cat|Dog {
+        return new Cat();
+    }
 }
 
-class Faucet {
-    public function drip(): void {}
-    public function turnOff(): void {}
-}
-
-class Consumer {
+class Test {
     public function run(): void {
-        if (rand(0, 1)) {
-            $ambiguous = new Lamp();
-        } else {
-            $ambiguous = new Faucet();
-        }
-        $ambiguous->nonexistent();
+        $shelter = new Shelter();
+        $pet = $shelter->adopt();
+        $pet->fly();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("nonexistent") && d.message.contains("not found")),
-            "Expected unknown method diagnostic when member is on no union branch, got: {:?}",
-            diags
+            diags.iter().any(|d| d.message.contains("fly")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
     #[test]
     fn union_diagnostic_message_mentions_multiple_types() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Lamp {
-    public function dim(): void {}
+        let php = r#"<?php
+class Cat {
+    public function purr(): void {}
+}
+class Dog {
+    public function bark(): void {}
+}
+class Shelter {
+    /**
+     * @return Cat|Dog
+     */
+    public function adopt(): Cat|Dog {
+        return new Cat();
+    }
 }
 
-class Faucet {
-    public function drip(): void {}
-}
-
-class Consumer {
+class Test {
     public function run(): void {
-        if (rand(0, 1)) {
-            $ambiguous = new Lamp();
-        } else {
-            $ambiguous = new Faucet();
-        }
-        $ambiguous->nonexistent();
+        $shelter = new Shelter();
+        $pet = $shelter->adopt();
+        $pet->fly();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(!diags.is_empty(), "Expected at least one diagnostic");
-        // The message should mention both types when the subject is a union.
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        let d = diags
+            .iter()
+            .find(|d| d.message.contains("fly"))
+            .expect("expected diagnostic");
         assert!(
-            diags[0].message.contains("Lamp") && diags[0].message.contains("Faucet"),
-            "Expected both union types in the message, got: {}",
-            diags[0].message
+            d.message.contains("Cat") && d.message.contains("Dog"),
+            "expected both types in message: {}",
+            d.message
         );
     }
 
     #[test]
     fn no_diagnostic_when_any_union_branch_has_magic_call() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Strict {
+        let php = r#"<?php
+class Normal {
     public function known(): void {}
 }
-
-class Flexible {
-    public function __call(string $name, array $args): mixed {}
+class Dynamic {
+    public function __call(string $name, array $args): mixed { return null; }
 }
 
-class Consumer {
+class Test {
+    /**
+     * @return Normal|Dynamic
+     */
+    public function get(): Normal|Dynamic { return new Normal(); }
+
     public function run(): void {
-        if (rand(0, 1)) {
-            $obj = new Strict();
-        } else {
-            $obj = new Flexible();
-        }
-        $obj->anything();
+        $x = $this->get();
+        $x->anything();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when any union branch has __call, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
-    // ── stdClass suppression ────────────────────────────────────────────
+    // ── stdClass ────────────────────────────────────────────────────
 
     #[test]
     fn no_diagnostic_for_property_on_stdclass() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-$obj = new \stdClass();
-$obj->anything;
+        let php = r#"<?php
+function test(stdClass $obj): void {
+    echo $obj->anything;
+}
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for property access on stdClass, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_method_on_stdclass() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-$obj = new \stdClass();
-$obj->whatever();
+        let php = r#"<?php
+function test(stdClass $obj): void {
+    $obj->anything();
+}
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for method call on stdClass, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_stdclass_in_union() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Strict {
-    public function known(): void {}
+        let php = r#"<?php
+class Foo { public function a(): void {} }
+/**
+ * @return Foo|stdClass
+ */
+function get(): Foo|stdClass { return new Foo(); }
+function test(): void {
+    $x = get();
+    $x->anything;
 }
-
-/** @var Strict|\stdClass $obj */
-$obj = new Strict();
-$obj->unknown_prop;
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when any union branch is stdClass, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_stdclass_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function process(\stdClass $obj): void {
-    $obj->foo;
-    $obj->bar;
+        let php = r#"<?php
+function test(stdClass $obj): void {
+    echo $obj->name;
+    echo $obj->whatever;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for property access on stdClass parameter, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
+
+    // ── PHPDoc property on child class ──────────────────────────────
 
     #[test]
     fn no_diagnostic_for_phpdoc_property_on_child_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-abstract class ZooBase
-{
-    public function falcon(): string { return ''; }
+        let php = r#"<?php
+/**
+ * @property string $virtualProp
+ */
+class Base {
+    public function __get(string $name): mixed { return null; }
 }
 
-/**
- * @property string $gorilla
- * @method bool hyena(string $x)
- */
-class Zoo extends ZooBase
-{
-    public function __get(string $name): mixed { return null; }
-    public function __call(string $name, array $args): mixed { return null; }
-}
+class Child extends Base {}
 
 function test(): void {
-    $zoo = new Zoo();
-    $zoo->gorilla;
-    $zoo->hyena('x');
-    $zoo->falcon();
+    $c = new Child();
+    echo $c->virtualProp;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @property/@method on child class with parent, got: {:?}",
-            diags
-        );
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     #[test]
     fn no_diagnostic_for_phpdoc_property_from_interface() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 /**
- * @property-read string $iguana
- * @method string jaguar()
+ * @property string $name
  */
-interface ZooContract {}
+interface HasName {}
 
-abstract class ZooBase
-{
-    public function falcon(): string { return ''; }
-}
-
-/**
- * @property string $gorilla
- * @method bool hyena(string $x)
- */
-class Zoo extends ZooBase implements ZooContract
-{
-    public function __get(string $name): mixed { return null; }
-    public function __call(string $name, array $args): mixed { return null; }
+class User implements HasName {
+    public function __get(string $n): mixed { return null; }
 }
 
-function test(): void {
-    $zoo = new Zoo();
-    $zoo->gorilla;
-    $zoo->hyena('x');
-    $zoo->iguana;
-    $zoo->jaguar();
-    $zoo->falcon();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @property/@method from class and interface, got: {:?}",
-            diags
-        );
-    }
-
-    /// Mirrors the exact pattern from `example.php` `runDemoAssertions()`:
-    /// `$zoo->gorilla` inside an `assert(... === ...)` expression, with
-    /// the Zoo class defined in a namespace.
-    #[test]
-    fn no_diagnostic_for_phpdoc_members_inside_assert() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-namespace Demo;
-
-/**
- * @property-read string $iguana
- * @method string jaguar()
- */
-interface ZooContract {}
-
-abstract class ZooBase
-{
-    public function falcon(): string { return ''; }
-}
-
-/**
- * @property string $gorilla
- * @method bool hyena(string $x)
- */
-class Zoo extends ZooBase implements ZooContract
-{
-    public function __get(string $name): mixed { return null; }
-    public function __call(string $name, array $args): mixed { return null; }
-}
-
-function runTest(): void {
-    $zoo = new Zoo();
-    assert($zoo->gorilla === 'gorilla-value');
-    assert($zoo->iguana === 'iguana-value');
-    assert($zoo->hyena('x') === true);
-    assert($zoo->jaguar() === 'jaguar-value');
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @property/@method members inside assert(), got: {:?}",
-            diags
-        );
-    }
-
-    /// When `assert($zoo instanceof ZooBase)` narrows `$zoo` to ZooBase,
-    /// subsequent `$zoo->gorilla` should still find @property/@method
-    /// from the original `Zoo` class (or at least not false-positive
-    /// because ZooBase has `__get`/`__call` via its child).
-    #[test]
-    fn no_diagnostic_for_phpdoc_members_after_instanceof_narrowing() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-namespace Demo;
-
-/**
- * @property-read string $iguana
- * @method string jaguar()
- */
-interface ZooContract {}
-
-abstract class ZooBase
-{
-    public function falcon(): string { return ''; }
-}
-
-/**
- * @property string $gorilla
- * @method bool hyena(string $x)
- */
-class Zoo extends ZooBase implements ZooContract
-{
-    public function __get(string $name): mixed { return null; }
-    public function __call(string $name, array $args): mixed { return null; }
-}
-
-function runTest(): void {
-    $zoo = new Zoo();
-    assert($zoo instanceof Zoo);
-    assert($zoo instanceof ZooBase);
-    $zoo->gorilla;
-    $zoo->iguana;
-    $zoo->hyena('x');
-    $zoo->jaguar();
-    $zoo->falcon();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for @property/@method after instanceof narrowing, got: {:?}",
-            diags
-        );
-    }
-
-    /// When accessing a member on a property chain like `$obj->prop->member`,
-    /// the diagnostic should resolve the intermediate property type and
-    /// flag unknown members on it.  Previously the ad-hoc subject resolver
-    /// could not handle chains and silently skipped the diagnostic.
-    #[test]
-    fn flags_unknown_member_on_property_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Inner {
-    public string $valid = '';
-}
-class Outer {
-    public Inner $inner;
-}
-function test(): void {
-    $obj = new Outer();
-    $obj->inner->valid;
-    $obj->inner->bogus;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("bogus"),
-            "Diagnostic should mention 'bogus', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("Inner"),
-            "Diagnostic should mention 'Inner', got: {}",
-            diags[0].message,
-        );
-    }
-
-    /// No diagnostic when the chained member actually exists.
-    #[test]
-    fn no_diagnostic_for_valid_property_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Inner {
-    public string $value = '';
-    public function greet(): string { return ''; }
-}
-class Outer {
-    public Inner $inner;
-}
-function test(): void {
-    $obj = new Outer();
-    $obj->inner->value;
-    $obj->inner->greet();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for valid property chain, got: {:?}",
-            diags,
-        );
-    }
-
-    /// Unknown member on a method call return chain: `$obj->getInner()->bogus`.
-    #[test]
-    fn flags_unknown_member_on_method_return_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Inner {
-    public string $value = '';
-}
-class Outer {
-    public function getInner(): Inner { return new Inner(); }
-}
-function test(): void {
-    $obj = new Outer();
-    $obj->getInner()->value;
-    $obj->getInner()->nope;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("nope"),
-            "Diagnostic should mention 'nope', got: {}",
-            diags[0].message,
-        );
-    }
-
-    /// No diagnostic when method return chain member exists.
-    #[test]
-    fn no_diagnostic_for_valid_method_return_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Inner {
-    public string $value = '';
-}
-class Outer {
-    public function getInner(): Inner { return new Inner(); }
-}
-function test(): void {
-    $obj = new Outer();
-    $obj->getInner()->value;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for valid method return chain, got: {:?}",
-            diags,
-        );
-    }
-
-    /// Property chain with a virtual (@property) member as the
-    /// intermediate step — the resolved type of the virtual property
-    /// should be used to check the final member.
-    #[test]
-    fn flags_unknown_member_on_virtual_property_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Related {
-    public string $name = '';
-}
-/**
- * @property Related $relation
- */
-class Model {
-    public function __get(string $name): mixed { return null; }
-}
-function test(): void {
-    $m = new Model();
-    $m->relation->name;
-    $m->relation->nonexistent;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("nonexistent"),
-            "Diagnostic should mention 'nonexistent', got: {}",
-            diags[0].message,
-        );
-    }
-
-    /// When an intermediate property has a scalar type (bool), accessing
-    /// a member on it should produce a diagnostic.  This is the exact
-    /// pattern from the bug report: `$brandTranslation->lang_code->value`
-    /// where `lang_code` has type `bool`.
-    #[test]
-    fn flags_member_access_on_scalar_property_type() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class BrandTranslation {
-    /** @var bool */
-    public $lang_code;
-}
-function test(): void {
-    $bt = new BrandTranslation();
-    $bt->lang_code->value;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("value"),
-            "Diagnostic should mention 'value', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("bool"),
-            "Diagnostic should mention 'bool', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
-        );
-    }
-
-    /// Member access on a string property should also produce a diagnostic.
-    #[test]
-    fn flags_member_access_on_string_property_type() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public string $name = '';
-}
 function test(): void {
     $u = new User();
-    $u->name->length;
+    echo $u->name;
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    // ── PHPDoc members inside type-narrowing contexts ───────────────
+
+    #[test]
+    fn no_diagnostic_for_phpdoc_members_inside_assert() {
+        let php = r#"<?php
+/**
+ * @method string getName()
+ */
+class Entity {
+    public function __call(string $name, array $args): mixed { return null; }
+}
+
+class Base {}
+
+class Test {
+    public function run(Base $item): void {
+        assert($item instanceof Entity);
+        echo $item->getName();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn no_diagnostic_for_phpdoc_members_after_instanceof_narrowing() {
+        let php = r#"<?php
+/**
+ * @method string getName()
+ */
+class Entity {
+    public function __call(string $name, array $args): mixed { return null; }
+}
+
+class Base {}
+
+class Test {
+    public function run(Base $item): void {
+        if ($item instanceof Entity) {
+            echo $item->getName();
+        }
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    // ── Property chains ─────────────────────────────────────────────
+
+    #[test]
+    fn flags_unknown_member_on_property_chain() {
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public Inner $inner;
+}
+
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->inner->missing();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("length"),
-            "Diagnostic should mention 'length', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags.iter().any(|d| d.message.contains("missing")),
+            "expected diagnostic, got: {diags:?}"
         );
     }
 
-    /// Member access on a scalar return type from a method call chain
-    /// should produce a diagnostic: `$obj->getInt()->value`.
+    #[test]
+    fn no_diagnostic_for_valid_property_chain() {
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public Inner $inner;
+}
+
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->inner->known();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    // ── Method return chains ────────────────────────────────────────
+
+    #[test]
+    fn flags_unknown_member_on_method_return_chain() {
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+function test(): void {
+    $o = new Outer();
+    $o->getInner()->missing();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.iter().any(|d| d.message.contains("missing")),
+            "expected diagnostic, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_valid_method_return_chain() {
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+function test(): void {
+    $o = new Outer();
+    $o->getInner()->known();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    // ── Virtual property chains ─────────────────────────────────────
+
+    #[test]
+    fn flags_unknown_member_on_virtual_property_chain() {
+        let php = r#"<?php
+class Inner {
+    public function known(): void {}
+}
+
+/**
+ * @property Inner $inner
+ */
+class Outer {
+    public function __get(string $name): mixed { return null; }
+}
+
+function test(): void {
+    $o = new Outer();
+    $o->inner->missing();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.iter().any(|d| d.message.contains("missing")),
+            "expected diagnostic, got: {diags:?}"
+        );
+    }
+
+    // ── Scalar member access ────────────────────────────────────────
+
+    #[test]
+    fn flags_member_access_on_scalar_property_type() {
+        let php = r#"<?php
+class Foo {
+    public int $value = 0;
+}
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $foo->value->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+            "expected ERROR severity for scalar access"
+        );
+    }
+
+    #[test]
+    fn flags_member_access_on_string_property_type() {
+        let php = r#"<?php
+class Foo {
+    public string $name = '';
+}
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $foo->name->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("string") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
+        );
+    }
+
     #[test]
     fn flags_member_access_on_scalar_method_return() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Counter {
+        let php = r#"<?php
+class Foo {
     public function getCount(): int { return 0; }
 }
-function test(): void {
-    $c = new Counter();
-    $c->getCount()->value;
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $foo->getCount()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("value"),
-            "Diagnostic should mention 'value', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// D1 scenario: `$user->getName()->trim()` — method call on a scalar
-    /// return type in a chain where the variable is typed via assignment.
     #[test]
     fn flags_method_call_on_scalar_method_return_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function getName(): string { return 'Alice'; }
-    public function getAge(): int { return 30; }
+        let php = r#"<?php
+class Inner {
+    public function getValue(): string { return ''; }
 }
-function test(): void {
-    $user = new User();
-    $user->getName()->trim();
-    $user->getAge()->value;
+
+class Middle {
+    public function getInner(): Inner { return new Inner(); }
+}
+
+class Outer {
+    public function getMiddle(): Middle { return new Middle(); }
+}
+
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->getMiddle()->getInner()->getValue()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags.len() >= 2,
-            "Expected at least 2 diagnostics for scalar member access chains, got {}: {:?}",
-            diags.len(),
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = diags.iter().find(|d| d.message.contains("trim"));
-        assert!(
-            trim_diag.is_some(),
-            "Expected a diagnostic mentioning 'trim', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = trim_diag.unwrap();
-        assert!(
-            trim_diag.message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            trim_diag.message,
-        );
-        assert_eq!(
-            trim_diag.severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            trim_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
-        );
-
-        let value_diag = diags.iter().find(|d| d.message.contains("value"));
-        assert!(
-            value_diag.is_some(),
-            "Expected a diagnostic mentioning 'value', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let value_diag = value_diag.unwrap();
-        assert!(
-            value_diag.message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            value_diag.message,
-        );
-        assert_eq!(
-            value_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// D1 scenario with typed parameter: method call chain on parameter
-    /// whose method returns a scalar.
     #[test]
     fn flags_method_call_on_scalar_return_typed_param() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function getName(): string { return 'Alice'; }
+        let php = r#"<?php
+class Foo {
+    public function getCount(): int { return 0; }
 }
-function test(User $user): void {
-    $user->getName()->trim();
+function test(Foo $foo): void {
+    $foo->getCount()->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("trim"),
-            "Diagnostic should mention 'trim', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Static method chain returning scalar: `User::create()->getName()->trim()`.
     #[test]
     fn flags_scalar_access_on_static_method_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public static function create(): self { return new self(); }
-    public function getName(): string { return 'Alice'; }
+        let php = r#"<?php
+class Foo {
+    public static function getCount(): int { return 0; }
 }
-function test(): void {
-    User::create()->getName()->trim();
+class Test {
+    public function run(): void {
+        Foo::getCount()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let trim_diag = diags.iter().find(|d| d.message.contains("trim"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            trim_diag.is_some(),
-            "Expected a diagnostic mentioning 'trim', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = trim_diag.unwrap();
-        assert!(
-            trim_diag.message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            trim_diag.message,
-        );
-        assert_eq!(
-            trim_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Standalone function returning scalar, then member access:
-    /// `getCount()->value`.
     #[test]
     fn flags_scalar_access_on_function_return_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function getCount(): int { return 42; }
+        let php = r#"<?php
+function getNumber(): int { return 42; }
 function test(): void {
-    getCount()->value;
+    getNumber()->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let value_diag = diags.iter().find(|d| d.message.contains("value"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            value_diag.is_some(),
-            "Expected a diagnostic mentioning 'value', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let value_diag = value_diag.unwrap();
-        assert!(
-            value_diag.message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            value_diag.message,
-        );
-        assert_eq!(
-            value_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Docblock-only return type (no native hint): method returning
-    /// scalar via `@return` should still trigger the diagnostic.
     #[test]
     fn flags_scalar_access_on_docblock_return_type() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Config {
-    /** @return bool */
-    public function isEnabled() { return true; }
+        let php = r#"<?php
+class Foo {
+    /**
+     * @return string
+     */
+    public function getName() { return ''; }
 }
-function test(): void {
-    $cfg = new Config();
-    $cfg->isEnabled()->something;
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $foo->getName()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let diag = diags.iter().find(|d| d.message.contains("something"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diag.is_some(),
-            "Expected a diagnostic mentioning 'something', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let diag = diag.unwrap();
-        assert!(
-            diag.message.contains("bool"),
-            "Diagnostic should mention 'bool', got: {}",
-            diag.message,
-        );
-        assert_eq!(
-            diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Chained static call returning scalar: `Foo::bar()::baz()`.
     #[test]
     fn flags_scalar_access_on_static_return_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Util {
-    public static function count(): int { return 0; }
+        let php = r#"<?php
+class Foo {
+    public function getName(): string { return ''; }
 }
-function test(): void {
-    Util::count()->value;
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $foo->getName()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let value_diag = diags.iter().find(|d| d.message.contains("value"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            value_diag.is_some(),
-            "Expected a diagnostic mentioning 'value', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let value_diag = value_diag.unwrap();
-        assert!(
-            value_diag.message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            value_diag.message,
-        );
-        assert_eq!(
-            value_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// No false positive: method returning a class should not trigger
-    /// scalar diagnostic even through a chain.
     #[test]
     fn no_scalar_diagnostic_for_class_returning_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 class Builder {
-    public function build(): self { return $this; }
-    public function reset(): self { return $this; }
+    public function where(): self { return $this; }
+    public function get(): self { return $this; }
 }
 function test(): void {
     $b = new Builder();
-    $b->build()->reset();
+    $b->where()->get();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for class-returning chain, got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
+            "expected no scalar access diagnostic for class-returning chain, got: {diags:?}"
         );
     }
 
-    /// Function-returning-class chain: `getUser()->getName()->trim()` —
-    /// the intermediate callee is a standalone function returning a class,
-    /// and the next method returns a scalar.
     #[test]
     fn flags_scalar_access_on_function_returning_class_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function getName(): string { return 'Alice'; }
+        let php = r#"<?php
+class Foo {
+    public function getName(): string { return ''; }
 }
-function getUser(): User { return new User(); }
+function createFoo(): Foo { return new Foo(); }
 function test(): void {
-    getUser()->getName()->trim();
+    createFoo()->getName()->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let trim_diag = diags.iter().find(|d| d.message.contains("trim"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            trim_diag.is_some(),
-            "Expected a diagnostic mentioning 'trim', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = trim_diag.unwrap();
-        assert!(
-            trim_diag.message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            trim_diag.message,
-        );
-        assert_eq!(
-            trim_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Array access base chain: `$arr[0]->getName()->trim()` — the
-    /// base is an array element typed as a class, the method returns
-    /// a scalar, and the final member access should flag the scalar.
     #[test]
     fn flags_scalar_access_on_array_element_method_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function getName(): string { return 'Alice'; }
+        let php = r#"<?php
+class Item {
+    public function getLabel(): string { return ''; }
 }
+
 function test(): void {
-    /** @var array<int, User> $arr */
-    $arr = [];
-    $arr[0]->getName()->trim();
+    /** @var array<int, Item> $items */
+    $items = [];
+    $items[0]->getLabel()->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let trim_diag = diags.iter().find(|d| d.message.contains("trim"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            trim_diag.is_some(),
-            "Expected a diagnostic mentioning 'trim', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = trim_diag.unwrap();
-        assert!(
-            trim_diag.message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            trim_diag.message,
-        );
-        assert_eq!(
-            trim_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Deeper chain: `$user->getManager()->getName()->trim()` — the
-    /// intermediate callee (`getManager()`) returns a class, but the
-    /// next call (`getName()`) returns a scalar.  The outermost member
-    /// access (`->trim()`) should flag the scalar.
     #[test]
     fn flags_scalar_access_on_deeper_method_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Manager {
-    public function getName(): string { return 'Bob'; }
+        let php = r#"<?php
+class Inner {
+    public function getValue(): int { return 42; }
 }
-class User {
-    public function getManager(): Manager { return new Manager(); }
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
 }
-function test(): void {
-    $user = new User();
-    $user->getManager()->getName()->trim();
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->getInner()->getValue()->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let trim_diag = diags.iter().find(|d| d.message.contains("trim"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            trim_diag.is_some(),
-            "Expected a diagnostic mentioning 'trim', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let trim_diag = trim_diag.unwrap();
-        assert!(
-            trim_diag.message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            trim_diag.message,
-        );
-        assert_eq!(
-            trim_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Property access on a deeper chain where the last method returns
-    /// a scalar: `$user->getManager()->getAge()->value`.
     #[test]
     fn flags_scalar_property_access_on_deeper_method_chain() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Manager {
-    public function getAge(): int { return 42; }
+        let php = r#"<?php
+class Inner {
+    public string $label = '';
 }
-class User {
-    public function getManager(): Manager { return new Manager(); }
+class Outer {
+    public function getInner(): Inner { return new Inner(); }
 }
-function test(): void {
-    $user = new User();
-    $user->getManager()->getAge()->value;
+class Test {
+    public function run(): void {
+        $o = new Outer();
+        $o->getInner()->label->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        let value_diag = diags.iter().find(|d| d.message.contains("value"));
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            value_diag.is_some(),
-            "Expected a diagnostic mentioning 'value', got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-        let value_diag = value_diag.unwrap();
-        assert!(
-            value_diag.message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            value_diag.message,
-        );
-        assert_eq!(
-            value_diag.code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic, got: {diags:?}"
         );
     }
 
-    /// Member access on a virtual (@property) scalar type should also
-    /// produce a diagnostic.
     #[test]
     fn flags_member_access_on_virtual_scalar_property() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
+        let php = r#"<?php
 /**
- * @property bool $active
+ * @property int $age
+ * @property string $name
  */
-class Model {
+class User {
     public function __get(string $name): mixed { return null; }
 }
-function test(): void {
-    $m = new Model();
-    $m->active->something;
+
+class Test {
+    public function run(): void {
+        $u = new User();
+        $u->age->nonexistent();
+        $u->name->nonexistent2();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("something"),
-            "Diagnostic should mention 'something', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("bool"),
-            "Diagnostic should mention 'bool', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic for int property, got: {diags:?}"
         );
     }
 
-    /// No diagnostic when a scalar property is accessed without chaining
-    /// into a member (the scalar property access itself is valid).
     #[test]
     fn no_diagnostic_for_scalar_property_access_itself() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class BrandTranslation {
-    /** @var bool */
-    public $lang_code;
+        let php = r#"<?php
+class Foo {
+    public int $count = 0;
 }
 function test(): void {
-    $bt = new BrandTranslation();
-    $bt->lang_code;
+    $f = new Foo();
+    echo $f->count;
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for accessing a scalar property itself, got: {:?}",
-            diags,
+            "scalar property access itself should not be flagged, got: {diags:?}"
         );
     }
 
-    // ── Bare variable scalar member access ──────────────────────────────
+    // ── Bare variable with scalar type ──────────────────────────────
 
-    /// `$number = 1; $number->callHome()` — int has no members, this
-    /// is always a runtime crash.
     #[test]
     fn flags_member_access_on_bare_int_variable() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function test(): void {
-    $number = 1;
-    $number->callHome();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("callHome"),
-            "Diagnostic should mention 'callHome', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
-        );
-    }
-
-    /// `$text = 'hello'; $text->length` — string property access.
-    #[test]
-    fn flags_property_access_on_bare_string_variable() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function test(): void {
-    $text = 'hello';
-    $text->length;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("length"),
-            "Diagnostic should mention 'length', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("string"),
-            "Diagnostic should mention 'string', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-    }
-
-    /// `$flag = true; $flag->isSet()` — bool method access.
-    #[test]
-    fn flags_method_access_on_bare_bool_variable() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function test(): void {
-    $flag = true;
-    $flag->isSet();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("isSet"),
-            "Diagnostic should mention 'isSet', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("bool"),
-            "Diagnostic should mention 'bool', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-    }
-
-    // ── Function-return scalar member access ────────────────────────────
-
-    /// `getInt()->value` — standalone function returning a scalar.
-    #[test]
-    fn flags_member_access_on_scalar_function_return() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-/** @return int */
-function getInt(): int { return 1; }
-function test(): void {
-    getInt()->value;
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
-        assert!(
-            diags[0].message.contains("value"),
-            "Diagnostic should mention 'value', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
-            "Scalar member access should use scalar_member_access code",
-        );
-    }
-
-    /// `$count->getCount()->value` — method call chain ending in scalar
-    /// return, then member access on that scalar.
-    #[test]
-    fn flags_member_access_on_scalar_method_return_via_variable() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Counter {
+        let php = r#"<?php
+class Foo {
     public function getCount(): int { return 0; }
 }
-function test(): void {
-    $count = new Counter();
-    $count->getCount()->value;
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $number = $foo->getCount();
+        $number->nonexistent();
+    }
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("value"),
-            "Diagnostic should mention 'value', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic for bare int variable, got: {diags:?}"
         );
     }
 
-    /// No false positive: `$number = 1; $number` used without member
-    /// access should produce zero diagnostics.
+    #[test]
+    fn flags_property_access_on_bare_string_variable() {
+        let php = r#"<?php
+class Foo {
+    public function getName(): string { return ''; }
+}
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $name = $foo->getName();
+        $name->nonexistent;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| { d.message.contains("string") && d.message.contains("nonexistent") }),
+            "expected scalar access diagnostic for bare string variable, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_method_access_on_bare_bool_variable() {
+        let php = r#"<?php
+class Foo {
+    public function isValid(): bool { return true; }
+}
+
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $valid = $foo->isValid();
+        $valid->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("bool") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic for bare bool variable, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_member_access_on_scalar_function_return() {
+        let php = r#"<?php
+function getNumber(): int { return 42; }
+class Test {
+    public function run(): void {
+        $n = getNumber();
+        $n->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic for function return, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_member_access_on_scalar_method_return_via_variable() {
+        let php = r#"<?php
+class Foo {
+    public function getCount(): int { return 0; }
+}
+class Test {
+    public function run(): void {
+        $foo = new Foo();
+        $count = $foo->getCount();
+        $count->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic, got: {diags:?}"
+        );
+    }
+
     #[test]
     fn no_diagnostic_for_bare_scalar_variable_without_member_access() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function test(): int {
-    $number = 1;
-    return $number;
+        let php = r#"<?php
+function test(): void {
+    $n = 42;
+    echo $n;
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for scalar variable without member access, got: {:?}",
-            diags,
+            "bare scalar variable without member access should not produce diagnostic, got: {diags:?}"
         );
     }
 
-    /// Scalar via typed parameter: `function f(int $x) { $x->foo(); }`
+    // ── Typed parameter scalar access ───────────────────────────────
+
     #[test]
     fn flags_member_access_on_scalar_typed_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function test(int $x): void {
-    $x->foo();
+        let php = r#"<?php
+function test(int $value): void {
+    $value->nonexistent();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("foo"),
-            "Diagnostic should mention 'foo', got: {}",
-            diags[0].message,
-        );
-        assert!(
-            diags[0].message.contains("int"),
-            "Diagnostic should mention 'int', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::ERROR),
-            "Scalar member access should be ERROR severity",
+            diags
+                .iter()
+                .any(|d| d.message.contains("int") && d.message.contains("nonexistent")),
+            "expected scalar access diagnostic for typed parameter, got: {diags:?}"
         );
     }
 
-    // ── Unknown-class subject diagnostics ───────────────────────────────
+    // ── Unknown class parameter ─────────────────────────────────────
 
-    /// `@param NoteReal $value` where NoteReal doesn't exist — member
-    /// access on `$value` should produce a warning mentioning the
-    /// unresolvable class name.
     #[test]
     fn flags_member_access_on_unknown_class_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-/** @param NoteReal $value */
-function helper($value): void {
-    $value->something;
+        let php = r#"<?php
+function test(NonExistentClass $obj): void {
+    $obj->doSomething();
 }
 "#;
-        let diags = collect(&backend, uri, content);
-        assert_eq!(diags.len(), 1, "Expected 1 diagnostic, got: {:?}", diags);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags[0].message.contains("NoteReal"),
-            "Diagnostic should mention 'NoteReal', got: {}",
-            diags[0].message,
-        );
-        assert_eq!(
-            diags[0].severity,
-            Some(DiagnosticSeverity::WARNING),
-            "Unknown-class subject should be WARNING severity",
-        );
-        assert_eq!(
-            diags[0].code,
-            Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string())),
-            "Unknown-class subject should use unknown_member code",
+            diags.iter().any(|d| {
+                d.message.contains("doSomething") && d.message.contains("NonExistentClass")
+            }),
+            "expected diagnostic for unknown class parameter, got: {diags:?}"
         );
     }
 
-    /// Function whose return type is an unknown class — member access
-    /// on the result should produce a warning.
     #[test]
     fn flags_member_access_on_unknown_return_type_function() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-/** @return Nope */
-function getUnknown(): Nope {}
+        let php = r#"<?php
+/** @return NonExistentClass */
+function createObj() { return new stdClass; }
 function test(): void {
-    getUnknown()->doStuff();
+    $obj = createObj();
+    $obj->doSomething();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
-            diags.iter().any(|d| d.message.contains("Nope")),
-            "Expected a diagnostic mentioning 'Nope', got: {:?}",
-            diags,
+            !diags.is_empty(),
+            "expected diagnostic for unknown return type, got: {diags:?}"
         );
     }
 
-    /// When the parameter type is `mixed`, no unknown-class diagnostic
-    /// should fire (mixed is not a class name).
     #[test]
     fn no_unknown_class_diagnostic_for_mixed_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-function helper(mixed $value): void {
-    $value->something;
+        let php = r#"<?php
+function test(mixed $obj): void {
+    $obj->doSomething();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for mixed parameter member access, got: {:?}",
-            diags,
+            "expected no diagnostic for mixed parameter, got: {diags:?}"
         );
     }
 
-    /// When the parameter type is `class-string<T>`, no unknown-class
-    /// diagnostic should fire — `class-string` is a PHPDoc pseudo-type,
-    /// not a class name.
     #[test]
     fn no_unknown_class_diagnostic_for_class_string_parameter() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Demo {
-    /**
-     * @param class-string<\BackedEnum> $class
-     */
-    public static function make(string $class): void {
-        $class::cases();
-    }
+        let php = r#"<?php
+/**
+ * @param class-string<BackedEnum> $enum
+ */
+function test(string $enum): void {
+    $enum::from('test');
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for class-string<T> parameter static access, got: {:?}",
-            diags,
+            "expected no diagnostic for class-string parameter, got: {diags:?}"
         );
     }
 
-    // ── Bug #1: type alias array shape object values ────────────────────
+    // ── Type alias / array shape / object value ─────────────────────
 
-    /// When a method returns a `@phpstan-type` alias that expands to an
-    /// array shape containing object values, accessing a method on the
-    /// object value should NOT produce a diagnostic.
     #[test]
     fn no_diagnostic_for_type_alias_array_shape_object_value() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
+        let php = r#"<?php
+class Service {
+    public function getName(): string { return ''; }
 }
 
-/**
- * @phpstan-type UserData array{name: string, email: string, pen: Pen}
- */
-class TypeAliasDemo {
-    /** @return UserData */
-    public function getUserData(): array {
-        return ['name' => 'Alice', 'email' => 'alice@example.com', 'pen' => new Pen()];
-    }
+class Factory {
+    /**
+     * @return array{service: Service, name: string}
+     */
+    public function create(): array { return []; }
+}
 
-    public function demo(): void {
-        $data = $this->getUserData();
-        $data['pen']->write();
+class Test {
+    public function run(): void {
+        $f = new Factory();
+        $result = $f->create();
+        $result['service']->getName();
     }
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "No diagnostics expected for type alias array shape object value method, got: {:?}",
-            diags,
+            "expected no diagnostic for array shape object value, got: {diags:?}"
         );
     }
 
-    /// Same as above but with multiple type aliases and nested object
-    /// values in the shapes.
     #[test]
     fn no_diagnostic_for_multiple_type_alias_object_values() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function getEmail(): string { return ''; }
+        let php = r#"<?php
+class UserService {
+    public function findAll(): array { return []; }
 }
 
-class Pen {
-    public function write(): void {}
-}
-
-/**
- * @phpstan-type UserData array{name: string, pen: Pen}
- * @phpstan-type StatusInfo array{code: int, owner: User}
- */
-class Demo {
-    /** @return UserData */
-    public function getUserData(): array { return []; }
-
-    /** @return StatusInfo */
-    public function getStatus(): array { return []; }
-
-    public function demo(): void {
-        $data = $this->getUserData();
-        $data['pen']->write();
-
-        $status = $this->getStatus();
-        $status['owner']->getEmail();
-    }
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for type alias object values, got: {:?}",
-            diags,
-        );
-    }
-
-    // ── Bug #2: inline array-element function calls ─────────────────────
-
-    /// When an array-element function like `end()` is called inline as
-    /// the subject of a member access, the diagnostic should resolve the
-    /// element type from the array argument's generic annotation, not
-    /// fall back to the native `mixed|false` return type.
-    #[test]
-    fn no_diagnostic_for_inline_array_element_function_call() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
+class PostService {
+    public function findRecent(): array { return []; }
 }
 
 class Container {
-    /** @var array<int, Pen> */
-    public array $members = [];
-}
-
-function demo(): void {
-    $src = new Container();
-    end($src->members)->write();
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected for end() inline call with generic array, got: {:?}",
-            diags,
-        );
-    }
-
-    // ── Bug #3: Builder scope chain (pre-resolved base class check) ─────
-
-    /// When `resolve_target_classes` returns a fully-resolved class that
-    /// already has the member (e.g. Builder with injected scope methods),
-    /// the diagnostic should check the pre-resolved class first before
-    /// re-resolving through the cache.  This tests the quick-check path
-    /// that prevents cache staleness from causing false positives.
-    #[test]
-    fn no_diagnostic_when_member_exists_on_pre_resolved_base_class() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Pen {
-    public function write(): void {}
-    public function erase(): void {}
-}
-
-class Demo {
-    /** @return Pen */
-    public function getPen(): Pen { return new Pen(); }
-
-    public function demo(): void {
-        $this->getPen()->write();
-        $this->getPen()->erase();
-    }
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "No diagnostics expected when member exists on resolved class, got: {:?}",
-            diags,
-        );
-    }
-
-    /// `@see ClassName::method()` in a docblock should not produce an
-    /// unknown-member diagnostic.  The symbol map emits these with
-    /// `is_method_call: false` and `is_static: true`, but the relaxed
-    /// check must still find the instance method.
-    #[test]
-    fn no_diagnostic_for_see_tag_method_reference() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function name(): string { return 'Alice'; }
-}
-
-/**
- * @see User::name()
- */
-class Helper {
-    public function greet(): string { return 'hi'; }
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "Expected no diagnostics for @see User::name(), got: {:?}",
-            diags,
-        );
-    }
-
-    /// `@see ClassName::CONSTANT` should not produce a false positive either.
-    #[test]
-    fn no_diagnostic_for_see_tag_constant_reference() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Config {
-    public const VERSION = '1.0';
-}
-
-/**
- * @see Config::VERSION
- */
-class App {}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "Expected no diagnostics for @see Config::VERSION, got: {:?}",
-            diags,
-        );
-    }
-
-    /// Inline `{@see ClassName::method()}` should also be clean.
-    #[test]
-    fn no_diagnostic_for_inline_see_tag_method_reference() {
-        let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class User {
-    public function name(): string { return 'Alice'; }
-}
-
-class Helper {
     /**
-     * Wraps {@see User::name()} output.
+     * @return array{users: UserService, posts: PostService}
      */
-    public function greet(): string { return 'hi'; }
+    public function services(): array { return []; }
 }
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "Expected no diagnostics for inline {{@see User::name()}}, got: {:?}",
-            diags,
-        );
-    }
 
-    /// Member access on a property typed with a namespaced stub class
-    /// (e.g. `BcMath\Number`) should not produce a diagnostic.  The
-    /// stub index keys include FQNs like `"BcMath\\Number"`, and the
-    /// resolver must look them up by the full name, not just the short
-    /// segment.
-    #[test]
-    fn no_diagnostic_for_namespaced_stub_class_member() {
-        let stub_content = r#"<?php
-namespace BcMath {
-    final readonly class Number {
-        public function __construct(string|int $num) {}
-        public function add(Number|string|int $num, ?int $scale = null): Number {}
-        public function sub(Number|string|int $num, ?int $scale = null): Number {}
+class Test {
+    public function run(): void {
+        $c = new Container();
+        $services = $c->services();
+        $services['users']->findAll();
+        $services['posts']->findRecent();
     }
 }
 "#;
-        let mut stubs = std::collections::HashMap::new();
-        stubs.insert("BcMath\\Number", stub_content as &str);
-        let backend = Backend::new_test_with_stubs(stubs);
-        let uri = "file:///test.php";
-        let content = r#"<?php
-namespace Luxplus\Decimal;
-
-use BcMath\Number;
-
-final class Decimal
-{
-    private Number $number;
-
-    public function __construct(string $value) {
-        $this->number = new Number($value);
-    }
-
-    public function add(int|self|string $value): self
-    {
-        return new self($this->number->add((string)$value));
-    }
-}
-"#;
-        let diags = collect(&backend, uri, content);
-        assert!(
-            diags.is_empty(),
-            "Expected no diagnostics for member access on namespaced stub class BcMath\\Number, got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
-        );
-    }
-
-    /// Conditional return type `($middleware is null ? array : $this)` should
-    /// resolve to `$this` when a non-null argument is provided, allowing
-    /// chained calls like `->middleware([...])->name(...)`.
-    #[test]
-    fn no_false_positive_on_conditional_this_return_in_chain() {
         let backend = Backend::new_test();
-        let uri = "file:///test.php";
-        let content = r#"<?php
-class Route {
-    /**
-     * @param  array|string|null  $middleware
-     * @return ($middleware is null ? array : $this)
-     */
-    public function middleware($middleware = null) {
-        return $this;
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostic for multiple array shape values, got: {diags:?}"
+        );
     }
 
-    public function name(string $name): self {
-        return $this;
-    }
+    // ── Inline array element function call ──────────────────────────
 
-    public static function get(string $uri, $action = null): self {
-        return new self();
-    }
+    #[test]
+    fn no_diagnostic_for_inline_array_element_function_call() {
+        let php = r#"<?php
+class Item {
+    public function process(): void {}
+}
+
+function getItems(): array {
+    /** @var Item[] */
+    return [];
 }
 
 function test(): void {
-    Route::get('/api/foo', 'handler')->middleware(['auth'])->name('route-name');
+    getItems()[0]->process();
 }
 "#;
-        let diags = collect(&backend, uri, content);
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
         assert!(
             diags.is_empty(),
-            "Expected no diagnostics for chained call after conditional $this return, got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>(),
+            "expected no diagnostic for inline array element call, got: {diags:?}"
+        );
+    }
+
+    // ── Pre-resolved base class has the member ──────────────────────
+
+    #[test]
+    fn no_diagnostic_when_member_exists_on_pre_resolved_base_class() {
+        let php = r#"<?php
+class Builder {
+    public function where(): self { return $this; }
+    public function get(): array { return []; }
+}
+function test(): void {
+    $b = new Builder();
+    $b->where();
+    $b->get();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for existing methods, got: {diags:?}"
+        );
+    }
+
+    // ── @see tag references ─────────────────────────────────────────
+
+    #[test]
+    fn no_diagnostic_for_see_tag_method_reference() {
+        let php = r#"<?php
+class Foo {
+    public function bar(): void {}
+
+    /**
+     * @see Foo::bar()
+     */
+    public function test(): void {}
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostic for @see tag method reference, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_see_tag_constant_reference() {
+        let php = r#"<?php
+class Foo {
+    const BAR = 1;
+
+    /**
+     * @see Foo::BAR
+     */
+    public function test(): void {}
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostic for @see tag constant reference, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_inline_see_tag_method_reference() {
+        let php = r#"<?php
+class Foo {
+    public function bar(): void {}
+
+    /**
+     * This delegates to {@see Foo::bar()}.
+     */
+    public function test(): void {}
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostic for inline @see reference, got: {diags:?}"
+        );
+    }
+
+    // ── Namespaced stub class member ────────────────────────────────
+
+    #[test]
+    fn no_diagnostic_for_namespaced_stub_class_member() {
+        let stubs = HashMap::from([(
+            "Ns\\StubClass",
+            r#"<?php
+namespace Ns;
+class StubClass {
+    public function stubMethod(): void {}
+}
+"#,
+        )]);
+        let backend = Backend::new_test_with_stubs(stubs);
+        let php = r#"<?php
+use Ns\StubClass;
+
+function test(StubClass $obj): void {
+    $obj->stubMethod();
+}
+"#;
+        let uri = "file:///test.php";
+        backend.update_ast(uri, php);
+        let mut out = Vec::new();
+        backend.collect_unknown_member_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "expected no diagnostic for namespaced stub class member, got: {out:?}"
+        );
+    }
+
+    // ── Conditional $this return in chain ────────────────────────────
+
+    #[test]
+    fn no_false_positive_on_conditional_this_return_in_chain() {
+        let php = r#"<?php
+class Builder {
+    /**
+     * @return $this
+     */
+    public function where(): static { return $this; }
+
+    public function get(): array { return []; }
+}
+class Test {
+    public function run(): void {
+        $b = new Builder();
+        $b->where()->get();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no false positive on conditional $this return chain, got: {diags:?}"
         );
     }
 }

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Diagnostic performance on large files.** Unknown-member diagnostics on files with many member accesses are up to 7× faster. The diagnostic pass now caches subject resolution per unique (subject, access kind, scope) tuple, eliminating hundreds of redundant file re-parses that occurred when the same variable or `$this` appeared in many member accesses within a single class.
 - **Progress notifications.** The server no longer sends `window/workDoneProgress/create` requests to clients that do not advertise support for it. Previously this could block clients indefinitely while they waited for a response that never came.
 - **Change visibility.** The code action no longer appears when the cursor is inside a method body. It now only triggers on the method signature (modifiers, name, parameters, return type).
 - **Update docblock.** The code action no longer appears when the cursor is inside a function or method body. It now only triggers on the signature or the preceding docblock.

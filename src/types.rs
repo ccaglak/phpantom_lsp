@@ -696,7 +696,7 @@ pub struct DefineInfo {
 }
 
 /// Describes the access operator that triggered completion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessKind {
     /// Completion triggered after `->` (instance access).
     Arrow,

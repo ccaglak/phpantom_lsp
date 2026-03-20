@@ -169,6 +169,8 @@ unlikely to move the needle for most users.
 |     | **[Bug Fixes](todo/bugs.md)**                                                                                                                                |            |             |
 | B11 | [Diagnostic deduplication drops distinct diagnostics on same range](todo/bugs.md#b11--diagnostic-deduplication-drops-distinct-diagnostics-on-the-same-range) | Medium     | Low         |
 | B13 | [Argument count diagnostic flags too many arguments by default](todo/bugs.md#b13-argument-count-diagnostic-flags-too-many-arguments-by-default)              | High       | Low         |
+| B14 | [Redundant file re-parsing in unknown-member diagnostics](todo/bugs.md#b14-redundant-file-re-parsing-in-unknown-member-diagnostics)                          | Medium     | Medium-High |
+| B15 | [Array element from method return chain not resolved in diagnostics](todo/bugs.md#b15-array-element-from-method-return-chain-not-resolved-in-diagnostics)    | Low        | Low         |
 |     | **[Inline Completion](todo/inline-completion.md)**                                                                                                           |            |             |
 | N1  | Template engine (type-aware snippets)                                                                                                                        | Medium     | High        |
 | N2  | N-gram prediction from PHP corpus                                                                                                                            | Medium     | Very High   |
