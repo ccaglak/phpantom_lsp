@@ -42,7 +42,7 @@ use crate::completion::named_args::{NamedArgContext, parse_existing_args};
 use crate::docblock::types::PHPDOC_TYPE_KEYWORDS;
 use crate::symbol_map::SymbolKind;
 use crate::types::{CompletionTarget, FileContext};
-use crate::util::{find_class_at_offset, position_to_offset};
+use crate::util::{find_class_at_offset, position_to_byte_offset, position_to_offset};
 
 /// Filter out completion items for classes defined in the current file.
 ///
@@ -50,6 +50,61 @@ use crate::util::{find_class_at_offset, position_to_offset};
 /// from the file you are already in.  The `detail` field of each item
 /// carries the FQN, which is matched against the FQNs of classes in the
 /// file's `ctx.classes` (from the ast_map).
+/// Check whether a `(` immediately follows the cursor position (past any
+/// partial identifier the user has already typed).
+///
+/// When the user is renaming an existing call — `$obj->oldName|()`,
+/// `functionNa|()`, `new ClassNa|()` — the opening paren is already
+/// present and inserting a snippet with its own `()` would produce
+/// double parentheses like `method()()`.
+fn paren_follows_cursor(content: &str, position: Position) -> bool {
+    let byte_off = position_to_byte_offset(content, position);
+    let rest = &content[byte_off..];
+    // Skip past any partial identifier the user has typed
+    // (ASCII letters, digits, underscore, backslash for namespaced names).
+    let after_ident =
+        rest.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '\\');
+    after_ident.starts_with('(')
+}
+
+/// Downgrade callable snippet items to plain-name insertions.
+///
+/// When `(` already follows the cursor, snippets that insert their own
+/// parentheses would produce duplicates.  This strips the snippet
+/// format and replaces the insert text with just the name from
+/// `filter_text`.
+///
+/// Applies to methods, functions, and class names (for `new` / `throw new`).
+fn strip_snippet_parens(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
+    items
+        .into_iter()
+        .map(|mut item| {
+            if item.insert_text_format == Some(InsertTextFormat::SNIPPET)
+                && matches!(
+                    item.kind,
+                    Some(CompletionItemKind::METHOD)
+                        | Some(CompletionItemKind::FUNCTION)
+                        | Some(CompletionItemKind::CLASS)
+                )
+            {
+                // Replace the snippet with just the name
+                // (the filter_text already holds it).
+                if let Some(ref name) = item.filter_text {
+                    item.insert_text = Some(name.clone());
+                }
+                // Also clear any text_edit that carries the snippet text.
+                if let Some(CompletionTextEdit::Edit(ref mut te)) = item.text_edit
+                    && let Some(ref name) = item.filter_text
+                {
+                    te.new_text = name.clone();
+                }
+                item.insert_text_format = None;
+            }
+            item
+        })
+        .collect()
+}
+
 fn filter_current_file_classes(
     items: Vec<CompletionItem>,
     ctx: &FileContext,
@@ -887,42 +942,12 @@ impl Backend {
         match member_items {
             Some(all_items) if !all_items.is_empty() => {
                 // ── B15: suppress snippet parentheses when `(` already follows ──
-                // When completing `$obj->|()` or `$obj->meth|()`, the
-                // character after the cursor (past any partial identifier)
-                // is already `(`.  Inserting a snippet with its own `()`
-                // would produce `method()()`.  Detect this and downgrade
-                // callable snippets to plain method-name insertions.
-                let paren_follows = {
-                    let byte_off = crate::util::position_to_byte_offset(content, position);
-                    let rest = &content[byte_off..];
-                    // Skip past any partial identifier the user has typed
-                    // (ASCII letters, digits, underscore).
-                    let after_ident =
-                        rest.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
-                    after_ident.starts_with('(')
-                };
-
-                if paren_follows {
-                    let stripped: Vec<CompletionItem> = all_items
-                        .into_iter()
-                        .map(|mut item| {
-                            if item.kind == Some(CompletionItemKind::METHOD)
-                                && item.insert_text_format == Some(InsertTextFormat::SNIPPET)
-                            {
-                                // Replace the snippet with just the method
-                                // name (the filter_text already holds it).
-                                if let Some(ref name) = item.filter_text {
-                                    item.insert_text = Some(name.clone());
-                                }
-                                item.insert_text_format = None;
-                            }
-                            item
-                        })
-                        .collect();
-                    Some(CompletionResponse::Array(stripped))
+                let items = if paren_follows_cursor(content, position) {
+                    strip_snippet_parens(all_items)
                 } else {
-                    Some(CompletionResponse::Array(all_items))
-                }
+                    all_items
+                };
+                Some(CompletionResponse::Array(items))
             }
             _ => None,
         }
@@ -980,6 +1005,7 @@ impl Backend {
             &ctx.namespace,
         );
         if catch_ctx.has_specific_types && !items.is_empty() {
+            // These items don't carry snippets, but guard for consistency.
             return Some(CompletionResponse::Array(items));
         }
 
@@ -1017,9 +1043,14 @@ impl Backend {
         if all_items.is_empty() {
             None
         } else {
+            let items = if paren_follows_cursor(content, position) {
+                strip_snippet_parens(all_items)
+            } else {
+                all_items
+            };
             Some(CompletionResponse::List(CompletionList {
                 is_incomplete: class_incomplete,
-                items: all_items,
+                items,
             }))
         }
     }
@@ -1053,9 +1084,14 @@ impl Backend {
         if class_items.is_empty() {
             None
         } else {
+            let items = if paren_follows_cursor(content, position) {
+                strip_snippet_parens(class_items)
+            } else {
+                class_items
+            };
             Some(CompletionResponse::List(CompletionList {
                 is_incomplete: class_incomplete,
-                items: class_items,
+                items,
             }))
         }
     }
@@ -1249,9 +1285,14 @@ impl Backend {
             if class_items.is_empty() {
                 return None;
             }
+            let items = if paren_follows_cursor(content, position) {
+                strip_snippet_parens(class_items)
+            } else {
+                class_items
+            };
             return Some(CompletionResponse::List(CompletionList {
                 is_incomplete: class_incomplete,
-                items: class_items,
+                items,
             }));
         }
 
@@ -1266,6 +1307,15 @@ impl Backend {
         let mut items = class_items;
         items.extend(constant_items);
         items.extend(function_items);
+
+        // Strip snippet parentheses when `(` already follows the cursor
+        // (e.g. `array_map|()` or `new ClassName|()`).
+        let items = if paren_follows_cursor(content, position) {
+            strip_snippet_parens(items)
+        } else {
+            items
+        };
+
         Some(CompletionResponse::List(CompletionList {
             is_incomplete: class_incomplete || const_incomplete || func_incomplete,
             items,

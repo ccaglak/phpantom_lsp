@@ -904,3 +904,169 @@ async fn test_snippet_preserved_when_no_parens_follow() {
         "should use snippet format when no parens follow"
     );
 }
+
+// ─── Suppress parentheses for standalone function calls ─────────────────────
+
+/// When completing `array_m|()`, the parentheses already exist.
+/// The function completion should insert just the name, not a snippet.
+#[tokio::test]
+async fn test_snippet_suppressed_for_function_when_parens_follow() {
+    let backend = create_test_backend_with_function_stubs();
+    let uri = Url::parse("file:///func_paren_follows.php").unwrap();
+    let text = concat!("<?php\n", "array_m()\n",);
+
+    // Cursor after `array_m`, before `()`.
+    let items = complete_at(&backend, &uri, text, 1, 7).await;
+    let item = find_function(&items, "array_map").expect("Should find array_map");
+
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("array_map"),
+        "should insert plain function name when parens already follow"
+    );
+    assert!(
+        item.insert_text_format != Some(InsertTextFormat::SNIPPET),
+        "should not use snippet format for function when parens already follow"
+    );
+}
+
+/// When completing a function call without existing parens, the snippet
+/// should still include `()`.
+#[tokio::test]
+async fn test_snippet_preserved_for_function_when_no_parens_follow() {
+    let backend = create_test_backend_with_function_stubs();
+    let uri = Url::parse("file:///func_no_paren.php").unwrap();
+    let text = concat!("<?php\n", "array_m\n",);
+
+    let items = complete_at(&backend, &uri, text, 1, 7).await;
+    let item = find_function(&items, "array_map").expect("Should find array_map");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "should use snippet format for function when no parens follow"
+    );
+    assert!(
+        item.insert_text.as_deref().unwrap_or("").contains('('),
+        "should include parens in snippet when none follow"
+    );
+}
+
+// ─── Suppress parentheses for `new ClassName()` ─────────────────────────────
+
+/// When completing `new Gadge|()`, the parentheses already exist.
+/// The class completion should insert just the name, not a snippet.
+#[tokio::test]
+async fn test_snippet_suppressed_for_new_when_parens_follow() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///new_paren_follows.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Gadget {\n",
+        "    public function __construct(int $x) {}\n",
+        "}\n",
+        "$g = new Gadge()\n",
+    );
+
+    // Cursor after `Gadge`, before `()`.  Line 4, col 15 = right after `Gadge`.
+    let items = complete_at(&backend, &uri, text, 4, 14).await;
+    let item = find_class(&items, "Gadget").expect("Should find Gadget");
+
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("Gadget"),
+        "should insert plain class name when parens already follow in new expression"
+    );
+    assert!(
+        item.insert_text_format != Some(InsertTextFormat::SNIPPET),
+        "should not use snippet format for new when parens already follow"
+    );
+}
+
+/// When completing `new Gadge` without trailing parens, the snippet
+/// should still include `()`.
+#[tokio::test]
+async fn test_snippet_preserved_for_new_when_no_parens_follow() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///new_no_paren.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Gadget {\n",
+        "    public function __construct(int $x) {}\n",
+        "}\n",
+        "$g = new Gadge\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 4, 14).await;
+    let item = find_class(&items, "Gadget").expect("Should find Gadget");
+
+    assert_eq!(
+        item.insert_text_format,
+        Some(InsertTextFormat::SNIPPET),
+        "should use snippet format for new when no parens follow"
+    );
+    assert!(
+        item.insert_text.as_deref().unwrap_or("").contains('('),
+        "should include parens in snippet for new when none follow"
+    );
+}
+
+// ─── Suppress parentheses for `throw new Exception()` ───────────────────────
+
+/// When completing `throw new Excepti|()`, the parens already exist.
+#[tokio::test]
+async fn test_snippet_suppressed_for_throw_new_when_parens_follow() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///throw_paren_follows.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class MyException extends \\Exception {}\n",
+        "function boom() {\n",
+        "    throw new MyExcepti();\n",
+        "}\n",
+    );
+
+    // Cursor after `MyExcepti`, before `()`.
+    let items = complete_at(&backend, &uri, text, 3, 23).await;
+    let item = find_class(&items, "MyException").expect("Should find MyException");
+
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("MyException"),
+        "should insert plain class name for throw new when parens already follow"
+    );
+    assert!(
+        item.insert_text_format != Some(InsertTextFormat::SNIPPET),
+        "should not use snippet format for throw new when parens already follow"
+    );
+}
+
+// ─── Suppress parentheses for static method calls `Class::method()` ────────
+
+/// When completing `Gadget::doSt|()`, the parens already exist.
+#[tokio::test]
+async fn test_snippet_suppressed_for_static_call_when_parens_follow() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///static_paren_follows.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Gadget {\n",
+        "    public static function doStuff(int $x): void {}\n",
+        "}\n",
+        "Gadget::doSt()\n",
+    );
+
+    // Cursor after `doSt`, before `()`.
+    let items = complete_at(&backend, &uri, text, 4, 12).await;
+    let item = find_method(&items, "doStuff").expect("Should find doStuff");
+
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("doStuff"),
+        "should insert plain name for static call when parens already follow"
+    );
+    assert!(
+        item.insert_text_format != Some(InsertTextFormat::SNIPPET),
+        "should not use snippet format for static call when parens already follow"
+    );
+}
