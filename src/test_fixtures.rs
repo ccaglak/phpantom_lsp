@@ -32,9 +32,9 @@ pub fn make_class(name: &str) -> ClassInfo {
     ClassInfo {
         kind: ClassLikeKind::Class,
         name: name.to_string(),
-        methods: Vec::new(),
-        properties: Vec::new(),
-        constants: Vec::new(),
+        methods: Default::default(),
+        properties: Default::default(),
+        constants: Default::default(),
         start_offset: 0,
         end_offset: 0,
         keyword_offset: 0,

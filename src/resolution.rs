@@ -66,6 +66,11 @@ impl Backend {
             None
         };
 
+        // ── Negative cache: skip the full multi-phase search ──
+        if self.class_not_found_cache.read().contains(class_name) {
+            return None;
+        }
+
         // ── Phase 1: Search all already-parsed files in the ast_map ──
         // Checks short name + namespace to avoid false positives (e.g.
         // "Demo\\PDO" won't match the global "PDO" stub).
@@ -148,6 +153,9 @@ impl Backend {
             }
         }
 
+        // Cache the negative result so subsequent lookups for the same
+        // unknown class skip the expensive multi-phase search.
+        self.class_not_found_cache.write().insert(class_name.to_owned());
         None
     }
 
@@ -230,6 +238,11 @@ impl Backend {
         // Wrap each ClassInfo in Arc before inserting into the maps.
         let arc_classes: Vec<Arc<ClassInfo>> = classes.into_iter().map(Arc::new).collect();
 
+        // Check whether this URI already has an ast_map entry before
+        // we overwrite it.  Used below to decide whether resolved-class
+        // cache eviction is needed (only on re-parse, not first load).
+        let was_already_parsed = self.ast_map.read().contains_key(uri);
+
         self.ast_map
             .write()
             .insert(uri.to_owned(), arc_classes.clone());
@@ -254,13 +267,45 @@ impl Backend {
             }
         }
 
-        // Selectively invalidate the resolved-class cache for the
-        // classes defined in this file.  Loading a new file from disk
-        // (classmap, PSR-4, stubs) should not nuke cached resolutions
-        // for unrelated classes.  Only the FQNs we just parsed need
-        // to be evicted — their old (if any) cache entries were built
-        // without the members we just loaded.
+        // Remove newly-discovered FQNs from the negative-result cache.
         {
+            let nf_cache = self.class_not_found_cache.read();
+            if !nf_cache.is_empty() {
+                drop(nf_cache);
+                let mut nf_cache = self.class_not_found_cache.write();
+                for cls in &arc_classes {
+                    if cls.name.starts_with("__anonymous@") {
+                        continue;
+                    }
+                    let fqn = match &cls.file_namespace {
+                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                        _ => cls.name.clone(),
+                    };
+                    nf_cache.remove(&fqn);
+                }
+            }
+        }
+
+        // Selectively invalidate the resolved-class cache for the
+        // classes defined in this file.
+        //
+        // This function is only reached when the class was NOT found
+        // in ast_map (find_class_in_ast_map / fqn_index returned None).
+        // That means the class has never been parsed — so it cannot
+        // have a direct entry in the resolved-class cache.
+        //
+        // Dependents (e.g. a child class resolved before this parent
+        // was available) *could* hold stale entries, but the transitive
+        // evict_fqn scan is O(cache_size) per class and is called for
+        // every vendor class loaded from classmap / PSR-4 / stubs.
+        // With thousands of classes this becomes O(N²) and dominates
+        // total analysis time.
+        //
+        // Instead, only evict when the URI was already present in
+        // ast_map (i.e. a re-parse of a previously loaded file, which
+        // can happen in the LSP editing path).  For first-time loads
+        // the cost/benefit is strongly negative.
+        if was_already_parsed {
             let mut cache = self.resolved_class_cache.lock();
             for cls in &arc_classes {
                 let fqn = match &cls.file_namespace {

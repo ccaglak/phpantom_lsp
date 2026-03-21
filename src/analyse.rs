@@ -24,6 +24,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tower_lsp::lsp_types::*;
 
+use crate::parser::with_parse_cache;
+use crate::virtual_members::with_active_resolved_class_cache;
+
 use crate::Backend;
 use crate::composer;
 use crate::config;
@@ -110,26 +113,43 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         return 0;
     }
 
-    // ── 4. Collect diagnostics for every file (parallel) ────────────
-    // N worker threads each steal the next file index from a shared
-    // atomic counter.  This gives natural ~1-file batching with even
-    // work distribution regardless of per-file cost variance.
+    // ── 4. Two-phase parallel analysis ──────────────────────────────
+    //
+    // Phase 1 — **Parse**: run `update_ast` on every user file so that
+    // `fqn_index`, `ast_map`, `symbol_maps`, `use_map`, `namespace_map`
+    // and `class_index` are fully populated for the entire project.
+    //
+    // Phase 2 — **Diagnose**: collect diagnostics for every file.
+    // Because all user classes are already in `fqn_index`, cross-file
+    // references resolve via an O(1) hash lookup instead of falling
+    // through to classmap / PSR-4 lazy loading (which takes write
+    // locks and serialises threads).
+    //
+    // Splitting the work this way also means the diagnostic phase
+    // never triggers `parse_and_cache_file` for other *user* files,
+    // eliminating the main source of write-lock contention that
+    // previously caused the "stuck at 99 %" stall.
+
     let file_count = files.len();
     let severity_filter = options.severity_filter;
     let use_colour = options.use_colour;
-    let next_idx = AtomicUsize::new(0);
     let n_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
 
-    let mut all_file_diagnostics: Vec<(String, Vec<FileDiagnostic>)> = std::thread::scope(|s| {
+    // ── Phase 1: Parse all files (parallel) ─────────────────────────
+    // Read each file from disk and call `update_ast`.  Store the
+    // (uri, content) pairs so Phase 2 can reuse them without re-reading.
+    let next_idx = AtomicUsize::new(0);
+
+    let file_data: Vec<Option<(String, String)>> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..n_threads)
             .map(|_| {
                 let backend = &backend;
                 let next_idx = &next_idx;
                 let files = &files;
                 s.spawn(move || {
-                    let mut results: Vec<(String, Vec<FileDiagnostic>)> = Vec::new();
+                    let mut entries: Vec<(usize, String, String)> = Vec::new();
                     loop {
                         let i = next_idx.fetch_add(1, Ordering::Relaxed);
                         if i >= file_count {
@@ -146,22 +166,74 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         };
 
                         let uri = crate::util::path_to_uri(file_path);
-
-                        // Only update_ast is needed to populate the per-file
-                        // maps (ast_map, symbol_maps, use_map, namespace_map)
-                        // that the diagnostic collectors read from.
-                        //
-                        // We intentionally skip open_files insert/remove
-                        // (diagnostic collectors receive `content` directly)
-                        // and clear_file_maps (we *want* state to accumulate
-                        // so later files can resolve classes from earlier
-                        // files, and it contained an O(N) class_index retain
-                        // that serialised all threads).
                         backend.update_ast(&uri, &content);
+                        entries.push((i, uri, content));
+                    }
+                    entries
+                })
+            })
+            .collect();
+
+        // Collect into an indexed vec so Phase 2 can iterate in the
+        // same order as `files`.
+        let mut indexed: Vec<Option<(String, String)>> = (0..file_count).map(|_| None).collect();
+        for handle in handles {
+            for (i, uri, content) in handle.join().unwrap_or_default() {
+                indexed[i] = Some((uri, content));
+            }
+        }
+        indexed
+    });
+
+    if use_colour {
+        eprint!("\r\x1b[2K {}\n", progress_bar(file_count, file_count));
+    }
+
+    // ── Phase 2: Collect diagnostics (parallel) ─────────────────────
+    // Call individual collectors directly (instead of the grouped
+    // collect_slow_diagnostics) so we can time each one independently.
+    let next_idx = AtomicUsize::new(0);
+
+    let mut all_file_diagnostics: Vec<(String, Vec<FileDiagnostic>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let backend = &backend;
+                let next_idx = &next_idx;
+                let files = &files;
+                let file_data = &file_data;
+                s.spawn(move || {
+                    let mut results: Vec<(String, Vec<FileDiagnostic>)> = Vec::new();
+                    loop {
+                        let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                        if i >= file_count {
+                            break;
+                        }
+
+                        let (uri, content) = match &file_data[i] {
+                            Some(pair) => (&pair.0, &pair.1),
+                            None => continue, // file that failed to read
+                        };
+
+                        // Activate ONE parse cache for the entire file so
+                        // all collectors share the same parsed AST.  Each
+                        // collector's own `with_parse_cache` call becomes
+                        // a no-op (nested guard).
+                        let _parse_guard = with_parse_cache(content);
+                        let _cache_guard = with_active_resolved_class_cache(
+                            &backend.resolved_class_cache,
+                        );
 
                         let mut raw = Vec::new();
-                        backend.collect_fast_diagnostics(&uri, &content, &mut raw);
-                        backend.collect_slow_diagnostics(&uri, &content, &mut raw);
+                        backend.collect_fast_diagnostics(uri, content, &mut raw);
+                        backend.collect_unknown_class_diagnostics(uri, content, &mut raw);
+                        backend.collect_unknown_member_diagnostics(uri, content, &mut raw);
+                        backend.collect_unknown_function_diagnostics(uri, content, &mut raw);
+                        backend.collect_unresolved_member_access_diagnostics(
+                            uri, content, &mut raw,
+                        );
+                        backend.collect_argument_count_diagnostics(uri, content, &mut raw);
+                        backend.collect_implementation_error_diagnostics(uri, content, &mut raw);
+                        backend.collect_deprecated_diagnostics(uri, content, &mut raw);
 
                         let filtered: Vec<FileDiagnostic> = raw
                             .into_iter()
@@ -183,9 +255,9 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             .collect();
 
                         if !filtered.is_empty() {
-                            let display_path = file_path
+                            let display_path = files[i]
                                 .strip_prefix(root)
-                                .unwrap_or(file_path)
+                                .unwrap_or(&files[i])
                                 .to_string_lossy()
                                 .to_string();
                             results.push((display_path, filtered));
@@ -210,10 +282,6 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         .iter()
         .map(|(_, diags)| diags.len())
         .sum();
-
-    if use_colour {
-        eprint!("\r\x1b[2K {}\n", progress_bar(file_count, file_count));
-    }
 
     // ── 5. Render output ────────────────────────────────────────────
     if all_file_diagnostics.is_empty() {

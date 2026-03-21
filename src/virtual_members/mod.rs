@@ -51,6 +51,7 @@
 pub mod laravel;
 pub mod phpdoc;
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ use parking_lot::Mutex;
 
 use crate::inheritance::{
     apply_substitution, apply_substitution_to_method, apply_substitution_to_property,
-    resolve_class_with_inheritance,
+    resolve_class_with_inheritance, ClassRef,
 };
 use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
 use crate::util::short_name;
@@ -90,6 +91,76 @@ pub fn new_resolved_class_cache() -> ResolvedClassCache {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+// ─── Thread-local resolved-class cache access ───────────────────────────────
+//
+// Many code paths (e.g. `type_hint_to_classes`) call `resolve_class_fully`
+// without access to the `Backend`'s `resolved_class_cache`.  Rather than
+// threading the cache through dozens of function signatures, we use the
+// same thread-local guard pattern as the parse cache: the caller activates
+// the cache at a high level (e.g. the diagnostic loop), and inner functions
+// pick it up via `active_resolved_class_cache()`.
+
+thread_local! {
+    /// Raw pointer to the currently-active [`ResolvedClassCache`], or null.
+    ///
+    /// Set by [`with_active_resolved_class_cache`], read by
+    /// [`active_resolved_class_cache`].  The pointer is valid for the
+    /// lifetime of the [`ResolvedCacheGuard`] that set it.
+    static ACTIVE_RESOLVED_CACHE: Cell<*const ResolvedClassCache> = const { Cell::new(std::ptr::null()) };
+}
+
+/// RAII guard that clears the thread-local cache pointer on drop.
+pub struct ResolvedCacheGuard {
+    prev: *const ResolvedClassCache,
+}
+
+impl Drop for ResolvedCacheGuard {
+    fn drop(&mut self) {
+        ACTIVE_RESOLVED_CACHE.with(|c| c.set(self.prev));
+    }
+}
+
+/// Activate a [`ResolvedClassCache`] for the current thread.
+///
+/// While the returned guard is alive, [`active_resolved_class_cache`]
+/// returns `Some(&cache)`.  Supports nesting (restores the previous
+/// cache on drop).
+///
+/// # Example
+///
+/// ```ignore
+/// let _guard = with_active_resolved_class_cache(&backend.resolved_class_cache);
+/// // … deep call stacks can now use active_resolved_class_cache()
+/// ```
+pub fn with_active_resolved_class_cache(cache: &ResolvedClassCache) -> ResolvedCacheGuard {
+    let prev = ACTIVE_RESOLVED_CACHE.with(|c| c.get());
+    ACTIVE_RESOLVED_CACHE.with(|c| c.set(cache as *const _));
+    ResolvedCacheGuard { prev }
+}
+
+/// Return the currently-active [`ResolvedClassCache`], if any.
+///
+/// Returns `None` when no [`with_active_resolved_class_cache`] guard
+/// is alive on this thread.
+///
+/// # Safety
+///
+/// The returned reference borrows the cache through a raw pointer set
+/// by [`with_active_resolved_class_cache`].  This is safe because the
+/// pointer is only non-null while the [`ResolvedCacheGuard`] (which
+/// holds a borrow of the original `&ResolvedClassCache`) is alive.
+pub fn active_resolved_class_cache() -> Option<&'static ResolvedClassCache> {
+    let ptr = ACTIVE_RESOLVED_CACHE.with(|c| c.get());
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: ptr was set from a valid &ResolvedClassCache reference
+        // and the ResolvedCacheGuard that owns the borrow is still alive
+        // (it clears the pointer on drop).
+        Some(unsafe { &*ptr })
+    }
+}
+
 /// Evict all cache entries whose FQN matches the given name, then
 /// transitively evict any cached class that depends on the evicted
 /// FQN through `parent_class`, `used_traits`, `interfaces`, or
@@ -106,12 +177,33 @@ pub fn new_resolved_class_cache() -> ResolvedClassCache {
 /// the child's cache entry still holds the old inherited property and
 /// must be discarded.
 pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn: &str) {
-    // Collect the set of FQNs to evict, starting with the requested one.
-    // After removing direct matches, scan remaining entries for classes
-    // whose inheritance chain references any evicted FQN and repeat
-    // until no new dependents are found (fixed-point).
-    let mut evicted: Vec<String> = vec![fqn.to_string()];
+    // Fast path: nothing to evict from an empty cache.
+    if cache.is_empty() {
+        return;
+    }
+
+    // Remove direct matches for this FQN (any generic-arg variant).
+    let before = cache.len();
     cache.retain(|(k, _), _| k != fqn);
+    let removed_direct = cache.len() < before;
+
+    // If the FQN wasn't in the cache, do a single pass to check
+    // whether any remaining entry depends on it.  When nothing
+    // depends on it either (the overwhelmingly common case during
+    // bulk loading), skip the expensive transitive loop entirely.
+    if !removed_direct {
+        let seed = [fqn.to_string()];
+        let has_dependent = cache
+            .values()
+            .any(|cls| depends_on_any(cls, &seed));
+        if !has_dependent {
+            return;
+        }
+    }
+
+    // Transitive eviction: repeatedly scan for classes whose
+    // inheritance chain references any already-evicted FQN.
+    let mut evicted: Vec<String> = vec![fqn.to_string()];
 
     loop {
         let mut newly_evicted: Vec<String> = Vec::new();
@@ -286,31 +378,42 @@ pub trait VirtualMemberProvider {
 /// higher-priority providers that were merged earlier) are never
 /// overwritten, unless the incoming property carries a more specific type.
 pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMembers) {
+    // Build an index of (name, is_static) → position for O(1) dedup
+    // instead of a linear scan per virtual method.  With hundreds of
+    // methods on Eloquent models this turns O(N×M) memcmp into O(M).
+    let mut method_index: HashMap<(String, bool), usize> = class
+        .methods
+        .iter()
+        .enumerate()
+        .map(|(i, m)| ((m.name.clone(), m.is_static), i))
+        .collect();
+
     for method in virtual_members.methods {
-        let existing = class
-            .methods
-            .iter()
-            .position(|m| m.name == method.name && m.is_static == method.is_static);
-        match existing {
-            Some(idx) if class.methods[idx].has_scope_attribute => {
+        let key = (method.name.clone(), method.is_static);
+        if let Some(&idx) = method_index.get(&key) {
+            if class.methods[idx].has_scope_attribute {
                 // Replace the #[Scope]-attributed original with the
                 // synthesized virtual scope method.
-                class.methods[idx] = method;
+                class.methods.make_mut()[idx] = method;
             }
-            Some(_) => {
-                // Real declared member — keep the original.
-            }
-            None => {
-                class.methods.push(method);
-            }
+            // Otherwise: real declared member — keep the original.
+        } else {
+            let new_idx = class.methods.len();
+            class.methods.push(method);
+            method_index.insert(key, new_idx);
         }
     }
+
+    // Build a property name → position index for O(1) dedup.
+    let mut prop_index: HashMap<String, usize> = class
+        .properties
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.name.clone(), i))
+        .collect();
+
     for property in virtual_members.properties {
-        if let Some(idx) = class
-            .properties
-            .iter()
-            .position(|p| p.name == property.name)
-        {
+        if let Some(&idx) = prop_index.get(&property.name) {
             // The property already exists.  Replace it only when the
             // incoming property carries a strictly more specific type.
             // This lets PHPDoc `@property array<string> $tags` override
@@ -319,9 +422,11 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             if property_type_specificity(&property)
                 > property_type_specificity(&class.properties[idx])
             {
-                class.properties[idx] = property;
+                class.properties.make_mut()[idx] = property;
             }
         } else {
+            let new_idx = class.properties.len();
+            prop_index.insert(property.name.clone(), new_idx);
             class.properties.push(property);
         }
     }
@@ -561,7 +666,7 @@ fn resolve_class_fully_inner(
     // becomes `@implements MyIterator<int, string>` after substitution.
     let mut all_implements_generics: Vec<(String, Vec<String>)> = class.implements_generics.clone();
     {
-        let mut current = class.clone();
+        let mut current: ClassRef<'_> = ClassRef::Borrowed(class);
         let mut depth = 0u32;
         let mut active_subs: HashMap<String, String> = HashMap::new();
 
@@ -628,7 +733,7 @@ fn resolve_class_fully_inner(
                 }
 
                 active_subs = level_subs;
-                current = Arc::unwrap_or_clone(parent);
+                current = ClassRef::Owned(parent);
             } else {
                 break;
             }
@@ -719,20 +824,47 @@ fn merge_interface_members_into(
     // Apply @implements generic substitutions to the resolved
     // interface members before merging.
     if !iface_subs.is_empty() {
-        for method in &mut resolved_iface.methods {
+        for method in resolved_iface.methods.make_mut().iter_mut() {
             apply_substitution_to_method(method, iface_subs);
         }
-        for property in &mut resolved_iface.properties {
+        for property in resolved_iface.properties.make_mut().iter_mut() {
             apply_substitution_to_property(property, iface_subs);
         }
     }
 
-    for iface_method in resolved_iface.methods {
-        if let Some(existing) = merged
-            .methods
-            .iter_mut()
-            .find(|m| m.name == iface_method.name)
-        {
+    // For small method counts, linear scan is cheaper than building a
+    // HashMap (avoids N String allocations for the keys).  The threshold
+    // is chosen so that the HashMap overhead is amortised by the number
+    // of interface methods that need lookup.
+    const HASHMAP_THRESHOLD: usize = 32;
+
+    let method_index: Option<HashMap<String, usize>> =
+        if merged.methods.len() >= HASHMAP_THRESHOLD {
+            Some(
+                merged
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m.name.clone(), i))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+
+    for iface_method in resolved_iface.methods.into_vec() {
+        // Find the existing method index — O(1) via HashMap or O(N) linear scan.
+        let existing_idx = if let Some(ref index) = method_index {
+            index.get(&iface_method.name).copied()
+        } else {
+            merged
+                .methods
+                .iter()
+                .position(|m| m.name == iface_method.name)
+        };
+
+        if let Some(idx) = existing_idx {
+            let existing = &mut merged.methods.make_mut()[idx];
             // Fill in missing return type from the interface.
             if existing.return_type.is_none() && iface_method.return_type.is_some() {
                 existing.return_type = iface_method.return_type.clone();
@@ -786,14 +918,14 @@ fn merge_interface_members_into(
     }
     let existing_props: HashSet<String> =
         merged.properties.iter().map(|p| p.name.clone()).collect();
-    for property in resolved_iface.properties {
+    for property in resolved_iface.properties.into_vec() {
         if !existing_props.contains(&property.name) {
             merged.properties.push(property);
         }
     }
     let existing_consts: HashSet<String> =
         merged.constants.iter().map(|c| c.name.clone()).collect();
-    for constant in resolved_iface.constants {
+    for constant in resolved_iface.constants.into_vec() {
         if !existing_consts.contains(&constant.name) {
             merged.constants.push(constant);
         }

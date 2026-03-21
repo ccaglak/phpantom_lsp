@@ -17,9 +17,13 @@
 //! - Constructor calls on classes with no explicit `__construct` are
 //!   skipped (PHP allows `new Foo()` even without a constructor).
 
+use std::collections::HashMap;
+
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::types::ResolvedCallableTarget;
+use crate::parser::with_parse_cache;
 
 use super::helpers::make_diagnostic;
 use super::offset_range_to_lsp_range;
@@ -49,6 +53,16 @@ impl Backend {
 
         let file_ctx = self.file_context(uri);
 
+        // Activate the thread-local parse cache so that every call to
+        // `with_parsed_program(content, …)` in the resolution pipeline
+        // reuses the same parsed AST instead of re-parsing the file.
+        let _parse_guard = with_parse_cache(content);
+
+        // Call-expression resolution cache: avoids re-resolving the
+        // same call expression (e.g. `$purchaseFile->save`) at every
+        // call site that uses it.
+        let mut call_cache: HashMap<String, Option<ResolvedCallableTarget>> = HashMap::new();
+
         // ── Walk every call site ────────────────────────────────────
         for call_site in &symbol_map.call_sites {
             // Skip calls with argument unpacking — actual count is
@@ -59,13 +73,18 @@ impl Backend {
 
             let expr = &call_site.call_expression;
 
-            // Build an LSP Position from the call site's args_start
-            // offset.  `resolve_callable_target` needs a position for
-            // class context resolution (`$this`, `self`, `static`).
-            let position = crate::util::offset_to_position(content, call_site.args_start as usize);
+            // Look up or populate the call expression cache.
+            let resolved = call_cache
+                .entry(expr.clone())
+                .or_insert_with(|| {
+                    let position =
+                        crate::util::offset_to_position(content, call_site.args_start as usize);
+                    self.resolve_callable_target(expr, content, position, &file_ctx)
+                })
+                .clone();
 
             // Resolve the call expression to a callable target.
-            let resolved = match self.resolve_callable_target(expr, content, position, &file_ctx) {
+            let resolved = match resolved {
                 Some(r) => r,
                 None => continue,
             };

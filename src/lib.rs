@@ -74,6 +74,7 @@
 //!     `is_object_shape`)
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -278,6 +279,19 @@ pub struct Backend {
     /// Maintained alongside `class_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
     pub(crate) fqn_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
+    /// Negative-result cache for [`find_or_load_class`].
+    ///
+    /// Stores fully-qualified class names that have been looked up and
+    /// confirmed not to exist in any resolution phase (fqn_index,
+    /// classmap, PSR-4, stubs).  Subsequent lookups for the same name
+    /// short-circuit with `None` instead of repeating the full
+    /// multi-phase search.
+    ///
+    /// Entries are removed when new classes are discovered (in
+    /// `update_ast_inner` and `parse_and_cache_content_versioned`) so
+    /// that a class which becomes available after lazy loading is not
+    /// permanently suppressed.
+    pub(crate) class_not_found_cache: Arc<RwLock<HashSet<String>>>,
     /// Composer classmap: fully-qualified class name → file path on disk.
     ///
     /// Parsed from `<vendor>/composer/autoload_classmap.php` during server
@@ -495,6 +509,7 @@ impl Backend {
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             stub_index: stubs::build_stub_class_index(),
             stub_function_index: stubs::build_stub_function_index(),
@@ -693,6 +708,7 @@ impl Backend {
             class_index: Arc::clone(&self.class_index),
             fqn_index: Arc::clone(&self.fqn_index),
             classmap: Arc::clone(&self.classmap),
+            class_not_found_cache: Arc::clone(&self.class_not_found_cache),
             stub_index: self.stub_index.clone(),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),
             stub_function_index: self.stub_function_index.clone(),

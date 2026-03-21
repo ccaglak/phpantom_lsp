@@ -24,6 +24,29 @@ use std::sync::Arc;
 /// argument-count limit.
 use std::borrow::Cow;
 
+/// A borrow-or-owned handle to a `ClassInfo`, used to walk the parent
+/// chain in [`resolve_class_with_inheritance`] without cloning the root
+/// class.
+///
+/// The first iteration borrows the caller-provided `&ClassInfo` (zero
+/// allocation).  Subsequent iterations hold the `Arc<ClassInfo>` returned
+/// by the class loader (a cheap Arc move).
+pub(crate) enum ClassRef<'a> {
+    Borrowed(&'a ClassInfo),
+    Owned(Arc<ClassInfo>),
+}
+
+impl std::ops::Deref for ClassRef<'_> {
+    type Target = ClassInfo;
+    #[inline]
+    fn deref(&self) -> &ClassInfo {
+        match self {
+            ClassRef::Borrowed(r) => r,
+            ClassRef::Owned(a) => a,
+        }
+    }
+}
+
 pub(crate) struct TraitContext<'a> {
     /// Generic type arguments for `@use Trait<Type>` declarations.
     pub use_generics: &'a [(String, Vec<String>)],
@@ -113,7 +136,13 @@ pub(crate) fn resolve_class_with_inheritance(
     );
 
     // 2. Walk up the `extends` chain and merge parent members.
-    let mut current = class.clone();
+    //
+    // `current` holds a reference to the class whose `parent_class`,
+    // `extends_generics`, `used_traits`, etc. we read at each level.
+    // For the first iteration this is the root `class` (a borrow —
+    // zero allocation).  After that it becomes the `Arc<ClassInfo>`
+    // returned by `class_loader` (a cheap Arc move).
+    let mut current: ClassRef<'_> = ClassRef::Borrowed(class);
     let mut depth = 0;
 
     // The substitution map accumulates as we walk the chain.
@@ -232,7 +261,7 @@ pub(crate) fn resolve_class_with_inheritance(
         // we need to apply the current substitutions to those type
         // arguments so that `TKey` → `int` flows through.
         active_subs = level_subs;
-        current = Arc::unwrap_or_clone(parent);
+        current = ClassRef::Owned(parent);
     }
 
     merged
@@ -1149,10 +1178,10 @@ pub(crate) fn apply_generic_args(class: &ClassInfo, type_args: &[&str]) -> Class
     }
 
     let mut result = class.clone();
-    for method in &mut result.methods {
+    for method in result.methods.make_mut() {
         apply_substitution_to_method(method, &subs);
     }
-    for property in &mut result.properties {
+    for property in result.properties.make_mut() {
         apply_substitution_to_property(property, &subs);
     }
 

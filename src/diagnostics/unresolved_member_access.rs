@@ -35,6 +35,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::completion::resolver::{ResolutionCtx, resolve_target_classes};
+use crate::parser::with_parse_cache;
 use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo};
 
@@ -83,6 +84,16 @@ impl Backend {
         let function_loader = self.function_loader_with(&file_use_map, &file_namespace);
         let cache = &self.resolved_class_cache;
 
+        // Activate the thread-local parse cache so that every call to
+        // `with_parsed_program(content, …)` in the resolution pipeline
+        // reuses the same parsed AST instead of re-parsing the file.
+        let _parse_guard = with_parse_cache(content);
+
+        // Subject-level resolution cache: avoids re-resolving the same
+        // subject expression (e.g. `$purchaseFile`) for every span.
+        let mut subject_cache: HashMap<(String, AccessKind, Option<String>), Vec<Arc<ClassInfo>>> =
+            HashMap::new();
+
         // ── Walk every symbol span ──────────────────────────────────────
         for span in &symbol_map.spans {
             let (subject_text, member_name, is_static, _is_method_call) = match &span.kind {
@@ -112,17 +123,24 @@ impl Backend {
             // resolution inside the completion resolver.
             let current_class = find_innermost_enclosing_class(&local_classes, span.start);
 
-            let rctx = ResolutionCtx {
-                current_class,
-                all_classes: &local_classes,
-                content,
-                cursor_offset: span.start,
-                class_loader: &class_loader,
-                resolved_class_cache: Some(cache),
-                function_loader: Some(&function_loader),
-            };
+            let scope_key = current_class.map(|c| c.name.clone());
+            let cache_key = (subject_text.clone(), access_kind, scope_key);
 
-            let base_classes = resolve_target_classes(subject_text, access_kind, &rctx);
+            let base_classes = subject_cache
+                .entry(cache_key)
+                .or_insert_with(|| {
+                    let rctx = ResolutionCtx {
+                        current_class,
+                        all_classes: &local_classes,
+                        content,
+                        cursor_offset: span.start,
+                        class_loader: &class_loader,
+                        resolved_class_cache: Some(cache),
+                        function_loader: Some(&function_loader),
+                    };
+                    resolve_target_classes(subject_text, access_kind, &rctx)
+                })
+                .clone();
 
             if !base_classes.is_empty() {
                 // Subject resolved. The unknown_members diagnostic

@@ -16,7 +16,8 @@
 //! are driven by PHPDoc tags, they are now unified into a single provider
 //! with internal precedence rules.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::docblock;
@@ -95,10 +96,11 @@ impl VirtualMemberProvider for PHPDocProvider {
         }
 
         // Walk the parent chain to check for ancestor mixins or docblocks
-        // with @method/@property tags.
-        let mut current = class.clone();
+        // with @method/@property tags.  Use a cheap Arc handle instead of
+        // cloning the entire ClassInfo at each level.
+        let mut current_parent = class.parent_class.clone();
         let mut depth = 0u32;
-        while let Some(ref parent_name) = current.parent_class {
+        while let Some(ref parent_name) = current_parent {
             depth += 1;
             if depth > MAX_INHERITANCE_DEPTH {
                 break;
@@ -118,7 +120,7 @@ impl VirtualMemberProvider for PHPDocProvider {
             {
                 return true;
             }
-            current = Arc::unwrap_or_clone(parent);
+            current_parent = parent.parent_class.clone();
         }
 
         false
@@ -245,10 +247,11 @@ impl VirtualMemberProvider for PHPDocProvider {
         // `resolve_class_with_inheritance`, but virtual members from
         // docblock tags are not — they only exist as text in the parent's
         // `class_docblock`.  Walk the parent chain and collect them.
+        // Use a cheap handle instead of cloning ClassInfo at each level.
         {
-            let mut current = class.clone();
+            let mut current_parent = class.parent_class.clone();
             let mut depth = 0u32;
-            while let Some(ref parent_name) = current.parent_class {
+            while let Some(ref parent_name) = current_parent {
                 depth += 1;
                 if depth > MAX_INHERITANCE_DEPTH {
                     break;
@@ -291,7 +294,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     }
                 }
 
-                current = Arc::unwrap_or_clone(parent);
+                current_parent = parent.parent_class.clone();
             }
         }
 
@@ -315,9 +318,10 @@ impl VirtualMemberProvider for PHPDocProvider {
         );
 
         // Collect from ancestor mixins.
-        let mut current = class.clone();
+        // Use a cheap Arc handle instead of cloning ClassInfo at each level.
+        let mut current_parent = class.parent_class.clone();
         let mut depth = 0u32;
-        while let Some(ref parent_name) = current.parent_class {
+        while let Some(ref parent_name) = current_parent {
             depth += 1;
             if depth > MAX_INHERITANCE_DEPTH {
                 break;
@@ -338,7 +342,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     &mut mixin_dedup,
                 );
             }
-            current = Arc::unwrap_or_clone(parent);
+            current_parent = parent.parent_class.clone();
         }
 
         VirtualMembers {
@@ -361,6 +365,13 @@ impl VirtualMemberProvider for PHPDocProvider {
 ///
 /// Recurses into mixins declared on the mixin classes themselves, up to
 /// [`MAX_MIXIN_DEPTH`] levels.
+///
+/// Uses a thread-local cache so that `resolve_class_with_inheritance` is
+/// called at most once per unique mixin FQN across all `provide` calls
+/// within the same thread.  Without this cache, a mixin like
+/// `\Illuminate\Database\Eloquent\Builder` was fully re-resolved for
+/// every Eloquent model class (very expensive: deep inheritance chain
+/// with dozens of traits).
 fn collect_mixin_members(
     mixin_names: &[String],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
@@ -370,6 +381,11 @@ fn collect_mixin_members(
     depth: u32,
     dedup: &mut MixinDedup,
 ) {
+    thread_local! {
+        static MIXIN_CACHE: RefCell<HashMap<String, Arc<ClassInfo>>> =
+            RefCell::new(HashMap::new());
+    }
+
     if depth > MAX_MIXIN_DEPTH {
         return;
     }
@@ -384,8 +400,18 @@ fn collect_mixin_members(
         // Resolve the mixin class with its own inheritance so we see
         // all of its inherited/trait members too.  Use base resolution
         // (not resolve_class_fully) to avoid circular provider calls.
-        let resolved_mixin =
-            crate::inheritance::resolve_class_with_inheritance(&mixin_class, class_loader);
+        //
+        // Results are cached in a thread-local map so that the same
+        // mixin (e.g. Builder) is only resolved once per thread.
+        let resolved_mixin = MIXIN_CACHE.with(|cache| {
+            let mut map = cache.borrow_mut();
+            Arc::clone(map.entry(mixin_name.clone()).or_insert_with(|| {
+                Arc::new(crate::inheritance::resolve_class_with_inheritance(
+                    &mixin_class,
+                    class_loader,
+                ))
+            }))
+        });
 
         // Only merge public members — mixins proxy via magic methods
         // which only expose public API.

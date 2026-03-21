@@ -776,7 +776,7 @@ mod tests {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
             name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
             ..Default::default()
         };
 
@@ -784,7 +784,7 @@ mod tests {
             kind: ClassLikeKind::Class,
             name: "Page".to_string(),
             interfaces: vec!["Renderable".to_string()],
-            methods: vec![],
+            methods: Default::default(),
             ..Default::default()
         };
 
@@ -806,7 +806,7 @@ mod tests {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
             name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
             ..Default::default()
         };
 
@@ -814,7 +814,7 @@ mod tests {
             kind: ClassLikeKind::Class,
             name: "Page".to_string(),
             interfaces: vec!["Renderable".to_string()],
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
             ..Default::default()
         };
 
@@ -843,7 +843,7 @@ mod tests {
                 },
                 // Concrete method — should NOT be in missing list.
                 MethodInfo::virtual_method("helper", Some("void")),
-            ],
+            ].into(),
             ..Default::default()
         };
 
@@ -851,7 +851,7 @@ mod tests {
             kind: ClassLikeKind::Class,
             name: "ConcreteChild".to_string(),
             parent_class: Some("AbstractBase".to_string()),
-            methods: vec![],
+            methods: Default::default(),
             ..Default::default()
         };
 
@@ -873,7 +873,7 @@ mod tests {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
             name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("Render", Some("string"))],
+            methods: vec![MethodInfo::virtual_method("Render", Some("string"))].into(),
             ..Default::default()
         };
 
@@ -881,7 +881,7 @@ mod tests {
             kind: ClassLikeKind::Class,
             name: "Page".to_string(),
             interfaces: vec!["Renderable".to_string()],
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
             ..Default::default()
         };
 
@@ -904,7 +904,7 @@ mod tests {
             name: "AbstractBase".to_string(),
             is_abstract: true,
             interfaces: vec!["Serializable".to_string()],
-            methods: vec![],
+            methods: Default::default(),
             ..Default::default()
         };
 
@@ -914,7 +914,7 @@ mod tests {
             methods: vec![
                 MethodInfo::virtual_method("serialize", Some("string")),
                 MethodInfo::virtual_method("unserialize", None),
-            ],
+            ].into(),
             ..Default::default()
         };
 
@@ -922,7 +922,7 @@ mod tests {
             kind: ClassLikeKind::Class,
             name: "ConcreteChild".to_string(),
             parent_class: Some("AbstractBase".to_string()),
-            methods: vec![],
+            methods: Default::default(),
             ..Default::default()
         };
 

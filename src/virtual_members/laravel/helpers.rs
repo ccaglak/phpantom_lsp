@@ -27,9 +27,13 @@ pub(in crate::virtual_members::laravel) fn walks_parent_chain(
         return true;
     }
 
-    let mut current = class.clone();
+    // Walk the parent chain without cloning ClassInfo.  We only need
+    // each parent's `name` and `parent_class` fields, so keep a
+    // cheap Arc handle instead of cloning the entire struct (which
+    // copies hundreds of methods/properties/constants).
+    let mut current_parent = class.parent_class.clone();
     let mut depth = 0u32;
-    while let Some(ref parent_name) = current.parent_class {
+    while let Some(ref parent_name) = current_parent {
         depth += 1;
         if depth > MAX_INHERITANCE_DEPTH {
             break;
@@ -42,7 +46,7 @@ pub(in crate::virtual_members::laravel) fn walks_parent_chain(
                 if predicate(&parent.name) {
                     return true;
                 }
-                current = Arc::unwrap_or_clone(parent);
+                current_parent = parent.parent_class.clone();
             }
             None => break,
         }

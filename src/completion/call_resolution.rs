@@ -840,10 +840,11 @@ impl Backend {
                     ctx.class_loader,
                     ctx.resolved_class_cache,
                 );
-                Arc::unwrap_or_clone(merged)
+                merged
                     .methods
-                    .into_iter()
+                    .iter()
                     .find(|m| m.name == method_name)
+                    .cloned()
             });
 
         let method = match method {

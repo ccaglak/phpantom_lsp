@@ -376,6 +376,26 @@ impl Backend {
             }
         }
 
+        // Remove newly-discovered FQNs from the negative-result cache
+        // so classes that just became available are not suppressed.
+        {
+            let nf_cache = self.class_not_found_cache.read();
+            if !nf_cache.is_empty() {
+                drop(nf_cache);
+                let mut nf_cache = self.class_not_found_cache.write();
+                for (class, class_ns) in &classes_with_ns {
+                    if class.name.starts_with("__anonymous@") {
+                        continue;
+                    }
+                    let fqn = match class_ns {
+                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, class.name),
+                        _ => class.name.clone(),
+                    };
+                    nf_cache.remove(&fqn);
+                }
+            }
+        }
+
         // Build the precomputed symbol map while the AST is still alive.
         // This must happen before the `Program` (and its arena) are dropped.
         let symbol_map = std::sync::Arc::new(extract_symbol_map(program, content));
@@ -407,8 +427,19 @@ impl Backend {
         // `evict_fqn` transitively evicts dependents (classes that
         // extend/use/implement/mixin the changed class) so that
         // cached child classes don't serve stale inherited members.
+        //
+        // **First-parse fast path**: when `old_fqns` is empty the file
+        // has never been parsed by `update_ast` before.  There are no
+        // stale cache entries to evict — any existing cache entries for
+        // these FQNs were populated by legitimate resolution paths
+        // (classmap / PSR-4 / stubs) reading the same on-disk content.
+        // Skipping eviction here eliminates the O(N²) cost of calling
+        // `evict_fqn` (which does a full cache scan + transitive
+        // dependent cascade) for every class during bulk operations
+        // like `analyse`.
         let mut any_signature_changed = false;
-        {
+
+        if !old_fqns.is_empty() {
             let mut cache = self.resolved_class_cache.lock();
             // Collect new FQNs from the classes we just parsed.
             let new_fqns: Vec<String> = classes_with_ns
@@ -664,7 +695,7 @@ impl Backend {
                 }
             }
 
-            for method in &mut class.methods {
+            for method in class.methods.make_mut() {
                 // Build a per-method skip list that includes both class-level
                 // and method-level template params so that names like `T` in
                 // `@return Collection<T>` are not namespace-resolved.
@@ -694,7 +725,7 @@ impl Backend {
                     }
                 }
             }
-            for prop in &mut class.properties {
+            for prop in class.properties.make_mut() {
                 if let Some(ref hint) = prop.type_hint {
                     let resolved = Self::resolve_type_string(hint, use_map, namespace, &skip_names);
                     if resolved != *hint {

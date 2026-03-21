@@ -248,7 +248,11 @@ fn inject_model_virtual_methods(
 
     // Resolve the model fully so that @method tags from traits and
     // parent classes are included.
-    let resolved_model = crate::virtual_members::resolve_class_fully(&model_class, class_loader);
+    let resolved_model = if let Some(cache) = crate::virtual_members::active_resolved_class_cache() {
+        crate::virtual_members::resolve_class_fully_cached(&model_class, class_loader, cache)
+    } else {
+        crate::virtual_members::resolve_class_fully(&model_class, class_loader)
+    };
 
     // Build a substitution map: `static`/`self`/`$this` in return
     // types should become the concrete model name.  The `@method`

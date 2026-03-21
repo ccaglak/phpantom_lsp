@@ -117,6 +117,93 @@ regardless.
 
 ---
 
+## P1.5. Layered class resolution (zero-copy inheritance)
+
+**Impact: High · Effort: Very High**
+
+### Problem
+
+`resolve_class_with_inheritance` builds a flat `ClassInfo` by cloning
+the base class and then copying every method, property, and constant
+from traits, parents, and interfaces into the result. For an Eloquent
+model this means deep-copying hundreds of `MethodInfo` structs (each
+containing `String` fields, `Vec<ParameterInfo>`, etc.). Even with
+`SharedVec` making the top-level Vec clone O(1), the individual
+`MethodInfo` clones during the merge are the single largest remaining
+allocation cost (~4 % of CPU in `perf` profiles).
+
+The fundamental issue: the resolved class is a **copy** of all
+inherited members rather than a **view** over immutable originals.
+
+### Ideal architecture
+
+Replace the flat merged `ClassInfo` with a layered view that
+references the originals without copying:
+
+```text
+ResolvedClass {
+    own:     Arc<ClassInfo>,                  // parsed, immutable
+    traits:  Vec<Arc<ClassInfo>>,             // resolved traits
+    parent:  Option<Arc<ResolvedClass>>,      // resolved parent (recursive)
+    virtual: Vec<Arc<MethodInfo>>,            // @method, @mixin, scopes
+    iface_fill: HashMap<String, TypeFillIn>,  // interface type enrichment
+}
+```
+
+Member lookups walk the layers (own → traits → parent → virtual)
+instead of iterating a single flat Vec. Dedup is handled by a
+name-based `HashSet` built lazily or maintained incrementally.
+
+Benefits:
+- **Zero-copy inheritance.** Moving a method from parent to child is
+  an `Arc::clone` (refcount bump), not a `MethodInfo` deep clone.
+- **Shared structure.** Two child classes that extend the same parent
+  share the parent's `Arc<ResolvedClass>` — the parent's methods
+  exist in memory once, not once per child.
+- **Cheaper cache invalidation.** Editing a child class only rebuilds
+  the child's layer; the parent layer stays cached.
+
+### Migration path
+
+1. **`Arc<MethodInfo>` everywhere.** Change `SharedVec<MethodInfo>`
+   to `SharedVec<Arc<MethodInfo>>` (and same for properties/constants).
+   This makes individual method clones O(1) within the existing flat
+   architecture — an incremental win without changing consumers.
+
+2. **Introduce `ResolvedClass` struct.** Start with a thin wrapper
+   that holds the flat `ClassInfo` inside, exposing the same
+   iteration API. Consumers migrate incrementally.
+
+3. **Layered storage.** Replace the flat `ClassInfo` inside
+   `ResolvedClass` with the layered structure. Change iteration to
+   walk layers. This is the big step — every `.methods.iter().find()`
+   call site needs to use the layered iterator.
+
+4. **Lazy dedup index.** Build a `HashMap<&str, (Layer, usize)>`
+   on first access (or maintain it incrementally during layer
+   construction) so that `find_method("foo")` is O(1) without
+   scanning all layers.
+
+### Risks
+
+- Every consumer that does `.methods.iter()` or `.methods.len()`
+  needs to work with the layered iterator. A `Deref`-based shim
+  can ease migration but adds indirection.
+- Mutation sites (`merge_traits_into`, virtual member providers)
+  need to operate on the layer structure rather than pushing into
+  a flat Vec.
+- The `resolved_class_cache` currently stores `Arc<ClassInfo>`;
+  it would store `Arc<ResolvedClass>` instead.
+
+### When to implement
+
+This is the right long-term direction but a major refactor (~1 month).
+Evaluate after the `Arc<MethodInfo>` step (migration path step 1)
+is complete and profiling confirms that the flat-merge copy cost is
+still the dominant bottleneck.
+
+---
+
 ## P2. Recursive string substitution in `apply_substitution`
 
 **Impact: Medium · Effort: High**

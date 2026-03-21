@@ -739,7 +739,7 @@ fn test_extract_function_signature_basic() {
 // ── find_typed_variable_propagated_throws tests ─────────────────────
 
 fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<ClassInfo> {
-    let method_infos = methods
+    let method_infos: Vec<MethodInfo> = methods
         .into_iter()
         .map(|(method_name, throws)| MethodInfo {
             name: method_name.to_string(),
@@ -770,9 +770,9 @@ fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<Cl
     Arc::new(ClassInfo {
         kind: ClassLikeKind::Class,
         name: name.to_string(),
-        methods: method_infos,
-        properties: Vec::new(),
-        constants: Vec::new(),
+        methods: method_infos.into(),
+        properties: Default::default(),
+        constants: Default::default(),
         start_offset: 0,
         end_offset: 0,
         keyword_offset: 0,

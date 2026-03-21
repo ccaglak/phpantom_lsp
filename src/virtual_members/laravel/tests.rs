@@ -651,7 +651,7 @@ fn scope_attribute_not_treated_as_relationship() {
 fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
     let mut builder = make_class(ELOQUENT_BUILDER_FQN);
     builder.template_params = vec!["TModel".to_string()];
-    builder.methods = methods;
+    builder.methods = methods.into();
     builder
 }
 

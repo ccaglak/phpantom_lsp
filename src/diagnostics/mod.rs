@@ -555,8 +555,16 @@ impl Backend {
         client.publish_diagnostics(uri.clone(), phase1, None).await;
 
         // ── Phase 2: compute slow diagnostics ───────────────────────
+        // The resolved-class cache guard must not cross an `.await`
+        // point (it contains a raw pointer and is !Send).  Scope it
+        // tightly around the synchronous diagnostic collection.
         let mut slow_diagnostics = Vec::new();
-        self.collect_slow_diagnostics(uri_str, content, &mut slow_diagnostics);
+        {
+            let _cache_guard = crate::virtual_members::with_active_resolved_class_cache(
+                &self.resolved_class_cache,
+            );
+            self.collect_slow_diagnostics(uri_str, content, &mut slow_diagnostics);
+        }
 
         // Cache fresh slow diagnostics for the next Phase 1 merge.
         {

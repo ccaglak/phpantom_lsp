@@ -168,7 +168,7 @@ fn type_hint_to_classes_depth(
     if docblock::types::is_object_shape(hint)
         && let Some(entries) = docblock::parse_object_shape(hint)
     {
-        let properties = entries
+        let properties = SharedVec::from_vec(entries
             .into_iter()
             .map(|e| PropertyInfo {
                 name: e.key,
@@ -183,7 +183,7 @@ fn type_hint_to_classes_depth(
                 see_refs: Vec::new(),
                 is_virtual: true,
             })
-            .collect();
+            .collect());
 
         let synthetic = ClassInfo {
             name: "__object_shape".to_string(),
@@ -270,7 +270,11 @@ fn type_hint_to_classes_depth(
             // keep its raw `TModel` return type instead of being
             // substituted to the concrete model class.
             if !generic_args.is_empty() && !cls.template_params.is_empty() {
-                let resolved = virtual_members::resolve_class_fully(&cls, class_loader);
+                let resolved = if let Some(cache) = virtual_members::active_resolved_class_cache() {
+                    virtual_members::resolve_class_fully_cached(&cls, class_loader, cache)
+                } else {
+                    virtual_members::resolve_class_fully(&cls, class_loader)
+                };
                 let mut result = apply_generic_args(&resolved, &generic_args);
 
                 // ── Eloquent Builder scope injection ───────────────

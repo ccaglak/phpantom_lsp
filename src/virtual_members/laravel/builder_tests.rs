@@ -8,7 +8,7 @@ use std::sync::Arc;
 fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
     let mut builder = make_class(ELOQUENT_BUILDER_FQN);
     builder.template_params = vec!["TModel".to_string()];
-    builder.methods = methods;
+    builder.methods = methods.into();
     builder
 }
 
@@ -59,7 +59,7 @@ fn builder_forwarding_returns_empty_when_builder_not_found() {
 #[test]
 fn builder_forwarding_converts_instance_to_static() {
     let mut builder = make_builder(vec![make_method("where", Some("static"))]);
-    builder.methods[0].is_static = false;
+    builder.methods.make_mut()[0].is_static = false;
 
     let user = make_class("App\\Models\\User");
 
@@ -244,7 +244,7 @@ fn builder_forwarding_skips_non_public_methods() {
         make_method("where", Some("static")),
         make_method("internalHelper", Some("void")),
     ]);
-    builder.methods[1].visibility = Visibility::Protected;
+    builder.methods.make_mut()[1].visibility = Visibility::Protected;
     let user = make_class("App\\Models\\User");
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -353,7 +353,7 @@ fn builder_forwarding_preserves_method_metadata() {
             make_param("$value", Some("mixed"), false),
         ],
     )]);
-    builder.methods[0].deprecation_message = Some("Use whereNew() instead".into());
+    builder.methods.make_mut()[0].deprecation_message = Some("Use whereNew() instead".into());
 
     let user = make_class("App\\Models\\User");
 
