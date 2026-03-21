@@ -585,11 +585,15 @@ fn extract_string_literal_value(
 // helpers).  Each call allocates a fresh `Bump` arena and re-parses the
 // entire file from scratch.
 //
-// The cache below stores the `Bump` arena, the owned content `String`,
-// and a raw pointer to the `Program` that was parsed from them.  When
-// `with_parsed_program` is called while the cache is active *and* the
-// content matches, the cached `Program` is reused — eliminating all
-// redundant parses.
+// The cache below eliminates that redundancy.  [`with_parse_cache`]
+// stores only the content `String` (cheap allocation, no parsing).
+// The first [`with_parsed_program`] call whose content matches then
+// lazily parses the file, storing the `Bump` arena and a raw pointer
+// to the resulting `Program`.  Subsequent calls reuse the cached AST.
+//
+// This lazy approach avoids paying the parse cost when the cache is
+// activated but `with_parsed_program` is never called (e.g. when a
+// diagnostic pass finds no member-access spans to check).
 //
 // The cache is activated by [`with_parse_cache`] which sets it up at
 // the start of a block and tears it down (via `Drop`) when the block
@@ -607,15 +611,21 @@ fn extract_string_literal_value(
 // can observe a dangling pointer.
 
 /// Cached arena + content + parsed program for the current thread.
+///
+/// The entry is created lazily: [`with_parse_cache`] stores only the
+/// content string.  The arena and program are populated on the first
+/// [`with_parsed_program`] call whose content matches.
 struct ParseCacheEntry {
-    /// Bump arena that owns all AST nodes.  Must outlive `program_ptr`.
-    _arena: bumpalo::Bump,
     /// Owned copy of the source text.  Must outlive `program_ptr`.
     content: String,
-    /// Raw pointer to the `Program` allocated in `_arena`.
+    /// Bump arena that owns all AST nodes.  `None` until the first
+    /// `with_parsed_program` call triggers a lazy parse.
+    arena: Option<bumpalo::Bump>,
+    /// Raw pointer to the `Program` allocated in `arena`.
+    /// `None` until the first `with_parsed_program` call.
     /// Reconstituted to `&Program<'_>` only while the `RefCell` borrow
     /// is held and the entry is `Some`.
-    program_ptr: *const (),
+    program_ptr: Option<*const ()>,
 }
 
 // `ParseCacheEntry` is only ever accessed from the thread that created
@@ -673,24 +683,13 @@ pub(crate) fn with_parse_cache(content: &str) -> ParseCacheGuard {
         return ParseCacheGuard { owns_cache: false };
     }
 
-    let content_owned = content.to_string();
-
-    // Parse once and cache the result.
-    let arena = bumpalo::Bump::new();
-    let file_id = mago_database::file::FileId::new("input.php");
-
-    // SAFETY: `program` borrows from `arena` and `content_owned`.
-    // Both are moved into `ParseCacheEntry` immediately after this
-    // call and live until the guard is dropped.  The raw pointer is
-    // only reconstituted while the `RefCell` borrow is held.
-    let program = mago_syntax::parser::parse_file_content(&arena, file_id, &content_owned);
-    let program_ptr: *const () = (program as *const Program<'_>).cast();
-
+    // Store only the content string.  The actual parse is deferred
+    // until the first `with_parsed_program` call that hits the cache.
     PARSE_CACHE.with(|cell| {
         *cell.borrow_mut() = Some(ParseCacheEntry {
-            _arena: arena,
-            content: content_owned,
-            program_ptr,
+            content: content.to_string(),
+            arena: None,
+            program_ptr: None,
         });
     });
 
@@ -717,26 +716,51 @@ pub(crate) fn with_parsed_program<T: Default>(
     f: impl FnOnce(&Program<'_>, &str) -> T,
 ) -> T {
     // ── Fast path: check the thread-local cache ─────────────────
-    // We check for a hit *without* consuming `f` so that it remains
-    // available for the slow path if the cache misses.
-    let has_cache_hit: bool = PARSE_CACHE.with(|cell| {
+    // 0 = miss, 1 = content matches but not yet parsed, 2 = ready
+    let cache_state: u8 = PARSE_CACHE.with(|cell| {
         let borrow = cell.borrow();
         match borrow.as_ref() {
-            Some(e) => e.content == content,
-            None => false,
+            Some(e) if e.content == content => {
+                if e.program_ptr.is_some() {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 0,
         }
     });
 
-    if has_cache_hit {
+    // Lazily parse on first access and populate the cache entry.
+    if cache_state == 1 {
+        PARSE_CACHE.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            let entry = borrow.as_mut().unwrap();
+            let arena = bumpalo::Bump::new();
+            let file_id = mago_database::file::FileId::new("input.php");
+            // SAFETY: `program` borrows from `arena` and `entry.content`.
+            // The arena is moved into `entry.arena` immediately after
+            // extracting the raw pointer — the heap-allocated chunks do
+            // not move, so the pointer stays valid.  `entry.content` lives
+            // inside the `RefCell` until the guard is dropped.
+            let program = mago_syntax::parser::parse_file_content(&arena, file_id, &entry.content);
+            let program_ptr: *const () = (program as *const Program<'_>).cast();
+            entry.program_ptr = Some(program_ptr);
+            entry.arena = Some(arena);
+        });
+    }
+
+    if cache_state >= 1 {
         return PARSE_CACHE.with(|cell| {
             let borrow = cell.borrow();
             let entry = borrow.as_ref().unwrap();
             // SAFETY: `program_ptr` was created from a valid `&Program`
-            // whose backing arena (`_arena`) and content string (`content`)
-            // are still alive inside `entry`.  We hold a `Ref` borrow on
-            // the `RefCell`, so the entry cannot be mutated or dropped
-            // while we use the reference.
-            let program: &Program<'_> = unsafe { &*(entry.program_ptr.cast::<Program<'_>>()) };
+            // whose backing arena and content string are still alive
+            // inside `entry`.  We hold a `Ref` borrow on the `RefCell`,
+            // so the entry cannot be mutated or dropped while we use
+            // the reference.
+            let program: &Program<'_> =
+                unsafe { &*(entry.program_ptr.unwrap().cast::<Program<'_>>()) };
             f(program, &entry.content)
         });
     }
