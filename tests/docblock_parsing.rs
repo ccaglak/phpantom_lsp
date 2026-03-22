@@ -908,6 +908,36 @@ fn clean_nullable_union() {
 }
 
 #[test]
+fn clean_nullable_shorthand_preserved() {
+    // clean_type preserves `?` — it is meaningful for display and tag
+    // extraction.  Use base_class_name when you need a bare class name.
+    assert_eq!(clean_type("?Foo"), "?Foo");
+}
+
+#[test]
+fn clean_nullable_shorthand_fqn_preserved() {
+    assert_eq!(clean_type("?\\App\\Models\\User"), "?\\App\\Models\\User");
+}
+
+#[test]
+fn base_class_name_nullable_shorthand() {
+    assert_eq!(base_class_name("?Foo"), "Foo");
+}
+
+#[test]
+fn base_class_name_nullable_fqn() {
+    assert_eq!(
+        base_class_name("?\\App\\Models\\User"),
+        "\\App\\Models\\User"
+    );
+}
+
+#[test]
+fn base_class_name_nullable_with_generics() {
+    assert_eq!(base_class_name("?Collection<int, User>"), "Collection");
+}
+
+#[test]
 fn clean_trailing_punctuation() {
     assert_eq!(clean_type("Foo."), "Foo");
 }

@@ -16888,3 +16888,207 @@ async fn test_completion_nullsafe_method_chain_cross_file() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Nullable type resolution (B1) ──────────────────────────────────────────
+
+/// A parameter typed `?ClassName` should resolve to `ClassName` for completion.
+#[tokio::test]
+async fn test_completion_nullable_param_type_hint() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullable_param.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Invoice {\n",
+        "    public function total(): int { return 0; }\n",
+        "    public function isPaid(): bool { return false; }\n",
+        "}\n",
+        "class Processor {\n",
+        "    public function handle(?Invoice $inv): void {\n",
+        "        $inv->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 7,
+                character: 14,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for ?Invoice parameter"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"total"),
+                "Should include 'total' from Invoice via ?Invoice param, got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"isPaid"),
+                "Should include 'isPaid' from Invoice via ?Invoice param, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// A `@var ?ClassName` docblock annotation should resolve for completion.
+#[tokio::test]
+async fn test_completion_nullable_var_docblock() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullable_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Widget {\n",
+        "    public function render(): string { return ''; }\n",
+        "}\n",
+        "class Page {\n",
+        "    public function show(): void {\n",
+        "        /** @var ?Widget $w */\n",
+        "        $w = getWidget();\n",
+        "        $w->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 8,
+                character: 12,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for @var ?Widget"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"render"),
+                "Should include 'render' from Widget via @var ?Widget, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// A nullable return type `?ClassName` should resolve when chaining.
+#[tokio::test]
+async fn test_completion_nullable_return_type_chain() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nullable_return.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Order {\n",
+        "    public function total(): int { return 0; }\n",
+        "}\n",
+        "class OrderService {\n",
+        "    public function find(int $id): ?Order { return null; }\n",
+        "    public function test(): void {\n",
+        "        $order = $this->find(1);\n",
+        "        $order->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 8,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for nullable return type ?Order"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"total"),
+                "Should include 'total' from Order via ?Order return, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

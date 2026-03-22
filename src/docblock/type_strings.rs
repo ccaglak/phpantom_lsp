@@ -404,7 +404,8 @@ pub fn clean_type(raw: &str) -> String {
 /// - `"Foo|null"` → `"Foo"`
 pub fn base_class_name(raw: &str) -> String {
     let cleaned = clean_type(raw);
-    strip_generics(&cleaned)
+    let stripped = strip_nullable(&cleaned);
+    strip_generics(stripped)
 }
 
 /// Strip generic parameters and array shape braces from a (already

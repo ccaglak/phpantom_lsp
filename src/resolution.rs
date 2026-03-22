@@ -39,6 +39,7 @@ use std::path::Path;
 
 use crate::Backend;
 use crate::composer;
+use crate::docblock::type_strings::{strip_generics, strip_nullable};
 use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
 
@@ -53,6 +54,18 @@ impl Backend {
     ///
     /// Returns a shared `Arc<ClassInfo>` if found, or `None`.
     pub(crate) fn find_or_load_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
+        // Defensively strip nullable prefix (`?Foo` → `Foo`) and generic
+        // parameters (`Collection<int, User>` → `Collection`) so that
+        // callers don't need to normalise before lookup.
+        let class_name = strip_nullable(class_name);
+        let owned_name;
+        let class_name = if class_name.contains('<') || class_name.contains('{') {
+            owned_name = strip_generics(class_name);
+            owned_name.as_str()
+        } else {
+            class_name
+        };
+
         // The class name stored in ClassInfo is just the short name (e.g. "Customer"),
         // so we match against the last segment of the namespace-qualified name.
         let last_segment = short_name(class_name);

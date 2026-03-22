@@ -15,66 +15,6 @@ within the same impact tier.
 
 ---
 
-#### B1. Nullable type not resolved to its base class
-
-| | |
-|---|---|
-| **Impact** | Medium-High |
-| **Effort** | Low |
-
-When a variable's type is `?ClassName`, the type engine fails to
-resolve it to `ClassName`. The `?` prefix is not stripped before class
-lookup, so the engine treats `?Foo` as an unknown type even though
-`Foo` is a valid, loadable class. This breaks completion, hover, and
-go-to-definition for any variable whose type includes the nullable
-shorthand.
-
-The completion pipeline's `type_hint_to_classes` already strips `?`
-(line 90 of `completion/types/resolution.rs`), but other entry points
-into the type engine (e.g. `resolve_variable_assignment_raw_type`,
-`resolve_variable_type_string`) can return `?ClassName` strings that
-are never cleaned before class lookup.
-
-**Observed:** 3 cases in `shared` for
-`?Luxplus\Core\Database\Model\Subscriptions\Subscription`. The class
-exists and loads fine as `Subscription`.
-
-**Fix:** Ensure all paths that convert a raw type string to a
-`ClassInfo` strip the nullable prefix before class lookup. This may
-mean normalising the return value of the raw type resolvers, or
-ensuring every consumer calls `strip_nullable` / `clean_type` before
-passing type strings to `class_loader`.
-
----
-
-#### B2. Generic type parameters prevent class resolution
-
-| | |
-|---|---|
-| **Impact** | Medium |
-| **Effort** | Low |
-
-When a resolved type string includes generic parameters (e.g.
-`PaymentOptionLocaleCollection<PaymentOptionLocale>`), the type engine
-uses the full parameterised string as the class lookup key. The lookup
-fails because no class is registered under the name that includes
-`<...>`. This breaks completion and hover for any variable whose
-resolved type carries generic arguments.
-
-**Observed:** 3 cases in `shared` for
-`PaymentOptionLocaleCollection<Luxplus\Core\Database\Model\Payments\PaymentOptionLocale>`.
-Methods like `getTotalWeight()`, `isNotEmpty()`, and `first()` all
-exist on the class or its parent `Collection`, but the type engine
-never reaches them.
-
-**Fix:** Strip everything from the first `<` onward before performing
-class lookup. The same raw-type-to-class conversion paths identified
-in B1 are affected. `base_class_name()` in `type_strings.rs` already
-combines `clean_type` + `strip_generics` and should be used
-consistently.
-
----
-
 #### B3. Type engine does not resolve `$this`/`static` inside traits
 
 | | |
@@ -136,28 +76,6 @@ by `getFile()`. This produces 2 false-positive "not found" diagnostics.
 **Fix:** The variable resolution pipeline should prefer the most recent
 assignment when multiple definitions exist for the same variable name
 within the same scope at the cursor offset.
-
----
-
-#### B5. Docblock `@see` reference prepends file namespace
-
-| | |
-|---|---|
-| **Impact** | Low |
-| **Effort** | Low |
-
-When a docblock contains `@see Fully\Qualified\ClassName`, PHPantom
-prepends the current file's namespace to the reference, producing an
-invalid doubled namespace like
-`Luxplus\Core\Database\Model\Products\Filters\Luxplus\Core\Elasticsearch\Queries\ProductQuery`.
-
-**Observed:** 1 diagnostic in `ProductFilterTermCollection.php` where
-`@see Luxplus\Core\Elasticsearch\Queries\ProductQuery::search_with_filter()`
-becomes an unknown class with a doubled namespace prefix.
-
-**Fix:** Treat `@see` references the same as `use` imports: if the
-reference is already fully qualified (starts with the root namespace or
-matches a known class), do not prepend the file namespace.
 
 ---
 

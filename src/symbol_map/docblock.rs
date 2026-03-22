@@ -1190,6 +1190,20 @@ fn emit_see_reference(reference: &str, file_offset: u32, spans: &mut Vec<SymbolS
     // Strip trailing `()` if present (used on both methods and functions).
     let reference = reference.strip_suffix("()").unwrap_or(reference);
 
+    // `@see` references that contain `\` are almost always fully-qualified
+    // class names (e.g. `@see App\Models\User`).  Without a leading `\`,
+    // `class_ref_span` would set `is_fqn = false`, causing downstream
+    // consumers to prepend the current file's namespace and produce a
+    // doubled name like `App\Models\App\Models\User`.  Treat any
+    // backslash-containing reference as FQN by prepending `\`.
+    let owned_reference;
+    let reference = if reference.contains('\\') && !reference.starts_with('\\') {
+        owned_reference = format!("\\{reference}");
+        &owned_reference
+    } else {
+        reference
+    };
+
     // Check for `Class::member` form.
     if let Some(sep_pos) = reference.find("::") {
         let class_part = &reference[..sep_pos];
