@@ -102,7 +102,6 @@ unlikely to move the needle for most users.
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
 |     | **[Bugs](todo/bugs.md)**                                                                                                                                     |             |             |
 | B4  | [Variable reassignment loses type when parameter name is reused](todo/bugs.md#b4-variable-reassignment-loses-type-when-parameter-name-is-reused)             | Medium      | Medium      |
-| B8  | [Stub parser does not handle `#[PhpStormStubsElementAvailable]` attributes](todo/bugs.md#b8-stub-parser-does-not-handle-phpstormstubselementavailable-attributes) | Low         | Low         |
 |     | **[Completion](todo/completion.md)**                                                                                                                         |             |             |
 | C1  | Array functions needing new code paths                                                                                                                       | Medium     | High        |
 | C10 | [Lazy documentation via `completionItem/resolve`](todo/completion.md#c10-lazy-documentation-via-completionitemresolve)                                        | Medium     | Medium      |

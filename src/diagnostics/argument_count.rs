@@ -40,19 +40,19 @@ pub(crate) const ARGUMENT_COUNT_CODE: &str = "argument_count";
 /// signatures in phpstorm-stubs declare more required parameters than
 /// PHP actually demands.
 ///
-/// Two categories of mismatch are covered:
+/// These are genuine overloads where PHP accepts fewer arguments than
+/// any single stub declaration can express (e.g. `mt_rand()` accepts
+/// 0 or 2 arguments, but the stub can only declare the 2-arg form).
 ///
-/// 1. **True overloads** — functions like `mt_rand()` that accept
-///    genuinely different argument counts (0 or 2).  The stub format
-///    can only declare one signature.
-/// 2. **Stub parser artefacts** — functions whose stubs use
-///    `#[PhpStormStubsElementAvailable]` attributes or other constructs
-///    that our regex-based stub parser does not strip, making optional
-///    parameters appear required.
+/// Entries that previously existed because the stub parser did not
+/// handle `#[PhpStormStubsElementAvailable]` attributes on parameters
+/// have been removed. The AST parser now filters version-specific
+/// parameters by the configured PHP version (default 8.5), producing
+/// correct required counts without this workaround.
 ///
-/// This map is derived from PHPStan's `functionMap.php` (which
-/// declares correct optional / alternative signatures) diffed against
-/// our phpstorm-stubs.  Regenerate with `php scripts/find_overloads.php`.
+/// This map is derived from PHPStan's `functionMap.php` diffed against
+/// phpstorm-stubs with proper version filtering applied.
+/// Regenerate with `php scripts/check_overloads.php`.
 fn overload_min_args(name: &str) -> Option<u32> {
     // Compare lowercase to match PHP's case-insensitive function names.
     match name.to_ascii_lowercase().as_str() {
@@ -60,20 +60,8 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "apc_store" => Some(1),
         "apcu_add" => Some(1),
         "apcu_store" => Some(1),
-        "array_diff" => Some(2),
-        "array_diff_assoc" => Some(2),
-        "array_diff_key" => Some(2),
-        "array_intersect" => Some(2),
-        "array_intersect_assoc" => Some(2),
-        "array_intersect_key" => Some(2),
         "array_keys" => Some(1),
-        "array_merge" => Some(1),
-        "array_merge_recursive" => Some(1),
         "array_multisort" => Some(1),
-        "array_push" => Some(2),
-        "array_replace" => Some(2),
-        "array_replace_recursive" => Some(2),
-        "array_unshift" => Some(2),
         "array_walk" => Some(2),
         "array_walk_recursive" => Some(2),
         "assert" => Some(1),
@@ -91,10 +79,8 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "datefmt_get_timezone" => Some(0),
         "datefmt_localtime" => Some(1),
         "datefmt_parse" => Some(1),
-        "datefmt_set_timezone" => Some(1),
         "debug_print_backtrace" => Some(0),
         "debug_zval_dump" => Some(0),
-        "deflate_init" => Some(1),
         "dirname" => Some(1),
         "easter_date" => Some(0),
         "eio_sendfile" => Some(4),
@@ -106,7 +92,6 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "gearman_job_handle" => Some(0),
         "get_class" => Some(0),
         "get_defined_functions" => Some(0),
-        "get_headers" => Some(1),
         "get_html_translation_table" => Some(0),
         "get_parent_class" => Some(0),
         "getenv" => Some(0),
@@ -121,9 +106,7 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "grapheme_strrpos" => Some(2),
         "grapheme_strstr" => Some(2),
         "grapheme_substr" => Some(2),
-        "gzfile" => Some(1),
         "gzgetss" => Some(2),
-        "gzopen" => Some(2),
         "hash" => Some(2),
         "hash_file" => Some(2),
         "hash_init" => Some(1),
@@ -134,21 +117,14 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "ibase_query" => Some(0),
         "idn_to_ascii" => Some(1),
         "idn_to_utf8" => Some(1),
-        "imageaffinematrixget" => Some(2),
         "imagefilter" => Some(2),
-        "imagepolygon" => Some(4),
         "imagerotate" => Some(3),
         "imagettfbbox" => Some(4),
         "imagettftext" => Some(8),
         "imagexbm" => Some(1),
-        "inflate_init" => Some(1),
         "ini_get_all" => Some(0),
-        "intlcal_create_instance" => Some(0),
         "intlcal_from_date_time" => Some(1),
-        "intlcal_roll" => Some(3),
         "intlcal_set" => Some(3),
-        "intltz_has_same_rules" => Some(2),
-        "ldap_free_result" => Some(1),
         "libxml_use_internal_errors" => Some(0),
         "locale_filter_matches" => Some(2),
         "locale_get_display_language" => Some(1),
@@ -158,39 +134,28 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "locale_get_display_variant" => Some(1),
         "locale_lookup" => Some(2),
         "max" => Some(0),
-        "mb_convert_variables" => Some(3),
-        "mb_decode_numericentity" => Some(3),
         "mb_eregi_replace" => Some(3),
         "mb_parse_str" => Some(1),
-        "mb_strlen" => Some(1),
         "microtime" => Some(0),
         "min" => Some(0),
         "mktime" => Some(0),
         "mt_rand" => Some(0),
-        "mt_srand" => Some(0),
         "mysqli_fetch_all" => Some(1),
         "mysqli_get_cache_stats" => Some(0),
         "mysqli_get_client_info" => Some(0),
         "mysqli_get_client_version" => Some(0),
-        "mysqli_multi_query" => Some(2),
         "mysqli_query" => Some(2),
         "mysqli_real_connect" => Some(0),
-        "mysqli_real_query" => Some(2),
-        "mysqli_stmt_bind_param" => Some(3),
-        "mysqli_stmt_bind_result" => Some(2),
         "mysqli_stmt_execute" => Some(1),
         "mysqli_store_result" => Some(1),
         "normalizer_get_raw_decomposition" => Some(1),
         "number_format" => Some(1),
-        "numfmt_create" => Some(2),
         "numfmt_format" => Some(1),
-        "ob_implicit_flush" => Some(0),
         "oci_free_descriptor" => Some(0),
         "oci_register_taf_callback" => Some(1),
         "odbc_exec" => Some(2),
         "openssl_decrypt" => Some(3),
         "openssl_encrypt" => Some(3),
-        "openssl_pkcs7_decrypt" => Some(3),
         "openssl_pkcs7_verify" => Some(2),
         "openssl_seal" => Some(4),
         "pack" => Some(1),
@@ -200,60 +165,23 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "pcntl_wait" => Some(1),
         "pcntl_waitpid" => Some(2),
         "pfsockopen" => Some(1),
-        "pg_client_encoding" => Some(0),
-        "pg_close" => Some(0),
         "pg_connect" => Some(1),
-        "pg_connect_poll" => Some(1),
-        "pg_dbname" => Some(0),
-        "pg_end_copy" => Some(0),
-        "pg_escape_bytea" => Some(1),
-        "pg_escape_identifier" => Some(1),
-        "pg_escape_literal" => Some(1),
-        "pg_escape_string" => Some(1),
-        "pg_get_notify" => Some(1),
-        "pg_get_pid" => Some(1),
-        "pg_get_result" => Some(0),
-        "pg_host" => Some(0),
-        "pg_last_error" => Some(0),
-        "pg_lo_create" => Some(0),
-        "pg_options" => Some(0),
         "pg_pconnect" => Some(1),
-        "pg_ping" => Some(0),
-        "pg_port" => Some(0),
-        "pg_put_line" => Some(1),
-        "pg_query" => Some(1),
-        "pg_set_client_encoding" => Some(1),
-        "pg_set_error_verbosity" => Some(1),
-        "pg_trace" => Some(1),
-        "pg_tty" => Some(0),
-        "pg_untrace" => Some(0),
-        "pg_version" => Some(0),
         "php_uname" => Some(0),
         "phpinfo" => Some(0),
         "posix_getrlimit" => Some(0),
         "preg_replace_callback" => Some(3),
         "preg_replace_callback_array" => Some(2),
         "rand" => Some(0),
-        "readgzfile" => Some(1),
         "round" => Some(1),
-        "session_cache_expire" => Some(0),
-        "session_cache_limiter" => Some(0),
-        "session_id" => Some(0),
-        "session_module_name" => Some(0),
-        "session_name" => Some(0),
-        "session_save_path" => Some(0),
         "session_set_save_handler" => Some(1),
         "session_start" => Some(0),
-        "setlocale" => Some(2),
-        "settype" => Some(2),
         "snmp_set_valueretrieval" => Some(0),
         "socket_cmsg_space" => Some(2),
         "socket_recvmsg" => Some(2),
-        "socket_sendmsg" => Some(3),
         "sodium_crypto_pwhash_scryptsalsa208sha256" => Some(5),
         "sodium_crypto_scalarmult_base" => Some(1),
         "sprintf" => Some(1),
-        "srand" => Some(0),
         "sscanf" => Some(2),
         "stomp_abort" => Some(1),
         "stomp_ack" => Some(1),
@@ -267,10 +195,7 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "stream_context_set_option" => Some(2),
         "stream_filter_append" => Some(2),
         "stream_filter_prepend" => Some(2),
-        "stream_select" => Some(4),
         "stream_set_timeout" => Some(2),
-        "strip_tags" => Some(1),
-        "strpbrk" => Some(2),
         "strrchr" => Some(2),
         "strtok" => Some(1),
         "strtr" => Some(2),
@@ -280,7 +205,6 @@ fn overload_min_args(name: &str) -> Option<u32> {
         "token_get_all" => Some(1),
         "unpack" => Some(2),
         "unserialize" => Some(1),
-        "version_compare" => Some(2),
         "wincache_ucache_add" => Some(1),
         "wincache_ucache_set" => Some(1),
         "xdebug_dump_aggr_profiling_data" => Some(0),
@@ -1198,6 +1122,88 @@ function test(): void {
         assert!(
             diags.is_empty(),
             "rand with 2 args should be accepted, got: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn no_false_positive_when_stub_uses_element_available_attribute() {
+        // Stubs like array_push declare a non-variadic parameter with
+        // #[PhpStormStubsElementAvailable(from: '5.3', to: '7.2')] alongside
+        // a variadic parameter of the same name.  The AST parser filters out
+        // the non-variadic parameter for PHP 8.5 (the default), so the
+        // required count should be 1 ($array only), not 2.
+        //
+        // This test uses the real stub pattern to verify the version
+        // filtering produces correct argument counts without needing an
+        // overload_min_args entry.
+        let stub_content: &str = concat!(
+            "<?php\n",
+            "use JetBrains\\PhpStorm\\Internal\\PhpStormStubsElementAvailable;\n",
+            "\n",
+            "function array_push(\n",
+            "    array &$array,\n",
+            "    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.2')] $values,\n",
+            "    mixed ...$values\n",
+            "): int {}\n",
+        );
+
+        let backend = Backend::new_test_with_all_stubs(
+            HashMap::new(),
+            HashMap::from([("array_push", stub_content)]),
+            HashMap::new(),
+        );
+        let uri = "file:///test.php";
+        let php = r#"<?php
+function test(): void {
+    $arr = [1, 2];
+    array_push($arr, 3);
+}
+"#;
+        backend.update_ast(uri, php);
+        let mut out = Vec::new();
+        backend.collect_argument_count_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "array_push($arr, 3) should not produce a diagnostic when \
+             PhpStormStubsElementAvailable filtering is active, got: {out:?}",
+        );
+    }
+
+    #[test]
+    fn no_false_positive_for_stub_variadic_with_one_arg_after_filtering() {
+        // After version filtering removes the non-variadic $values param,
+        // array_push(array &$array, mixed ...$values) requires only 1 arg.
+        // Calling array_push($arr) with just the array is valid PHP 7.3+.
+        let stub_content: &str = concat!(
+            "<?php\n",
+            "use JetBrains\\PhpStorm\\Internal\\PhpStormStubsElementAvailable;\n",
+            "\n",
+            "function array_push(\n",
+            "    array &$array,\n",
+            "    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.2')] $values,\n",
+            "    mixed ...$values\n",
+            "): int {}\n",
+        );
+
+        let backend = Backend::new_test_with_all_stubs(
+            HashMap::new(),
+            HashMap::from([("array_push", stub_content)]),
+            HashMap::new(),
+        );
+        let uri = "file:///test.php";
+        let php = r#"<?php
+function test(): void {
+    $arr = [1, 2];
+    array_push($arr);
+}
+"#;
+        backend.update_ast(uri, php);
+        let mut out = Vec::new();
+        backend.collect_argument_count_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "array_push($arr) with 1 arg should be valid after version filtering \
+             removes the non-variadic $values param, got: {out:?}",
         );
     }
 

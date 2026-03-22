@@ -36,39 +36,3 @@ by `getFile()`. This produces 2 false-positive "not found" diagnostics.
 assignment when multiple definitions exist for the same variable name
 within the same scope at the cursor offset.
 
----
-
-#### B8. Stub parser does not handle `#[PhpStormStubsElementAvailable]` attributes
-
-| | |
-|---|---|
-| **Impact** | Low |
-| **Effort** | Low |
-
-The regex-based stub parser in `classmap_scanner.rs` does not strip
-`#[PhpStormStubsElementAvailable]` attributes from function signatures.
-When a stub uses this attribute to declare a parameter that only exists
-in certain PHP versions, the parser counts it as a separate required
-parameter alongside the variadic replacement, inflating the required
-argument count.
-
-For example, `array_push` is declared as:
-
-```
-function array_push(
-    array &$array,
-    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.2')] $values,
-    mixed ...$values
-): int {}
-```
-
-The parser sees three parameters (`$array`, `$values`,
-`...$values`) and counts two as required, when the correct required
-count is one (`$array` only, since `...$values` is variadic).
-
-This affects roughly 230 stub functions. The argument count checker
-currently works around the issue with an overload map derived from
-PHPStan's `functionMap.php` (see `overload_min_args()` in
-`argument_count.rs`). The proper fix is to make the stub parser
-ignore parameters annotated with `#[PhpStormStubsElementAvailable]`
-when a variadic parameter of the same name follows.
