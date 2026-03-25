@@ -28,11 +28,15 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Analyze PHP files and report diagnostics in a PHPStan-like table format.
+    /// Analyze PHP files and report type-coverage gaps.
     ///
     /// Runs PHPantom's own diagnostics (no PHPStan, no external tools) across
-    /// your codebase. Useful for measuring type coverage and finding gaps
-    /// without opening files one by one in an editor.
+    /// your codebase. The goal is 100% type coverage: every class, member, and
+    /// function call should be resolvable. When that holds, completion works
+    /// everywhere and PHPStan gets the type information it needs at every level.
+    ///
+    /// Use this to find and fix the spots where the LSP can't resolve a symbol,
+    /// so you can achieve and maintain full completion coverage across the project.
     Analyze {
         /// Path to analyze (file or directory). Defaults to the entire project.
         #[arg(value_name = "PATH")]

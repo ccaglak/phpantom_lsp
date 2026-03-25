@@ -28,7 +28,7 @@ PHPStan's JSON output includes an `"ignorable"` field per message, but
    `ignorable` is `false`. This prevents offering an ignore comment for
    errors like `method.visibility` that PHPStan will not honour.
 
-This is referenced by P11 and is generally good hygiene.
+This is referenced by H11 and is generally good hygiene.
 
 ### R2. Extract `ranges_overlap` into a shared utility
 
@@ -51,13 +51,13 @@ fn split_phpstan_tip(message: &str) -> (&str, Option<&str>) {
 }
 ```
 
-This is used by P4, P5, P12, P14, P15, P20.
+This is used by H4, H5, H12, H14, H15, H20.
 
 ---
 
 ## Tier 1 — Trivial (no message parsing or simple static message)
 
-### P1. `new.static` — Unsafe usage of `new static()`
+### H1. `new.static` — Unsafe usage of `new static()`
 
 **Identifier:** `new.static`
 **Message:** `Unsafe usage of new static().`
@@ -84,7 +84,7 @@ the constructor has `final` keyword, or the class docblock contains
 
 ---
 
-### P2. `method.missingOverride` — Add `#[Override]` attribute
+### H2. `method.missingOverride` — Add `#[Override]` attribute
 
 **Identifier:** `method.missingOverride`
 **Message:** `Method Foo::bar() overrides method Parent::bar() but is missing the #[\Override] attribute.`
@@ -101,7 +101,7 @@ and check whether a line contains `#[Override]` or `#[\Override]`.
 
 ---
 
-### P3. `method.override` / `property.override` — Remove `#[Override]` attribute
+### H3. `method.override` / `property.override` — Remove `#[Override]` attribute
 
 **Identifiers:** `method.override`, `property.override`
 **Messages:**
@@ -119,7 +119,7 @@ the diagnostic line.
 
 ---
 
-### P5. `method.tentativeReturnType` — Add `#[\ReturnTypeWillChange]`
+### H5. `method.tentativeReturnType` — Add `#[\ReturnTypeWillChange]`
 
 **Identifier:** `method.tentativeReturnType`
 **Tip (in message):** `Make it covariant, or use the #[\ReturnTypeWillChange] attribute to temporarily suppress the error.`
@@ -134,7 +134,7 @@ or `#[ReturnTypeWillChange]`.
 
 ## Tier 2 — Simple message parsing
 
-### P6. `return.type` — Update return type to match actual returns
+### H6. `return.type` — Update return type to match actual returns
 
 **Identifier:** `return.type`
 **Messages:**
@@ -166,7 +166,7 @@ already covers the suppress-with-comment path.
 
 ---
 
-### P7. `return.phpDocType` — Fix `@return` to match native type
+### H7. `return.phpDocType` — Fix `@return` to match native type
 
 **Identifier:** `return.phpDocType`
 **Messages:**
@@ -187,7 +187,7 @@ Reuse docblock editing from `update_docblock.rs`.
 
 ---
 
-### P8. `parameter.phpDocType` — Fix `@param` to match native type
+### H8. `parameter.phpDocType` — Fix `@param` to match native type
 
 **Identifier:** `parameter.phpDocType`
 **Messages:**
@@ -211,7 +211,7 @@ or no such `@param` tag exists.
 
 ---
 
-### P9. `property.phpDocType` — Fix property docblock type
+### H9. `property.phpDocType` — Fix property docblock type
 
 **Identifier:** `property.phpDocType`
 **Messages:**
@@ -226,7 +226,7 @@ tag exists near the property.
 
 ---
 
-### P10. `return.unusedType` — Remove unused type from return union
+### H10. `return.unusedType` — Remove unused type from return union
 
 **Identifier:** `return.unusedType`
 **Messages:**
@@ -248,7 +248,7 @@ or intersection member.
 
 ---
 
-### P11. `method.visibility` / `property.visibility` — Fix overriding visibility
+### H11. `method.visibility` / `property.visibility` — Fix overriding visibility
 
 **Identifiers:** `method.visibility`, `property.visibility`
 **Messages:**
@@ -276,7 +276,7 @@ from the original value.
 
 ---
 
-### P4. `assign.byRefForeachExpr` — Unset by-reference foreach variable
+### H4. `assign.byRefForeachExpr` — Unset by-reference foreach variable
 
 **Identifier:** `assign.byRefForeachExpr`
 **Tip (in message):** `Unset it right after foreach to avoid this problem.`
@@ -306,7 +306,7 @@ and the diagnostic line.
 
 ---
 
-### P12. `class.prefixed` — Fix prefixed class name
+### H12. `class.prefixed` — Fix prefixed class name
 
 **Identifier:** `class.prefixed`
 **Tip (in message):** `This is most likely unintentional. Did you mean to type {corrected}?`
@@ -330,7 +330,7 @@ diagnostic line.
 
 ## Tier 3 — Requires locating related code
 
-### P13. `property.notFound` (same-class) — Declare missing property
+### H13. `property.notFound` (same-class) — Declare missing property
 
 **Identifier:** `property.notFound`
 **Message:** `Access to an undefined property Foo::$bar.`
@@ -358,7 +358,7 @@ class docblock contains `@property ... $bar`.
 
 ---
 
-### P14. `throws.unusedType` (narrow) — Narrow `@throws` to actual thrown types
+### H14. `throws.unusedType` (narrow) — Narrow `@throws` to actual thrown types
 
 **Identifier:** `throws.unusedType`
 **Tip (in message):** `You can narrow the thrown type with PHPDoc tag @throws {narrowed_type}.`
@@ -379,7 +379,7 @@ The existing `remove_throws.rs` already handles `throws.unusedType` for the
 
 ---
 
-### P15. Template bound from tip — Add `@template T of X`
+### H15. Template bound from tip — Add `@template T of X`
 
 **Identifiers:** various (`generics.*`, `phpDoc.*` — needs investigation)
 **Tip (in message):** `Write @template T of X to fix this.`
@@ -394,7 +394,7 @@ if needed). Same docblock insertion pattern as `add_throws.rs`.
 
 ---
 
-### P16. `match.unhandled` — Add missing match arms
+### H16. `match.unhandled` — Add missing match arms
 
 **Identifier:** `match.unhandled`
 **Message:** `Match expression does not handle remaining value(s): {types}`
@@ -420,7 +420,7 @@ a `TODO` comment — configurable later.
 
 ## Tier 4 — Requires body analysis
 
-### P17. `missingType.iterableValue` (return type) — Add `@return` with iterable type
+### H17. `missingType.iterableValue` (return type) — Add `@return` with iterable type
 
 **Identifier:** `missingType.iterableValue`
 **Messages:**
@@ -454,7 +454,7 @@ literals with consistent value types, offer `@return array<ValueType>`.
 
 ## Tier 5 — Lower priority / more complex
 
-### P18. `deadCode.unreachable` — Remove unreachable code
+### H18. `deadCode.unreachable` — Remove unreachable code
 
 **Identifier:** `deadCode.unreachable`
 **Message:** `Unreachable statement - code above always terminates.`
@@ -467,7 +467,7 @@ is hard without an AST.
 
 ---
 
-### P19. `property.unused` / `method.unused` / `classConstant.unused` — Remove unused member
+### H19. `property.unused` / `method.unused` / `classConstant.unused` — Remove unused member
 
 **Identifiers:** `property.unused`, `method.unused`, `classConstant.unused`
 **Messages:**
@@ -488,7 +488,7 @@ class.
 
 ---
 
-### P20. `generics.callSiteVarianceRedundant` — Remove redundant variance annotation
+### H20. `generics.callSiteVarianceRedundant` — Remove redundant variance annotation
 
 **Identifier:** `generics.callSiteVarianceRedundant`
 **Tip (in message):** `You can safely remove the call-site variance annotation.`
@@ -502,7 +502,7 @@ diagnostic line.
 
 ---
 
-### P21. `return.void` — Remove return value from void function
+### H21. `return.void` — Remove return value from void function
 
 **Identifier:** `return.void`
 **Message:** `{desc} with return type void returns {type} but should not return anything.`
@@ -513,7 +513,7 @@ Replace `return {expr};` with `return;` on the diagnostic line.
 
 ---
 
-### P22. `return.empty` — Add return value or change return type to void
+### H22. `return.empty` — Add return value or change return type to void
 
 **Identifier:** `return.empty`
 **Message:** `{desc} should return {type} but empty return statement found.`
@@ -526,7 +526,7 @@ Offer two quickfixes:
 
 ---
 
-### P23. `instanceof.alwaysTrue` — Remove redundant instanceof check
+### H23. `instanceof.alwaysTrue` — Remove redundant instanceof check
 
 **Identifier:** `instanceof.alwaysTrue`
 **Message:** `Instanceof between {type} and {class} will always evaluate to true.`
@@ -538,7 +538,7 @@ ternary, match arm). Consider deferring this indefinitely — the user can just
 
 ---
 
-### P24. `catch.neverThrown` — Remove unnecessary catch clause
+### H24. `catch.neverThrown` — Remove unnecessary catch clause
 
 **Identifier:** `catch.neverThrown`
 **Message:** `Dead catch - {exception} is never thrown in the try block.`
@@ -558,17 +558,17 @@ the list.
 Based on effort-to-value ratio and shared infrastructure:
 
 1. **R1, R2, R3** — prerequisites (small, unblocks everything)
-2. **P2** — `#[Override]` add (trivial, high frequency)
-3. **P3** — `#[Override]` remove (shares logic with P2)
-4. **P5** — `#[\ReturnTypeWillChange]` (reuses P2 pattern)
-5. **P1** — `new.static` (three fixes, but each is simple)
-6. **P7, P8, P9** — PHPDoc type mismatch family (implement together)
-7. **P11** — visibility fix (leverages existing `change_visibility.rs`)
-8. **P14** — narrow `@throws` (extends existing `remove_throws.rs`)
-9. **P6** — return type update
-10. **P10** — remove unused union member
-11. **P12** — prefixed class name
-12. **P4** — unset by-ref foreach variable
+2. **H2** — `#[Override]` add (trivial, high frequency)
+3. **H3** — `#[Override]` remove (shares logic with H2)
+4. **H5** — `#[\ReturnTypeWillChange]` (reuses P2 pattern)
+5. **H1** — `new.static` (three fixes, but each is simple)
+6. **H7, H8, H9** — PHPDoc type mismatch family (implement together)
+7. **H11** — visibility fix (leverages existing `change_visibility.rs`)
+8. **H14** — narrow `@throws` (extends existing `remove_throws.rs`)
+9. **H6** — return type update
+10. **H10** — remove unused union member
+11. **H12** — prefixed class name
+12. **H4** — unset by-ref foreach variable
 13. Everything else based on user demand
 
 ---
@@ -604,7 +604,7 @@ let (message, tip) = match diag.message.split_once('\n') {
 };
 ```
 
-Actions that depend on tip text (P4, P5, P12, P14, P15, P20) should use this
+Actions that depend on tip text (H4, H5, H12, H14, H15, H20) should use this
 pattern. The tip text has ANSI/HTML tags already stripped by `strip_ansi_tags`.
 
 ### Stale diagnostic detection
@@ -630,7 +630,7 @@ Each action needs tests following the existing pattern:
 - Stale detection tests that construct `Diagnostic` objects and call
   `is_stale_phpstan_diagnostic`
 
-### Attribute insertion pattern (P2, P3, P5)
+### Attribute insertion pattern (H2, H3, H5)
 
 P2 and P5 both insert an attribute on the line before a method. P3 removes
 one. Factor this into a shared helper:
@@ -643,7 +643,7 @@ fn build_insert_attribute_edit(content: &str, line: u32, attribute: &str) -> Tex
 fn build_remove_attribute_edit(content: &str, line: u32, attribute: &str) -> Option<TextEdit> { ... }
 ```
 
-### PHPDoc type mismatch pattern (P7, P8, P9)
+### PHPDoc type mismatch pattern (H7, H8, H9)
 
 These three actions share the same structure:
 1. Parse `{phpdoc}` type and `{native}` type from the message

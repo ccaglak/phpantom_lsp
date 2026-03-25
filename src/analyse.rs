@@ -3,10 +3,28 @@
 //! Scans PHP files in a project and reports PHPantom's own diagnostics
 //! (no PHPStan, no external tools) in a PHPStan-like table format.
 //!
-//! This is a debugging/coverage tool for PHPantom developers: run it
-//! against a real codebase to find gaps in the type resolver.  It reuses
-//! the same Backend initialization pipeline as the LSP server, so the
-//! results match what a user would see in their editor.
+//! # Philosophy
+//!
+//! The goal is **100% type coverage**: every class, member, and function
+//! call in the project should be resolvable by the LSP.  When that holds,
+//! completion works everywhere with no dead spots, and downstream tools
+//! like PHPStan get the type information they need to find real bugs at
+//! every level.  PHPStan only complains about missing types at levels 6,
+//! 9, and 10; PHPantom fills those gaps cheaply and immediately so
+//! PHPStan can focus on logic errors rather than fighting incomplete
+//! type information.
+//!
+//! The diagnostics reported here are not trying to be a static analyser.
+//! They assert structural correctness: does this class exist, does this
+//! member exist, does the argument count match, did you implement every
+//! required method.  Bug hunting is left to dedicated tools like PHPStan
+//! and Psalm.  The `analyze` command surfaces the places where the LSP
+//! cannot resolve a symbol so the user can fix them and achieve (or
+//! maintain) full completion coverage across the project.
+//!
+//! It reuses the same `Backend` initialization pipeline as the LSP
+//! server, so the results match exactly what a user would see in their
+//! editor.
 //!
 //! Only single Composer projects (root `composer.json`) are supported
 //! for now.
@@ -14,9 +32,9 @@
 //! # Usage
 //!
 //! ```sh
-//! phpantom_lsp analyse                     # scan entire project
-//! phpantom_lsp analyse src/                # scan a subdirectory
-//! phpantom_lsp analyse src/Foo.php         # scan a single file
+//! phpantom_lsp analyze                     # scan entire project
+//! phpantom_lsp analyze src/                # scan a subdirectory
+//! phpantom_lsp analyze src/Foo.php         # scan a single file
 //! ```
 
 use std::path::{Path, PathBuf};

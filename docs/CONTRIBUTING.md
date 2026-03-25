@@ -10,7 +10,7 @@ Thanks for your interest in contributing!
 
 ## Before Submitting a PR
 
-All five CI checks must pass with zero warnings and zero failures:
+All six CI checks must pass with zero warnings and zero failures:
 
 ```bash
 cargo test
@@ -18,9 +18,10 @@ cargo clippy -- -D warnings
 cargo clippy --tests -- -D warnings
 cargo fmt --check
 php -l example.php
+php -d zend.assertions=1 example.php
 ```
 
-Note that clippy runs twice, once for library code and once including test code.
+Note that clippy runs twice, once for library code and once including test code. The `php -l` check ensures `example.php` remains valid PHP. The `php -d zend.assertions=1` run executes `runDemoAssertions()` to verify that scaffolding stubs actually return what their docblocks claim.
 
 ## Code Style
 

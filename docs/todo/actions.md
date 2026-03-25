@@ -654,7 +654,7 @@ interface file path is derived from the namespace.
 
 ---
 
-## A6. Generate Constructor
+## A13. Generate Constructor
 
 **Impact: Medium · Effort: Medium**
 
@@ -730,7 +730,7 @@ members. Detect indentation from the existing class body.
 
 ---
 
-## A7. Promote Constructor Parameter
+## A14. Promote Constructor Parameter
 
 **Impact: Medium · Effort: Low**
 

@@ -912,6 +912,41 @@ The `symbol_maps` store is keyed by file URI, matching `ast_map`. A typical PHP 
 
 Files that are not open (vendor files loaded via PSR-4 on demand) do not get a symbol map — they use the stored byte offsets from Tier 2 (which live on `ClassInfo` / `MethodInfo` / etc. in `ast_map`).
 
+## Diagnostic Philosophy
+
+PHPantom's diagnostics assert **type coverage**, not bug detection. The question they answer is: "can the LSP resolve every class, member, and function call in this project?" When the answer is yes, completion works everywhere with no dead spots, and downstream tools like PHPStan get the type information they need to find real bugs at every strictness level.
+
+This is a deliberate division of labour. PHPStan only complains about missing types at levels 6, 9, and 10. PHPantom fills those gaps cheaply and immediately so PHPStan can focus on logic errors rather than fighting incomplete type information. The two tools complement each other at any PHPStan level: PHPantom rejects structural problems fast (unknown class, unknown member, wrong argument count, unimplemented interface method), and PHPStan hunts for semantic bugs (type mismatches, unreachable code, null safety violations) with full type context available.
+
+The native diagnostic categories reflect this philosophy:
+
+| Diagnostic | What it asserts |
+|---|---|
+| Syntax errors | The file parses. |
+| Unused imports | The use-map is clean. |
+| Unknown classes | Every class reference resolves to a real class. |
+| Unknown members | Every member access resolves to a declared member. |
+| Unknown functions | Every function call resolves to a declared function. |
+| Argument count | Call sites match the target's parameter count. |
+| Implementation errors | Concrete classes satisfy their interface/abstract contracts. |
+| Deprecated usage | The developer is aware of deprecation. |
+
+None of these are type-compatibility checks, dead-code analysis, or control-flow reasoning. That is by design. A project that passes all of PHPantom's diagnostics has 100% type coverage from the LSP's perspective: every symbol is resolvable, every completion trigger produces results, and every hover shows a type.
+
+## Analyze Command
+
+The `analyze` subcommand (`phpantom_lsp analyze --project-root <DIR>`) runs all native diagnostics across a project in headless batch mode. It reuses the same `Backend` initialization pipeline as the LSP server, so results match exactly what a user sees in their editor.
+
+The command exists so users can measure and maintain type coverage without opening files one by one. A clean run (exit code 0) means the LSP can resolve every symbol in the project. Any reported diagnostic is a spot where completion, hover, or go-to-definition will have a gap.
+
+The batch pipeline runs in two parallel phases:
+
+1. **Parse phase.** Read every user file (discovered via PSR-4 source directories) and call `update_ast` to populate `fqn_index`, `ast_map`, `symbol_maps`, `use_map`, `namespace_map`, and `class_index`. After this phase, all user classes are in `fqn_index` and cross-file references resolve via O(1) hash lookup.
+
+2. **Diagnose phase.** Run all seven diagnostic collectors on every file in parallel (`std::thread::scope` with one chunk per CPU core). Because Phase 1 already indexed all user classes, the diagnostic phase never triggers lazy `parse_and_cache_file` for other user files, eliminating write-lock contention.
+
+Output uses PHPStan's table format (with progress bar and coloured output) so the results are familiar to teams already using PHPStan. Severity filtering (`--severity error|warning|all`) and path scoping let users focus on specific areas.
+
 ## Diagnostic Worker Architecture
 
 Diagnostics run in a background `tokio::spawn` task so they never block completion, hover, or signature help. The worker is created during `initialized` via `clone_for_diagnostic_worker`, which builds a shallow clone of the `Backend`. All `Arc`-wrapped fields (maps, caches, the notify/pending slot) are shared by `Arc::clone`, so the worker sees every mutation the main `Backend` makes.
