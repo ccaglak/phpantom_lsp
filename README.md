@@ -46,7 +46,7 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Generate getter / setter        | ❌       | ❌           | 💰         | ✅          | ✅          |
 | **Performance**                 |          |              |            |             |             |
 | Time to ready                   | < 1 s    | 1 min 25 s   | 3 min 17 s | 15 min 39 s | 19 min 38 s |
-| RAM usage                       | 21 MB    | 520 MB       | 3.9 GB     | 498 MB      | 2.0 GB      |
+| RAM usage                       | 59 MB    | 520 MB       | 3.9 GB     | 498 MB      | 2.0 GB      |
 | Disk cache                      | 0        | 45 MB        | 0          | 4.1 GB      | 551 MB      |
 
 <sub>
