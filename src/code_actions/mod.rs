@@ -36,9 +36,11 @@
 
 mod change_visibility;
 pub(crate) mod cursor_context;
+mod extract_variable;
 mod generate_constructor;
 pub(crate) mod implement_methods;
 mod import_class;
+mod inline_variable;
 mod phpstan;
 mod promote_constructor_param;
 mod remove_unused_import;
@@ -87,6 +89,12 @@ impl Backend {
 
         // ── Generate constructor ────────────────────────────────────────────
         self.collect_generate_constructor_actions(uri, content, params, &mut actions);
+
+        // ── Extract variable ────────────────────────────────────────────
+        self.collect_extract_variable_actions(uri, content, params, &mut actions);
+
+        // ── Inline variable ─────────────────────────────────────────────
+        self.collect_inline_variable_actions(uri, content, params, &mut actions);
 
         actions
     }

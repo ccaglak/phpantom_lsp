@@ -25,8 +25,9 @@ within the same impact tier.
 | --- | --------------------------------------------------------------------------------------------------- | ------ | ------ |
 | A11 | ✅ [ScopeCollector infrastructure](todo/actions.md#a11-scopecollector-infrastructure)                 | Medium | Medium |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High   | High   |
-| A5  | [Extract variable](todo/actions.md#a5-extract-variable)                                             | Medium | Medium |
-| A12 | [Inline variable](todo/actions.md#a4-inline-variable)                                               | Medium | Medium |
+| A5  | ✅ [Extract variable](todo/actions.md#a5-extract-variable)                                           | Medium | Medium |
+| A12 | ✅ [Inline variable](todo/actions.md#a4-inline-variable)                                             | Medium | Medium |
+| A13 | [Generate constructor](todo/actions.md#a13-generate-constructor)                                    | Medium | Medium |
 |     | **Release 0.7.0**                                                                                   |        |        |
 
 ## Sprint 4a — Mago foundation: Composer + Docblock + Names

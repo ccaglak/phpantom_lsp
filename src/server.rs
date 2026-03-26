@@ -138,6 +138,8 @@ impl LanguageServer for Backend {
                     CodeActionOptions {
                         code_action_kinds: Some(vec![
                             CodeActionKind::QUICKFIX,
+                            CodeActionKind::REFACTOR_EXTRACT,
+                            CodeActionKind::REFACTOR_INLINE,
                             CodeActionKind::new("source.organizeImports"),
                         ]),
                         work_done_progress_options: WorkDoneProgressOptions {

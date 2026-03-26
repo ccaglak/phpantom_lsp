@@ -231,17 +231,18 @@ impl ScopeMap {
             }
         }
 
-        let mut result = RangeClassification::default();
-
         // Check for $this / self / static / parent usage in range.
-        result.uses_this = self.accesses.iter().any(|a| {
-            a.offset >= start
-                && a.offset < end
-                && (a.name == "$this"
-                    || a.name == "self"
-                    || a.name == "static"
-                    || a.name == "parent")
-        });
+        let mut result = RangeClassification {
+            uses_this: self.accesses.iter().any(|a| {
+                a.offset >= start
+                    && a.offset < end
+                    && (a.name == "$this"
+                        || a.name == "self"
+                        || a.name == "static"
+                        || a.name == "parent")
+            }),
+            ..Default::default()
+        };
 
         for var_name in &var_names {
             let frame_accesses = self.accesses_in_frame(var_name, frame);
@@ -278,7 +279,7 @@ impl ScopeMap {
 
             // Variable whose entire lifetime is within [start, end).
             let entirely_inside = first_write.is_some_and(|w| w.offset >= start && w.offset < end)
-                && last_read.map_or(true, |r| r.offset < end)
+                && last_read.is_none_or(|r| r.offset < end)
                 && !has_write_before
                 && !has_read_after;
 
@@ -296,10 +297,8 @@ impl ScopeMap {
                 }
             } else if has_write_inside && has_read_after {
                 // Written inside, read after → return value.
-                if has_write_before || has_read_inside {
-                    if !result.parameters.contains(var_name) {
-                        result.parameters.push(var_name.clone());
-                    }
+                if (has_write_before || has_read_inside) && !result.parameters.contains(var_name) {
+                    result.parameters.push(var_name.clone());
                 }
                 if !result.return_values.contains(var_name) {
                     result.return_values.push(var_name.clone());
