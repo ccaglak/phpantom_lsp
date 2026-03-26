@@ -27,6 +27,7 @@
 //!   `@return void`).
 
 mod change_visibility;
+pub(crate) mod cursor_context;
 pub(crate) mod implement_methods;
 mod import_class;
 mod phpstan;

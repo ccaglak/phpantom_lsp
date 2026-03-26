@@ -214,38 +214,4 @@ Each item must include:
 
 ## Outstanding items
 
-### R1. Extract shared "find cursor context" AST walker
-
-**What to do:** Extract a shared helper function — something like
-`find_class_member_at_cursor` — that handles the common skeleton of
-walking top-level statements into namespace blocks and then into
-class/interface/trait/enum bodies to find the member containing the
-cursor. The function should return a lightweight `CursorContext` value
-(enum or struct) that callers can pattern-match on to get the class
-name, member kind, and byte spans they need.
-
-Currently the same ~25-line structural walk (namespace → class-like →
-members) exists independently in `change_visibility.rs`
-(`find_in_statement`) and `update_docblock.rs`
-(`find_in_statement_ud`). Sprint 4 will add at least three more code
-actions that need the same "which class and member is the cursor on?"
-information (Generate constructor, Promote constructor parameter,
-Extract method). Without a shared helper that is at least four separate
-copies of the same traversal logic.
-
-**Which files to change:**
-
-- `src/code_actions/mod.rs` or a new `src/code_actions/cursor_context.rs` —
-  define the shared `CursorContext` type and the walker function.
-- `src/code_actions/change_visibility.rs` — replace `find_in_statement`
-  / `find_in_members` with calls to the shared helper.
-- `src/code_actions/update_docblock.rs` — replace `find_in_statement_ud`
-  with a call to the shared helper (the extra trivia/content args it
-  needs can be applied after the shared walk narrows down the node).
-
-**Why it matters for the sprint:** A1 (Extract method), A6 (Generate
-constructor), and A7 (Promote constructor parameter) all need "find the
-enclosing class and the member under the cursor." Doing the extraction
-before those features are written means they can all share the helper
-from day one rather than creating more copies that need a second
-clean-up pass later.
+No outstanding items.

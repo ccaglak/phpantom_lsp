@@ -12,13 +12,10 @@
 //! subclass overrides in other files.
 
 use bumpalo::Bump;
-use mago_span::HasSpan;
-use mago_syntax::ast::class_like::member::ClassLikeMember;
-
 use mago_syntax::ast::modifier::Modifier;
-use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
+use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::Backend;
 use crate::util::offset_to_position;
 
@@ -53,8 +50,9 @@ impl Backend {
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
 
-        let hit = find_visibility_at_cursor(&program.statements, cursor_offset);
-        let hit = match hit {
+        let ctx = find_cursor_context(&program.statements, cursor_offset);
+
+        let hit = match find_visibility_from_context(&ctx, cursor_offset) {
             Some(h) => h,
             None => return,
         };
@@ -100,108 +98,37 @@ impl Backend {
     }
 }
 
-// ── AST walk ────────────────────────────────────────────────────────────────
+// ── Visibility extraction from CursorContext ────────────────────────────────
 
-/// Walk top-level statements looking for a class-like that contains the
-/// cursor, then find the visibility modifier of the member under the cursor.
-fn find_visibility_at_cursor<'a>(
-    statements: &Sequence<'a, Statement<'a>>,
-    cursor: u32,
-) -> Option<VisibilityHit> {
-    for stmt in statements.iter() {
-        if let Some(hit) = find_in_statement(stmt, cursor) {
-            return Some(hit);
-        }
-    }
-    None
-}
-
-fn find_in_statement(stmt: &Statement<'_>, cursor: u32) -> Option<VisibilityHit> {
-    match stmt {
-        Statement::Namespace(ns) => {
-            for s in ns.statements().iter() {
-                if let Some(hit) = find_in_statement(s, cursor) {
-                    return Some(hit);
-                }
-            }
-        }
-        Statement::Class(class) => {
-            let span = class.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_members(class.members.iter(), cursor);
-            }
-        }
-        Statement::Interface(iface) => {
-            let span = iface.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_members(iface.members.iter(), cursor);
-            }
-        }
-        Statement::Trait(tr) => {
-            let span = tr.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_members(tr.members.iter(), cursor);
-            }
-        }
-        Statement::Enum(en) => {
-            let span = en.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_members(en.members.iter(), cursor);
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-fn find_in_members<'a>(
-    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
-    cursor: u32,
-) -> Option<VisibilityHit> {
-    for member in members {
-        let member_span = member.span();
-        if cursor < member_span.start.offset || cursor > member_span.end.offset {
-            continue;
-        }
-        match member {
-            ClassLikeMember::Method(method) => {
-                // Only offer the action when the cursor is on the
-                // signature (modifiers, name, parameters, return type),
-                // not inside the method body.
-                let body_start = method.body.span().start.offset;
-                if cursor >= body_start {
-                    // Cursor is inside the body — check promoted
-                    // constructor parameters (they are part of the
-                    // signature) but not the method-level visibility.
+/// Given a `CursorContext`, find the visibility modifier that applies
+/// at the cursor position.
+fn find_visibility_from_context(ctx: &CursorContext<'_>, cursor: u32) -> Option<VisibilityHit> {
+    match ctx {
+        CursorContext::InClassLike { member, .. } => match member {
+            MemberContext::Method(method, in_body) => {
+                if *in_body {
+                    // Cursor is inside the body — only check promoted
+                    // constructor parameters, not the method-level visibility.
+                    find_promoted_param_visibility(method, cursor)
+                } else {
+                    // Check promoted constructor parameters first.
                     if let Some(hit) = find_promoted_param_visibility(method, cursor) {
                         return Some(hit);
                     }
-                    continue;
-                }
-
-                // Check promoted constructor parameters first.
-                if let Some(hit) = find_promoted_param_visibility(method, cursor) {
-                    return Some(hit);
-                }
-                // Then check method-level visibility.
-                if let Some(hit) = find_read_visibility_in_modifiers(method.modifiers.iter()) {
-                    return Some(hit);
+                    // Then check method-level visibility.
+                    find_visibility_in_modifiers(method.modifiers.iter())
                 }
             }
-            ClassLikeMember::Property(property) => {
-                if let Some(hit) = find_read_visibility_in_modifiers(property.modifiers().iter()) {
-                    return Some(hit);
-                }
+            MemberContext::Property(property) => {
+                find_visibility_in_modifiers(property.modifiers().iter())
             }
-            ClassLikeMember::Constant(constant) => {
-                if let Some(hit) = find_read_visibility_in_modifiers(constant.modifiers.iter()) {
-                    return Some(hit);
-                }
+            MemberContext::Constant(constant) => {
+                find_visibility_in_modifiers(constant.modifiers.iter())
             }
-            _ => {}
-        }
+            MemberContext::TraitUse | MemberContext::EnumCase | MemberContext::None => None,
+        },
+        CursorContext::InFunction(_, _) | CursorContext::None => None,
     }
-    None
 }
 
 /// For constructor methods, check if the cursor is on a promoted
@@ -210,6 +137,8 @@ fn find_promoted_param_visibility(
     method: &mago_syntax::ast::class_like::method::Method<'_>,
     cursor: u32,
 ) -> Option<VisibilityHit> {
+    use mago_span::HasSpan;
+
     // Only check constructors — only they can have promoted properties.
     if method.name.value != "__construct" {
         return None;
@@ -223,7 +152,7 @@ fn find_promoted_param_visibility(
         if cursor < param_span.start.offset || cursor > param_span.end.offset {
             continue;
         }
-        if let Some(hit) = find_read_visibility_in_modifiers(param.modifiers.iter()) {
+        if let Some(hit) = find_visibility_in_modifiers(param.modifiers.iter()) {
             return Some(hit);
         }
     }
@@ -232,7 +161,7 @@ fn find_promoted_param_visibility(
 
 /// Find the first read-visibility modifier (`public`, `protected`, or
 /// `private`) in a sequence of modifiers and return a `VisibilityHit`.
-fn find_read_visibility_in_modifiers<'a>(
+fn find_visibility_in_modifiers<'a>(
     modifiers: impl Iterator<Item = &'a Modifier<'a>>,
 ) -> Option<VisibilityHit> {
     for m in modifiers {
@@ -262,7 +191,8 @@ mod tests {
         let arena = Bump::new();
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
-        find_visibility_at_cursor(&program.statements, offset)
+        let ctx = find_cursor_context(&program.statements, offset);
+        find_visibility_from_context(&ctx, offset)
     }
 
     #[test]

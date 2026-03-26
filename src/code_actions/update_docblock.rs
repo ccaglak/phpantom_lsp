@@ -21,6 +21,7 @@ use mago_syntax::ast::class_like::member::ClassLikeMember;
 use mago_syntax::ast::*;
 use tower_lsp::lsp_types::*;
 
+use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::Backend;
 use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
@@ -107,15 +108,14 @@ impl Backend {
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
 
-        let info = match find_function_with_docblock(
-            &program.statements,
-            program.trivia.as_slice(),
-            content,
-            cursor_offset,
-        ) {
-            Some(info) => info,
-            None => return,
-        };
+        let ctx = find_cursor_context(&program.statements, cursor_offset);
+        let trivia = program.trivia.as_slice();
+
+        let info =
+            match find_function_with_docblock_from_context(&ctx, trivia, content, cursor_offset) {
+                Some(info) => info,
+                None => return,
+            };
 
         // Build a class loader and function loader for type enrichment.
         let ctx = self.file_context(uri);
@@ -170,20 +170,91 @@ impl Backend {
 
 // ── AST walk ────────────────────────────────────────────────────────────────
 
-/// Walk the AST to find a function/method at the cursor position that has
-/// an existing docblock.
-fn find_function_with_docblock<'a>(
-    statements: &Sequence<'a, Statement<'a>>,
+/// Use the shared `CursorContext` to find the function/method at the cursor
+/// position, then check for an existing docblock.
+fn find_function_with_docblock_from_context<'a>(
+    ctx: &CursorContext<'a>,
     trivia: &[Trivia<'a>],
     content: &str,
     cursor: u32,
 ) -> Option<FunctionWithDocblock> {
-    for stmt in statements.iter() {
-        if let Some(info) = find_in_statement_ud(stmt, trivia, content, cursor) {
-            return Some(info);
+    match ctx {
+        CursorContext::InClassLike {
+            member,
+            all_members,
+            ..
+        } => {
+            if let MemberContext::Method(method, _in_body) = member {
+                let span = method.span();
+                let body_start = method.body.span().start.offset;
+                if cursor_on_signature_or_docblock(
+                    cursor,
+                    span.start.offset,
+                    body_start,
+                    trivia,
+                    content,
+                ) {
+                    return build_info_for_function_like(
+                        span.start.offset,
+                        &method.parameter_list,
+                        method.return_type_hint.as_ref(),
+                        trivia,
+                        content,
+                    );
+                }
+            }
+            // The cursor may be inside the docblock trivia that precedes
+            // a method.  Docblocks live outside the method's AST span, so
+            // `find_cursor_context` reports `MemberContext::None`.  Scan
+            // all members to find a method whose preceding docblock
+            // contains the cursor.
+            if matches!(member, MemberContext::None) {
+                for m in all_members.iter() {
+                    if let ClassLikeMember::Method(method) = m {
+                        let span = method.span();
+                        let body_start = method.body.span().start.offset;
+                        if cursor_on_signature_or_docblock(
+                            cursor,
+                            span.start.offset,
+                            body_start,
+                            trivia,
+                            content,
+                        ) {
+                            return build_info_for_function_like(
+                                span.start.offset,
+                                &method.parameter_list,
+                                method.return_type_hint.as_ref(),
+                                trivia,
+                                content,
+                            );
+                        }
+                    }
+                }
+            }
+            None
         }
+        CursorContext::InFunction(func, _in_body) => {
+            let span = func.span();
+            let body_start = func.body.span().start.offset;
+            if cursor_on_signature_or_docblock(
+                cursor,
+                span.start.offset,
+                body_start,
+                trivia,
+                content,
+            ) {
+                return build_info_for_function_like(
+                    span.start.offset,
+                    &func.parameter_list,
+                    func.return_type_hint.as_ref(),
+                    trivia,
+                    content,
+                );
+            }
+            None
+        }
+        CursorContext::None => None,
     }
-    None
 }
 
 /// Check whether the cursor is on the function/method signature or inside
@@ -250,98 +321,6 @@ fn find_docblock_start_for_node(
         }
     }
 
-    None
-}
-
-fn find_in_statement_ud<'a>(
-    stmt: &Statement<'a>,
-    trivia: &[Trivia<'a>],
-    content: &str,
-    cursor: u32,
-) -> Option<FunctionWithDocblock> {
-    match stmt {
-        Statement::Namespace(ns) => {
-            for s in ns.statements().iter() {
-                if let Some(info) = find_in_statement_ud(s, trivia, content, cursor) {
-                    return Some(info);
-                }
-            }
-        }
-        Statement::Function(func) => {
-            let span = func.span();
-            let body_start = func.body.span().start.offset;
-            if cursor_on_signature_or_docblock(
-                cursor,
-                span.start.offset,
-                body_start,
-                trivia,
-                content,
-            ) {
-                return build_info_for_function_like(
-                    span.start.offset,
-                    &func.parameter_list,
-                    func.return_type_hint.as_ref(),
-                    trivia,
-                    content,
-                );
-            }
-        }
-        Statement::Class(class) => {
-            let span = class.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_class_members(class.members.iter(), trivia, content, cursor);
-            }
-        }
-        Statement::Interface(iface) => {
-            let span = iface.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_class_members(iface.members.iter(), trivia, content, cursor);
-            }
-        }
-        Statement::Trait(tr) => {
-            let span = tr.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_class_members(tr.members.iter(), trivia, content, cursor);
-            }
-        }
-        Statement::Enum(en) => {
-            let span = en.span();
-            if cursor >= span.start.offset && cursor <= span.end.offset {
-                return find_in_class_members(en.members.iter(), trivia, content, cursor);
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
-fn find_in_class_members<'a>(
-    members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
-    trivia: &[Trivia<'a>],
-    content: &str,
-    cursor: u32,
-) -> Option<FunctionWithDocblock> {
-    for member in members {
-        if let ClassLikeMember::Method(method) = member {
-            let span = method.span();
-            let body_start = method.body.span().start.offset;
-            if cursor_on_signature_or_docblock(
-                cursor,
-                span.start.offset,
-                body_start,
-                trivia,
-                content,
-            ) {
-                return build_info_for_function_like(
-                    span.start.offset,
-                    &method.parameter_list,
-                    method.return_type_hint.as_ref(),
-                    trivia,
-                    content,
-                );
-            }
-        }
-    }
     None
 }
 
@@ -1362,7 +1341,8 @@ mod tests {
         let arena = Bump::new();
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
-        find_function_with_docblock(&program.statements, program.trivia.as_slice(), php, offset)
+        let ctx = find_cursor_context(&program.statements, offset);
+        find_function_with_docblock_from_context(&ctx, program.trivia.as_slice(), php, offset)
     }
 
     /// Stub class loader that never resolves anything (for unit tests).

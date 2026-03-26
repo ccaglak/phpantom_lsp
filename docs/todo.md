@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                | Impact | Effort |
 | --- | --------------------------------------------------------------------------------------------------- | ------ | ------ |
-| R1  | [Extract cursor-context AST helper](todo/refactor.md#r1-cursor-context-ast-helper)                  | —      | Low    |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High   | High   |
 | A5  | [Extract variable](todo/actions.md#a5-extract-variable)                                             | Medium | Medium |
 | A12 | [Inline variable](todo/actions.md#a4-inline-variable)                                               | Medium | Medium |
