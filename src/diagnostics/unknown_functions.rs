@@ -382,4 +382,83 @@ function test(): void {
             diags,
         );
     }
+
+    #[test]
+    fn no_diagnostic_for_use_function_imported_call() {
+        // Simulate the PHPUnit pattern: a namespaced function is defined
+        // in one file and imported via `use function` in the consumer.
+        let backend = Backend::new_test();
+
+        // Define a namespaced function in another file.
+        let def_uri = "file:///vendor/phpunit/Functions.php";
+        let def_php = r#"<?php
+namespace PHPUnit\Framework;
+
+function assertSame(mixed $expected, mixed $actual, string $message = ''): void {}
+"#;
+        backend.update_ast(def_uri, def_php);
+
+        // Consumer file uses `use function` to import it.
+        let uri = "file:///tests/MyTest.php";
+        let php = r#"<?php
+namespace Tests\Unit;
+
+use function PHPUnit\Framework\assertSame;
+
+class MyTest {
+    public function testSomething(): void {
+        assertSame(1, 1);
+    }
+}
+"#;
+        backend.update_ast(uri, php);
+
+        let mut out = Vec::new();
+        backend.collect_unknown_function_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "No diagnostics expected for use-function imported call, got: {:?}",
+            out,
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_use_function_imported_polyfill() {
+        // Functions inside `if (!function_exists(...))` guards are
+        // marked as polyfills but should still be resolvable when
+        // they don't shadow a stub.
+        let backend = Backend::new_test();
+
+        let def_uri = "file:///vendor/phpunit/Functions.php";
+        let def_php = r#"<?php
+namespace PHPUnit\Framework;
+
+if (!function_exists('PHPUnit\Framework\assertSame')) {
+    function assertSame(mixed $expected, mixed $actual, string $message = ''): void {}
+}
+"#;
+        backend.update_ast(def_uri, def_php);
+
+        let uri = "file:///tests/MyTest.php";
+        let php = r#"<?php
+namespace Tests\Unit;
+
+use function PHPUnit\Framework\assertSame;
+
+class MyTest {
+    public function testSomething(): void {
+        assertSame(1, 1);
+    }
+}
+"#;
+        backend.update_ast(uri, php);
+
+        let mut out = Vec::new();
+        backend.collect_unknown_function_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "No diagnostics expected for use-function imported polyfill, got: {:?}",
+            out,
+        );
+    }
 }

@@ -104,9 +104,9 @@ impl Backend {
                 }
 
                 SymbolKind::FunctionCall { name, .. } => {
-                    // In rare cases a use alias might match a function call
-                    // pattern (e.g. `use function` — but we don't track those
-                    // in the use_map currently).  Still check the first segment.
+                    // `use function` imports are tracked in the use_map,
+                    // so this marks them as referenced (preventing false
+                    // "unused import" diagnostics).
                     let first_segment = extract_first_segment(name);
                     if file_use_map.contains_key(first_segment) {
                         referenced_aliases.insert(first_segment.to_string());

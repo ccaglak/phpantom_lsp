@@ -44,19 +44,16 @@ impl Backend {
             }
             UseItems::TypedSequence(seq) => {
                 // `use function Foo\bar;` or `use const Foo\BAR;`
-                // We only care about class imports, skip function/const
-                if seq.r#type.is_function() || seq.r#type.is_const() {
-                    return;
-                }
+                // Function and constant imports are included in the
+                // use_map so that `resolve_function_name` /
+                // `resolve_class_name` can find them.  Class resolution
+                // harmlessly ignores entries that don't match a class.
                 for item in seq.items.iter() {
                     Self::register_use_item(item, None, use_map);
                 }
             }
             UseItems::TypedList(list) => {
-                // `use function Foo\{bar, baz};` — skip function/const
-                if list.r#type.is_function() || list.r#type.is_const() {
-                    return;
-                }
+                // `use function Foo\{bar, baz};` or `use const Foo\{BAR, BAZ};`
                 let prefix = list.namespace.value();
                 for item in list.items.iter() {
                     Self::register_use_item(item, Some(prefix), use_map);
@@ -66,12 +63,6 @@ impl Backend {
                 // `use Foo\{Bar, function baz, const QUX};`
                 let prefix = list.namespace.value();
                 for maybe_typed in list.items.iter() {
-                    // Skip function/const imports
-                    if let Some(ref t) = maybe_typed.r#type
-                        && (t.is_function() || t.is_const())
-                    {
-                        continue;
-                    }
                     Self::register_use_item(&maybe_typed.item, Some(prefix), use_map);
                 }
             }
@@ -236,6 +227,125 @@ class RegistrationController {
         assert!(
             !file_map.contains_key("Disciplines"),
             "original name should not be in the use_map when aliased"
+        );
+    }
+
+    /// `use function Foo\bar;` should populate the use_map.
+    #[test]
+    fn use_function_populates_use_map() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+namespace Tests\Unit;
+
+use function PHPUnit\Framework\assertSame;
+use function PHPUnit\Framework\assertCount;
+
+class MyTest {}
+"#;
+        backend.update_ast(uri, content);
+
+        let use_map = backend.use_map.read();
+        let file_map = use_map
+            .get(uri)
+            .expect("use_map should have an entry for the file");
+
+        assert_eq!(
+            file_map.get("assertSame"),
+            Some(&"PHPUnit\\Framework\\assertSame".to_string()),
+            "use function should add assertSame to use_map"
+        );
+        assert_eq!(
+            file_map.get("assertCount"),
+            Some(&"PHPUnit\\Framework\\assertCount".to_string()),
+            "use function should add assertCount to use_map"
+        );
+    }
+
+    /// `use function Foo\{bar, baz};` (grouped) should populate the use_map.
+    #[test]
+    fn use_function_grouped_populates_use_map() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+namespace Tests\Unit;
+
+use function PHPUnit\Framework\{assertSame, assertCount};
+
+class MyTest {}
+"#;
+        backend.update_ast(uri, content);
+
+        let use_map = backend.use_map.read();
+        let file_map = use_map
+            .get(uri)
+            .expect("use_map should have an entry for the file");
+
+        assert_eq!(
+            file_map.get("assertSame"),
+            Some(&"PHPUnit\\Framework\\assertSame".to_string()),
+            "grouped use function should add assertSame to use_map"
+        );
+        assert_eq!(
+            file_map.get("assertCount"),
+            Some(&"PHPUnit\\Framework\\assertCount".to_string()),
+            "grouped use function should add assertCount to use_map"
+        );
+    }
+
+    /// `use const Foo\BAR;` should populate the use_map.
+    #[test]
+    fn use_const_populates_use_map() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = r#"<?php
+namespace App;
+
+use const JSON_THROW_ON_ERROR;
+
+class MyClass {}
+"#;
+        backend.update_ast(uri, content);
+
+        let use_map = backend.use_map.read();
+        let file_map = use_map
+            .get(uri)
+            .expect("use_map should have an entry for the file");
+
+        assert_eq!(
+            file_map.get("JSON_THROW_ON_ERROR"),
+            Some(&"JSON_THROW_ON_ERROR".to_string()),
+            "use const should add JSON_THROW_ON_ERROR to use_map"
+        );
+    }
+
+    /// Mixed `use Foo\{Bar, function baz, const QUX};` should include all items.
+    #[test]
+    fn mixed_use_includes_functions_and_consts() {
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "<?php\nuse App\\{MyClass, function myFunc, const MY_CONST};\n";
+        backend.update_ast(uri, content);
+
+        let use_map = backend.use_map.read();
+        let file_map = use_map
+            .get(uri)
+            .expect("use_map should have an entry for the file");
+
+        assert_eq!(
+            file_map.get("MyClass"),
+            Some(&"App\\MyClass".to_string()),
+            "mixed use should include class import"
+        );
+        assert_eq!(
+            file_map.get("myFunc"),
+            Some(&"App\\myFunc".to_string()),
+            "mixed use should include function import"
+        );
+        assert_eq!(
+            file_map.get("MY_CONST"),
+            Some(&"App\\MY_CONST".to_string()),
+            "mixed use should include const import"
         );
     }
 }
