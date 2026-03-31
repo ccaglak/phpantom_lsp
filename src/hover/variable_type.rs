@@ -151,7 +151,13 @@ pub(crate) fn resolve_variable_type_string(
                 && ast.len() > joined.len()
                 && ast.starts_with(&joined)
             {
-                return ast_result;
+                // Don't prefer the AST result when the only difference
+                // is a trailing `|null` — the unified pipeline may have
+                // stripped it via guard clause narrowing (B19).
+                let suffix = &ast[joined.len()..];
+                if suffix != "|null" {
+                    return ast_result;
+                }
             }
             return Some(joined);
         }

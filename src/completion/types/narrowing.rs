@@ -25,7 +25,7 @@ use mago_syntax::ast::*;
 use std::sync::Arc;
 
 use crate::php_type::PhpType;
-use crate::types::{AssertionKind, ClassInfo, ParameterInfo, TypeAssertion};
+use crate::types::{AssertionKind, ClassInfo, ParameterInfo, ResolvedType, TypeAssertion};
 
 use super::conditional::extract_class_string_from_expr;
 use crate::completion::resolver::VarResolutionCtx;
@@ -2046,5 +2046,145 @@ pub(in crate::completion) fn apply_guard_clause_in_array_narrowing(
         } else {
             apply_instanceof_exclusion(&element_type, ctx, results);
         }
+    }
+}
+
+// ── Null / falsy guard clause narrowing ─────────────────────────────────
+
+/// Detect whether `condition` is a null/falsy check on `var_name`.
+///
+/// Recognised patterns (after unwrapping negation and parentheses):
+///   - `$var` (bare variable used as boolean — falsy check)
+///   - `$var === null` / `null === $var`
+///   - `$var == null`  / `null == $var`
+///   - `is_null($var)`
+///   - `empty($var)`
+///
+/// Returns `Some(negated)` where `negated` is `true` when the original
+/// condition was negated (e.g. `!$var`, `$var !== null`).
+fn try_extract_null_check(condition: &Expression<'_>, var_name: &str) -> Option<bool> {
+    let (inner, negated) = unwrap_condition_negation(condition);
+
+    match inner {
+        // Bare variable used as boolean condition:
+        //   `if ($var) { return; }` → then-body runs when truthy (NOT null)
+        //   `if (!$var) { return; }` → then-body runs when falsy (IS null)
+        // The caller interprets `false` as "checks for null/falsy" and
+        // `true` as "checks for NOT null".  A bare `$var` is a truthy
+        // check (negated=false → NOT null → return true), and `!$var`
+        // is a falsy check (negated=true → IS null → return false).
+        Expression::Variable(Variable::Direct(dv)) if dv.name == var_name => Some(!negated),
+
+        // `$var === null` / `$var == null` / `$var !== null` / `$var != null`
+        Expression::Binary(bin) => {
+            let is_identity = matches!(
+                bin.operator,
+                BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_)
+            );
+            let is_equality = matches!(
+                bin.operator,
+                BinaryOperator::Equal(_) | BinaryOperator::NotEqual(_)
+            );
+            if !is_identity && !is_equality {
+                return None;
+            }
+
+            // NotIdentical / NotEqual flip the negation sense.
+            let op_negates = matches!(
+                bin.operator,
+                BinaryOperator::NotIdentical(_) | BinaryOperator::NotEqual(_)
+            );
+
+            let var_side = if is_null_literal(bin.rhs) {
+                bin.lhs
+            } else if is_null_literal(bin.lhs) {
+                bin.rhs
+            } else {
+                return None;
+            };
+
+            if let Expression::Variable(Variable::Direct(dv)) = var_side
+                && dv.name == var_name
+            {
+                return Some(negated ^ op_negates);
+            }
+            None
+        }
+
+        // `is_null($var)` / `empty($var)`
+        Expression::Call(Call::Function(fc)) => {
+            let func_name = match &fc.function {
+                Expression::Identifier(ident) => ident.value(),
+                _ => return None,
+            };
+            if func_name != "is_null" && func_name != "empty" {
+                return None;
+            }
+            let args = &fc.argument_list.arguments;
+            if args.len() != 1 {
+                return None;
+            }
+            if let Some(Argument::Positional(pos)) = args.first()
+                && let Expression::Variable(Variable::Direct(dv)) = pos.value
+                && dv.name == var_name
+            {
+                return Some(negated);
+            }
+            None
+        }
+
+        _ => None,
+    }
+}
+
+/// Returns `true` when the expression is the literal `null`.
+fn is_null_literal(expr: &Expression<'_>) -> bool {
+    matches!(expr, Expression::Literal(Literal::Null(_)))
+}
+
+/// Apply null guard clause narrowing after an `if` statement whose
+/// then-body unconditionally exits.
+///
+/// When a guard clause like:
+/// ```text
+/// if (!$var) { continue; }
+/// if ($var === null) { return; }
+/// ```
+/// appears before the cursor, the code after it can only be reached
+/// when the variable is non-null.  This removes `null` entries from
+/// the resolved type list.
+///
+/// Operates directly on `Vec<ResolvedType>` because `null` is not a
+/// class and would be missed by class-level narrowing.
+pub(in crate::completion) fn apply_guard_clause_null_narrowing(
+    if_stmt: &If<'_>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ResolvedType>,
+) {
+    if !then_body_unconditionally_exits(&if_stmt.body) {
+        return;
+    }
+    if if_stmt.body.has_else_clause() || if_stmt.body.has_else_if_clauses() {
+        return;
+    }
+
+    if let Some(condition_checks_null) = try_extract_null_check(if_stmt.condition, ctx.var_name) {
+        // condition_checks_null == false means the condition is "is null/falsy"
+        //   → then-body exits when null → after: non-null → remove null
+        // condition_checks_null == true means the condition is "is NOT null"
+        //   → then-body exits when non-null → after: null → keep only null
+        if !condition_checks_null {
+            // Remove null entries from the resolved types.
+            results.retain(|rt| !rt.type_string.is_null());
+            // Also strip `null` from union types (e.g. `Foo|null` → `Foo`).
+            for rt in results.iter_mut() {
+                if let Some(non_null) = rt.type_string.non_null_type() {
+                    rt.type_string = non_null;
+                }
+            }
+        }
+        // The "exits when non-null" case (condition_checks_null == true)
+        // is unusual and not worth handling — the code after would only
+        // see null, which has no class members to complete on.
     }
 }

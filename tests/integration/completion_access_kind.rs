@@ -1069,3 +1069,205 @@ async fn test_self_and_static_show_non_static_methods_like_parent() {
         static_constant_names
     );
 }
+
+// ─── B17: Static property subject resolves to property type ─────────────────
+
+/// When `self::$prop->method()` is used, the subject `self::$prop` should
+/// resolve to the *type* of the static property, not to the class that
+/// declares it.
+#[tokio::test]
+async fn test_static_property_access_resolves_to_property_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b17_static_prop.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Connection {\n",
+        "    public function setConfig(string $key): void {}\n",
+        "    public function ping(): bool { return true; }\n",
+        "}\n",
+        "class ConnectionManager {\n",
+        "    private static Connection $instance;\n",
+        "\n",
+        "    public static function test(): void {\n",
+        "        self::$instance->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `self::$instance->` on line 9
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 26,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result.unwrap() {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        method_names.iter().any(|n| n.starts_with("setConfig")),
+        "self::$instance-> should resolve to Connection and show 'setConfig', got: {:?}",
+        method_names
+    );
+    assert!(
+        method_names.iter().any(|n| n.starts_with("ping")),
+        "self::$instance-> should resolve to Connection and show 'ping', got: {:?}",
+        method_names
+    );
+}
+
+/// Static property access via an explicit class name should also resolve
+/// to the property type.
+#[tokio::test]
+async fn test_classname_static_property_access_resolves_to_property_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b17_classname_static.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Logger {\n",
+        "    public function info(string $msg): void {}\n",
+        "}\n",
+        "class Registry {\n",
+        "    public static Logger $logger;\n",
+        "\n",
+        "    public static function test(): void {\n",
+        "        Registry::$logger->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `Registry::$logger->` on line 8
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 8,
+                character: 28,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result.unwrap() {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        method_names.iter().any(|n| n.starts_with("info")),
+        "Registry::$logger-> should resolve to Logger and show 'info', got: {:?}",
+        method_names
+    );
+}
+
+/// `parent::$prop->` should resolve through the parent class's static
+/// property type.
+#[tokio::test]
+async fn test_parent_static_property_access_resolves_to_property_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b17_parent_static.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Formatter {\n",
+        "    public function format(string $s): string { return $s; }\n",
+        "}\n",
+        "class Base {\n",
+        "    protected static Formatter $fmt;\n",
+        "}\n",
+        "class Child extends Base {\n",
+        "    public function test(): void {\n",
+        "        parent::$fmt->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor right after `parent::$fmt->` on line 9
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 9,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result.unwrap() {
+        CompletionResponse::Array(items) => items,
+        CompletionResponse::List(list) => list.items,
+    };
+
+    let method_names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        method_names.iter().any(|n| n.starts_with("format")),
+        "parent::$fmt-> should resolve to Formatter and show 'format', got: {:?}",
+        method_names
+    );
+}

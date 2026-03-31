@@ -435,6 +435,11 @@ impl PhpType {
     /// Whether this type is a scalar/built-in type that does not refer
     /// to a user-defined class.
     ///
+    /// Returns `true` when this type is exactly `null`.
+    pub fn is_null(&self) -> bool {
+        matches!(self, PhpType::Named(s) if s == "null")
+    }
+
     /// Matches built-in PHP types and common PHPDoc pseudo-types like
     /// `mixed`, `class-string`, etc.
     pub fn is_scalar(&self) -> bool {

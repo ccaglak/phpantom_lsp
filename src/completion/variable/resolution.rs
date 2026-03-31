@@ -1533,6 +1533,12 @@ fn walk_if_statement<'b>(
         ResolvedType::apply_narrowing(results, |classes| {
             narrowing::apply_guard_clause_in_array_narrowing(if_stmt, ctx, classes);
         });
+        // ── Null / falsy guard clause narrowing ──
+        // `if (!$var) { return; }` or `if ($var === null) { continue; }`
+        // → remove `null` from the resolved types after the guard.
+        // This operates on `ResolvedType` directly because `null` is
+        // not a class and would be missed by class-level narrowing.
+        narrowing::apply_guard_clause_null_narrowing(if_stmt, ctx, results);
     }
 }
 

@@ -6906,3 +6906,179 @@ async fn test_mixin_generic_substitution() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── T19: Inherited property template substitution on $this-> ───────────────
+
+/// When a class extends a generic parent with `@extends Parent<Concrete>`,
+/// inherited properties whose types use the parent's template parameters
+/// should have those parameters substituted.  For example, a property
+/// typed `array<TKey, TValue>` should become `array<int, Message>`.
+#[tokio::test]
+async fn test_inherited_array_property_template_substitution() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///t19_array_prop.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Message {\n",
+        "    public string $text;\n",
+        "    public function getText(): string { return ''; }\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @var array<TKey, TValue> */\n",
+        "    public array $items = [];\n",
+        "\n",
+        "    /** @return TValue|null */\n",
+        "    public function first(): mixed { return null; }\n",
+        "}\n",
+        "\n",
+        "/** @extends Collection<int, Message> */\n",
+        "final class MessageCollection extends Collection {\n",
+        "    public function test(): void {\n",
+        "        foreach ($this->items as $item) {\n",
+        "            $item->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor after `$item->` on the foreach body line
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 22,
+                character: 19,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $item-> inside foreach over $this->items"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            let prop_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getText"),
+                "Foreach over $this->items (array<int, Message>) should resolve $item to Message and show 'getText', got methods: {:?}",
+                method_names
+            );
+            assert!(
+                prop_names.contains(&"text"),
+                "Foreach over $this->items (array<int, Message>) should resolve $item to Message and show 'text', got props: {:?}",
+                prop_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Direct access to an inherited generic-typed property should resolve
+/// the substituted type for chaining (e.g. `$this->items[0]->`).
+#[tokio::test]
+async fn test_inherited_property_bracket_access_template_substitution() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///t19_bracket.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Task {\n",
+        "    public string $title;\n",
+        "    public function getTitle(): string { return ''; }\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @template T\n",
+        " */\n",
+        "class TypedList {\n",
+        "    /** @var list<T> */\n",
+        "    public array $data = [];\n",
+        "}\n",
+        "\n",
+        "/** @extends TypedList<Task> */\n",
+        "class TaskList extends TypedList {\n",
+        "    public function demo(): void {\n",
+        "        $first = $this->data[0];\n",
+        "        $first->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 18,
+                character: 17,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $first-> after $this->data[0]"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getTitle"),
+                "Should resolve $this->data[0] to Task and show 'getTitle', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

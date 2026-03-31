@@ -375,6 +375,13 @@ fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String {
     while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
         i -= 1;
     }
+
+    // Include `$` prefix for static property access (e.g. `self::$instance->`)
+    // so the `::` check below sees `::$instance` instead of just `instance`.
+    if i > 0 && chars[i - 1] == '$' {
+        i -= 1;
+    }
+
     let ident_start = i;
 
     // Check whether this identifier is preceded by another `->` (chained access)

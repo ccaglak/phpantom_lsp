@@ -1316,3 +1316,354 @@ async fn test_guard_clause_get_class_identity_check() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── B19: Null / falsy guard clause narrowing ───────────────────────────────
+
+/// `if (!$var) { continue; }` should narrow `$var` to non-null after the guard.
+#[tokio::test]
+async fn test_guard_clause_falsy_continue_narrows_null() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guard_falsy_continue.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class OrderLine {\n",
+        "    public int $actualAmount;\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param array<int, OrderLine|null> $lines */\n",
+        "    public function test(array $lines): void {\n",
+        "        foreach ($lines as $key => $line) {\n",
+        "            if (!$line) {\n",
+        "                continue;\n",
+        "            }\n",
+        "            $line->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 11,
+                    character: 19,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let prop_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                prop_names.contains(&"actualAmount"),
+                "Should include 'actualAmount' after falsy guard with continue, got: {:?}",
+                prop_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// `if ($var === null) { return; }` should narrow `$var` to non-null.
+#[tokio::test]
+async fn test_guard_clause_null_identity_return_narrows() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guard_null_identity.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Formatter {\n",
+        "    public function format(string $s): string { return $s; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(?Formatter $fmt): void {\n",
+        "        if ($fmt === null) {\n",
+        "            return;\n",
+        "        }\n",
+        "        $fmt->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 9,
+                    character: 14,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"format"),
+                "Should include 'format' after null identity guard, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// `if (null === $var) { return; }` — reversed operand order should also work.
+#[tokio::test]
+async fn test_guard_clause_null_identity_reversed_operands() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guard_null_reversed.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Logger {\n",
+        "    public function info(string $msg): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(?Logger $log): void {\n",
+        "        if (null === $log) {\n",
+        "            return;\n",
+        "        }\n",
+        "        $log->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 9,
+                    character: 14,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"info"),
+                "Should include 'info' after reversed null identity guard, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// `if ($var == null) { return; }` — equality (not identity) should also narrow.
+#[tokio::test]
+async fn test_guard_clause_null_equality_return_narrows() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guard_null_eq.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function get(string $key): string { return ''; }\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(?Config $cfg): void {\n",
+        "        if ($cfg == null) {\n",
+        "            return;\n",
+        "        }\n",
+        "        $cfg->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 9,
+                    character: 14,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"get"),
+                "Should include 'get' after null equality guard, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variable assigned via `?? null` then guarded with `!$var` + `continue`.
+/// Reproduces the exact pattern from the B19 bug report.
+#[tokio::test]
+async fn test_guard_clause_null_coalesce_then_falsy_continue() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///guard_coalesce_continue.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class WarehouseOrderLine {\n",
+        "    public int $actualAmount;\n",
+        "    public int $amount;\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @param array<int, WarehouseOrderLine> $warehouseOrderLines */\n",
+        "    public function test(array $warehouseOrderLines): void {\n",
+        "        foreach ($warehouseOrderLines as $key => $val) {\n",
+        "            $warehouseOrderline = $warehouseOrderLines[$key] ?? null;\n",
+        "            if (!$warehouseOrderline) {\n",
+        "                continue;\n",
+        "            }\n",
+        "            $warehouseOrderline->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 13,
+                    character: 33,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let prop_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::PROPERTY))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                prop_names.contains(&"actualAmount"),
+                "Should include 'actualAmount' after null coalesce + falsy guard, got: {:?}",
+                prop_names
+            );
+            assert!(
+                prop_names.contains(&"amount"),
+                "Should include 'amount' after null coalesce + falsy guard, got: {:?}",
+                prop_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

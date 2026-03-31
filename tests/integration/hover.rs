@@ -8821,3 +8821,98 @@ function test() {
         text
     );
 }
+
+// ─── B19: Guard clause null narrowing in hover ──────────────────────────────
+
+#[test]
+fn hover_guard_clause_falsy_continue_narrows_null() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class OrderLine {
+    public int $actualAmount = 0;
+}
+class Svc {
+    /** @param array<int, OrderLine|null> $lines */
+    public function test(array $lines): void {
+        foreach ($lines as $line) {
+            if (!$line) {
+                continue;
+            }
+            $line->actualAmount;
+        }
+    }
+}
+"#;
+
+    // Hover on `$line` at line 11 (after the guard clause)
+    let hover = hover_at(&backend, uri, content, 11, 13).expect("expected hover on $line");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("OrderLine") && !text.contains("null"),
+        "after `if (!$line) {{ continue; }}`, hover should show OrderLine without null, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_guard_clause_null_identity_return_narrows() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Formatter {
+    public function format(string $s): string { return $s; }
+}
+class Svc {
+    public function test(?Formatter $fmt): void {
+        if ($fmt === null) {
+            return;
+        }
+        $fmt->format('hello');
+    }
+}
+"#;
+
+    // Hover on `$fmt` at line 9 (after the guard clause)
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $fmt");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Formatter") && !text.contains("null"),
+        "after `if ($fmt === null) {{ return; }}`, hover should show Formatter without null, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_guard_clause_null_coalesce_then_falsy_continue() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class OrderLine {
+    public int $actualAmount = 0;
+    public int $amount = 0;
+}
+class Svc {
+    /** @param array<int, OrderLine> $warehouseOrderLines */
+    public function test(array $warehouseOrderLines): void {
+        foreach ($warehouseOrderLines as $key => $val) {
+            $warehouseOrderline = $warehouseOrderLines[$key] ?? null;
+            if (!$warehouseOrderline) {
+                continue;
+            }
+            $warehouseOrderline->actualAmount;
+        }
+    }
+}
+"#;
+
+    // Hover on `$warehouseOrderline` at line 13 (after the guard clause)
+    let hover =
+        hover_at(&backend, uri, content, 13, 17).expect("expected hover on $warehouseOrderline");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("OrderLine") && !text.contains("null"),
+        "after null coalesce + falsy guard, hover should show OrderLine without null, got: {}",
+        text
+    );
+}

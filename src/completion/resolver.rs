@@ -585,36 +585,64 @@ pub(crate) fn resolve_target_classes_expr(
         }
 
         // ── Enum case / static member access ────────────────────
-        SubjectExpr::StaticAccess { class, .. } => {
+        SubjectExpr::StaticAccess { class, member } => {
             // Handle self/static/parent keywords — SubjectExpr::parse
             // produces StaticAccess for "self::MONTH", "static::FOO",
             // etc., but "self"/"static"/"parent" are keywords, not
             // class names, so find_class_by_name / class_loader won't
             // find them.
-            match class.as_str() {
-                "self" | "static" => {
-                    return current_class
-                        .map(|cc| Arc::new(cc.clone()))
-                        .into_iter()
-                        .collect();
-                }
+            let owner_classes: Vec<Arc<ClassInfo>> = match class.as_str() {
+                "self" | "static" => current_class
+                    .map(|cc| Arc::new(cc.clone()))
+                    .into_iter()
+                    .collect(),
                 "parent" => {
                     if let Some(cc) = current_class
                         && let Some(ref parent_name) = cc.parent_class
                     {
                         if let Some(cls) = find_class_by_name(all_classes, parent_name) {
-                            return vec![Arc::clone(cls)];
+                            vec![Arc::clone(cls)]
+                        } else {
+                            class_loader(parent_name).into_iter().collect()
                         }
-                        return class_loader(parent_name).into_iter().collect();
+                    } else {
+                        vec![]
                     }
-                    return vec![];
                 }
-                _ => {}
+                _ => {
+                    if let Some(cls) = find_class_by_name(all_classes, class) {
+                        vec![Arc::clone(cls)]
+                    } else {
+                        class_loader(class).into_iter().collect()
+                    }
+                }
+            };
+
+            // When the member is a static property (starts with `$`),
+            // resolve to the property's declared type instead of the
+            // owning class.  This makes `self::$instance->method()`
+            // resolve `method()` on the property's type, not on the
+            // class that declares the static property.
+            if let Some(prop_name) = member.strip_prefix('$') {
+                let mut results = Vec::new();
+                for cls in &owner_classes {
+                    let resolved = super::type_resolution::resolve_property_types(
+                        prop_name,
+                        cls,
+                        all_classes,
+                        class_loader,
+                    );
+                    ClassInfo::extend_unique_arc(
+                        &mut results,
+                        resolved.into_iter().map(Arc::new).collect(),
+                    );
+                }
+                if !results.is_empty() {
+                    return results;
+                }
             }
-            if let Some(cls) = find_class_by_name(all_classes, class) {
-                return vec![Arc::clone(cls)];
-            }
-            class_loader(class).into_iter().collect()
+
+            owner_classes
         }
 
         // ── Bare class name ─────────────────────────────────────
