@@ -761,7 +761,7 @@ fn bench_diagnostics_phpactor_fixtures(c: &mut Criterion) {
             BenchmarkId::new("fixture", *name),
             &content,
             |b, content| {
-                let backend = Backend::new_test();
+                let backend = Backend::new_test_with_full_stubs();
                 backend.update_ast(&uri, content);
                 b.iter(|| {
                     let mut out = Vec::new();
