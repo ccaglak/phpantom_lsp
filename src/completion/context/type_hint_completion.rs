@@ -160,12 +160,33 @@ pub(crate) fn detect_type_hint_context(
         if partial.is_empty() {
             return None;
         }
-        // Make sure the partial is NOT a keyword that forms part of a
-        // function declaration (e.g. `public function`).  If the user
-        // has typed `function` or `fn` we should not offer type hints.
-        let partial_lower = partial.to_lowercase();
-        if partial_lower == "function" || partial_lower == "fn" {
-            return None;
+        // If the partial starts with a lowercase letter and is a prefix
+        // of any member-declaration keyword, defer to keyword completion
+        // so that e.g. `public fu` offers `function` rather than type
+        // hints.  Partials starting with an uppercase letter (e.g. `Us`,
+        // `User`) are type names, not keywords, so they skip this check.
+        if partial.starts_with(|c: char| c.is_ascii_lowercase()) {
+            const MEMBER_DECLARATION_KEYWORDS: &[&str] = &[
+                "function",
+                "fn",
+                "const",
+                "static",
+                "final",
+                "abstract",
+                "readonly",
+                "public",
+                "protected",
+                "private",
+                "use",
+                "class",
+            ];
+            let partial_lower = partial.to_lowercase();
+            let is_keyword_prefix = MEMBER_DECLARATION_KEYWORDS
+                .iter()
+                .any(|kw| kw.starts_with(partial_lower.as_str()));
+            if is_keyword_prefix {
+                return None;
+            }
         }
         return Some(TypeHintContext {
             partial,

@@ -276,6 +276,135 @@ fn partial_is_function_keyword_after_modifier() {
     assert!(ctx.is_none());
 }
 
+// ── Partial keyword prefixes after modifiers ────────────────────
+
+#[test]
+fn partial_fu_after_public_is_not_type_hint() {
+    // `public fu` — "fu" is a prefix of "function", should defer to keyword completion.
+    let src = "<?php\nclass Foo {\n    public fu\n}";
+    let ctx = detect(src, 2, 13);
+    assert!(
+        ctx.is_none(),
+        "partial 'fu' is a prefix of 'function' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_fun_after_public_is_not_type_hint() {
+    let src = "<?php\nclass Foo {\n    public fun\n}";
+    let ctx = detect(src, 2, 14);
+    assert!(
+        ctx.is_none(),
+        "partial 'fun' is a prefix of 'function' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_func_after_public_is_not_type_hint() {
+    let src = "<?php\nclass Foo {\n    public func\n}";
+    let ctx = detect(src, 2, 15);
+    assert!(
+        ctx.is_none(),
+        "partial 'func' is a prefix of 'function' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_con_after_public_is_not_type_hint() {
+    // `public con` — "con" is a prefix of "const", should defer to keyword completion.
+    let src = "<?php\nclass Foo {\n    public con\n}";
+    let ctx = detect(src, 2, 14);
+    assert!(
+        ctx.is_none(),
+        "partial 'con' is a prefix of 'const' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_st_after_public_is_not_type_hint() {
+    // `public st` — "st" is a prefix of "static", should defer to keyword completion.
+    let src = "<?php\nclass Foo {\n    public st\n}";
+    let ctx = detect(src, 2, 13);
+    assert!(
+        ctx.is_none(),
+        "partial 'st' is a prefix of 'static' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_f_after_public_is_not_type_hint() {
+    // `public f` — "f" is a prefix of "function", "fn", "final".
+    let src = "<?php\nclass Foo {\n    public f\n}";
+    let ctx = detect(src, 2, 12);
+    assert!(
+        ctx.is_none(),
+        "partial 'f' is a prefix of 'function'/'fn'/'final' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_cl_after_readonly_at_top_level_is_not_type_hint() {
+    // `readonly cl` — "cl" is a prefix of "class", should defer to keyword completion.
+    let src = "<?php\nreadonly cl";
+    let ctx = detect(src, 1, 12);
+    assert!(
+        ctx.is_none(),
+        "partial 'cl' is a prefix of 'class' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_ab_after_public_is_not_type_hint() {
+    // `public ab` — "ab" is a prefix of "abstract".
+    let src = "<?php\nclass Foo {\n    public ab\n}";
+    let ctx = detect(src, 2, 13);
+    assert!(
+        ctx.is_none(),
+        "partial 'ab' is a prefix of 'abstract' and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_str_after_public_is_type_hint() {
+    // `public str` — "str" is NOT a prefix of any declaration keyword,
+    // so it should trigger type hints (e.g. offering `string`).
+    let src = "<?php\nclass Foo {\n    public str\n}";
+    let ctx = detect(src, 2, 14).unwrap();
+    assert_eq!(ctx.partial, "str");
+}
+
+#[test]
+fn partial_us_after_public_is_type_hint() {
+    // `public Us` — "Us" is not a prefix of any declaration keyword,
+    // so it should trigger type hints (e.g. offering `UserService`).
+    let src = "<?php\nclass Foo {\n    public Us\n}";
+    let ctx = detect(src, 2, 13).unwrap();
+    assert_eq!(ctx.partial, "Us");
+}
+
+#[test]
+fn partial_fn_after_public_is_not_type_hint() {
+    // `public fn` — "fn" is an exact match for the keyword.
+    let src = "<?php\nclass Foo {\n    public fn\n}";
+    let ctx = detect(src, 2, 13);
+    assert!(
+        ctx.is_none(),
+        "partial 'fn' matches declaration keyword and should not trigger type hints"
+    );
+}
+
+#[test]
+fn partial_use_after_public_is_not_type_hint() {
+    // Inside a class, `public use` — "use" is a declaration keyword (trait import).
+    // Note: not valid PHP but the keyword check should still exclude it.
+    let src = "<?php\nclass Foo {\n    public use\n}";
+    let ctx = detect(src, 2, 14);
+    assert!(
+        ctx.is_none(),
+        "partial 'use' matches declaration keyword and should not trigger type hints"
+    );
+}
+
 // ── Native types constant ───────────────────────────────────────
 
 #[test]
