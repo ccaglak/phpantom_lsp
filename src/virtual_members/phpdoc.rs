@@ -358,11 +358,19 @@ impl VirtualMemberProvider for PHPDocProvider {
         };
 
         // Collect from the class's own mixins.
+        //
+        // No template substitutions are available at this stage because
+        // the concrete generic arguments for the class itself are applied
+        // later by `apply_generic_args`.  Template-param mixin names
+        // (e.g. `@mixin TWraps`) on the own class are resolved during
+        // the ancestor walk when a child class provides concrete types
+        // via `@extends`.
         collect_mixin_members(
             &class.mixins,
             &class.mixin_generics,
             class_loader,
             &mut collector,
+            &HashMap::new(),
             0,
         );
 
@@ -419,6 +427,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     &resolved_mixin_generics,
                     class_loader,
                     &mut collector,
+                    &level_subs,
                     0,
                 );
             }
@@ -458,6 +467,7 @@ fn collect_mixin_members(
     mixin_generics: &[(String, Vec<PhpType>)],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     collector: &mut MixinCollector,
+    template_subs: &HashMap<String, PhpType>,
     depth: u32,
 ) {
     if depth > MAX_MIXIN_DEPTH {
@@ -465,17 +475,37 @@ fn collect_mixin_members(
     }
 
     for mixin_name in mixin_names {
-        let mixin_class = if let Some(c) = class_loader(mixin_name) {
+        // If the mixin name is a template parameter, substitute it
+        // with the concrete type from the generic arguments.
+        let resolved_mixin_name = if let Some(concrete) = template_subs.get(mixin_name.as_str()) {
+            if let Some(base) = concrete.base_name() {
+                base.to_string()
+            } else {
+                // The concrete type is a scalar, union, or other
+                // non-class type — cannot be used as a mixin.
+                continue;
+            }
+        } else {
+            mixin_name.clone()
+        };
+
+        let mixin_class = if let Some(c) = class_loader(&resolved_mixin_name) {
             c
         } else {
             continue;
         };
 
         // Find generic args for this mixin from the @mixin tag.
-        let mixin_short = short_name(mixin_name);
+        // Check both the original name (e.g. "TWraps") and the resolved
+        // name in case the mixin_generics were stored under either form.
+        let mixin_short = short_name(&resolved_mixin_name);
         let generic_args: Option<&[PhpType]> = mixin_generics
             .iter()
-            .find(|(name, _)| name == mixin_name || short_name(name) == mixin_short)
+            .find(|(name, _)| {
+                name == mixin_name
+                    || short_name(name) == mixin_short
+                    || name == &resolved_mixin_name
+            })
             .map(|(_, args)| args.as_slice());
 
         // Resolve the mixin class with its own inheritance so we see
@@ -486,7 +516,7 @@ fn collect_mixin_members(
         // mixin (e.g. Builder) is only resolved once per thread.
         let resolved_mixin = MIXIN_CACHE.with(|cache| {
             let mut map = cache.borrow_mut();
-            Arc::clone(map.entry(mixin_name.clone()).or_insert_with(|| {
+            Arc::clone(map.entry(resolved_mixin_name.clone()).or_insert_with(|| {
                 Arc::new(crate::inheritance::resolve_class_with_inheritance(
                     &mixin_class,
                     class_loader,
@@ -568,6 +598,7 @@ fn collect_mixin_members(
                 &mixin_class.mixin_generics,
                 class_loader,
                 collector,
+                &HashMap::new(),
                 depth + 1,
             );
         }

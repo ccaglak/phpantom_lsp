@@ -1,4 +1,5 @@
 use super::*;
+use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, make_constant, make_method, make_property, no_loader};
 use std::sync::Arc;
 
@@ -616,4 +617,57 @@ fn mixin_only_no_docblock() {
     assert_eq!(result.methods[0].name, "barMethod");
     assert_eq!(result.properties.len(), 1);
     assert_eq!(result.properties[0].name, "barProp");
+}
+
+/// When a class declares `@template TWraps` and `@mixin TWraps`, and a
+/// child class extends it with a concrete type (`extends Subclient<EventsApi>`),
+/// the mixin name should be resolved through the template substitution map
+/// so that `EventsApi`'s public members appear on the child class.
+#[test]
+fn mixin_template_param_substituted_via_ancestor_walk() {
+    clear_mixin_cache();
+
+    let provider = PHPDocProvider;
+
+    // The child class: extends Subclient<EventsApi>
+    let mut child = make_class("EventSubclient");
+    child.parent_class = Some("Subclient".to_string());
+    child.extends_generics = vec![(
+        "Subclient".to_string(),
+        vec![PhpType::Named("EventsApi".to_string())],
+    )];
+
+    // The parent class: @template TWraps, @mixin TWraps
+    let mut subclient = make_class("Subclient");
+    subclient.template_params = vec!["TWraps".to_string()];
+    subclient.mixins = vec!["TWraps".to_string()];
+
+    // The mixin target class
+    let mut events_api = make_class("EventsApi");
+    events_api
+        .methods
+        .push(make_method("createEvent", Some("void")));
+    events_api
+        .methods
+        .push(make_method("getEvents", Some("array")));
+
+    let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
+        match name {
+            "Subclient" => Some(Arc::new(subclient.clone())),
+            "EventsApi" => Some(Arc::new(events_api.clone())),
+            _ => None,
+        }
+    };
+
+    let result = provider.provide(&child, &class_loader, None);
+
+    let method_names: Vec<&str> = result.methods.iter().map(|m| m.name.as_str()).collect();
+    assert!(
+        method_names.contains(&"createEvent"),
+        "Expected createEvent from mixin TWraps→EventsApi, got: {method_names:?}"
+    );
+    assert!(
+        method_names.contains(&"getEvents"),
+        "Expected getEvents from mixin TWraps→EventsApi, got: {method_names:?}"
+    );
 }

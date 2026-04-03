@@ -327,6 +327,43 @@ fn lowercase_method_names_helper() {
 }
 
 #[test]
+fn synthesizes_from_docblock_property_tags() {
+    let mut user = make_model("App\\Models\\User");
+    user.laravel_mut().timestamps = Some(false);
+    // Simulate a model with @property tags in the class docblock but
+    // nothing in the properties vec (as happens before full resolution).
+    user.class_docblock =
+        Some("/**\n * @property int $brand_id\n * @property string $email\n */".to_string());
+
+    let methods = build_where_property_methods_for_class(&user, &HashSet::new());
+
+    let names: Vec<&str> = methods.iter().map(|m| m.name.as_str()).collect();
+    assert!(
+        names.contains(&"whereBrandId"),
+        "Expected whereBrandId from @property docblock tag, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"whereEmail"),
+        "Expected whereEmail from @property docblock tag, got: {names:?}"
+    );
+}
+
+#[test]
+fn docblock_property_deduplicates_with_existing_properties() {
+    let mut user = make_model("App\\Models\\User");
+    user.laravel_mut().timestamps = Some(false);
+    // Same property in both properties vec and docblock — only one where method.
+    user.properties
+        .push(PropertyInfo::virtual_property("brand_id", Some("int")));
+    user.class_docblock = Some("/** @property int $brand_id */".to_string());
+
+    let methods = build_where_property_methods_for_class(&user, &HashSet::new());
+
+    let count = methods.iter().filter(|m| m.name == "whereBrandId").count();
+    assert_eq!(count, 1, "Should have exactly one whereBrandId method");
+}
+
+#[test]
 fn all_sources_combined() {
     let mut user = make_model("App\\Models\\User");
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];

@@ -23,6 +23,13 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                             | Impact | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
+| B3  | [Variable reassignment inside `try` block not tracked by analyzer](todo/bugs.md#b3-variable-reassignment-inside-try-block-not-tracked-by-analyzer) | Low | Low |
+| B4  | [Relationship property access and BelongsTo return type not resolved](todo/bugs.md#b4-relationship-property-access-and-belongsto-return-type-not-resolved-by-analyzer) | Medium | Medium |
+| B5  | [`$this->items` on custom Collection subclass not typed](todo/bugs.md#b5-thisitems-on-custom-collection-subclass-not-typed)                      | Low    | Medium |
+| B6  | [Scope methods not found on Builder in analyzer chains](todo/bugs.md#b6-scope-methods-not-found-on-builder-in-analyzer-chains)                   | High   | Medium |
+| B7  | [PHPDoc `@param` generic array type not merged with native `array` hint](todo/bugs.md#b7-phpdoc-param-generic-array-type-not-merged-with-native-array-hint) | Low | Medium |
+| B8  | [Variadic parameter element type lost in `foreach`](todo/bugs.md#b8-variadic-parameter-element-type-lost-in-foreach)                             | Low    | Low    |
+| B9  | [Eloquent relationship property lookup is case-sensitive](todo/bugs.md#b9-eloquent-relationship-property-lookup-is-case-sensitive)                | Low    | Low    |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium | Medium |
 | H6  | `return.type` — update return type to match actual returns                                                                                       | Medium | Medium |
 |     | **Release 0.7.0**                                                                                                                                |        |        |
