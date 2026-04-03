@@ -1,38 +1,5 @@
 # PHPantom — Bug Fixes
 
-## B5: `$this->items` on custom Collection subclass not typed
-
-When a class extends `Collection<int, T>` via `@extends`, accessing
-`$this->items` should yield `array<int, T>`. Currently, `$this->items`
-resolves as `array` (the base `Collection`'s declared property type)
-without applying the generic substitution. This means iterating
-`$this->items` in a `foreach` or passing it to `array_any()` loses the
-element type.
-
-Real-world example — `PurchaseFileProductCollection.php`:
-
-```php
-/**
- * @extends Collection<int, PurchaseFileProduct>
- */
-final class PurchaseFileProductCollection extends Collection
-{
-    public function hasIssues(): bool
-    {
-        return array_any($this->items, fn($item) => $item->order_amount > 0);
-        //                                          ^^^^^ unresolved
-    }
-}
-```
-
-`$this->items` should be `array<int, PurchaseFileProduct>`, so `$item`
-in the closure should be `PurchaseFileProduct`. Instead, `$item` is
-unresolved because the generic substitution is not applied to inherited
-properties when accessed via `$this->`.
-
-**Impact:** 2 diagnostics in the shared project
-(`PurchaseFileProductCollection:25` — two property accesses on `$item`).
-
 ## B6: Scope methods not found on Builder in analyzer chains
 
 PHPantom's completion engine correctly injects scope methods onto

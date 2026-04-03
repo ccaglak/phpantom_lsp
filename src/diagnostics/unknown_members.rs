@@ -5035,4 +5035,67 @@ class Handler {
             "expected no diagnostics for reassigned variable inside catch block, got: {diags:?}"
         );
     }
+
+    #[test]
+    fn no_diagnostic_for_this_items_on_generic_collection_subclass() {
+        // B5: When a class extends `Collection<int, T>` via `@extends`,
+        // accessing `$this->items` should yield `array<int, T>` with the
+        // generic substitution applied.  Iterating `$this->items` in a
+        // `foreach` or passing it to `array_any()` should resolve the
+        // element type so that property access on `$item` works.
+        let php = r#"<?php
+/**
+ * @template TKey
+ * @template TValue
+ */
+class Collection {
+    /** @var array<TKey, TValue> */
+    public array $items = [];
+
+    /** @return TValue|null */
+    public function first(): mixed { return null; }
+}
+
+class PurchaseFileProduct {
+    public int $order_amount = 0;
+    public string $name = '';
+}
+
+/**
+ * @template TKey
+ * @template TValue
+ * @param array<TKey, TValue> $array
+ * @param callable(TValue, TKey): bool $callback
+ * @return bool
+ */
+function array_any(array $array, callable $callback): bool { return false; }
+
+/**
+ * @extends Collection<int, PurchaseFileProduct>
+ */
+final class PurchaseFileProductCollection extends Collection {
+    public function hasIssues(): bool {
+        return array_any($this->items, fn($item) => $item->order_amount > 0);
+    }
+
+    public function hasName(): bool {
+        return array_any($this->items, fn($item) => $item->name !== '');
+    }
+
+    public function foreachWorks(): void {
+        foreach ($this->items as $item) {
+            $item->order_amount;
+            $item->name;
+        }
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for $this->items on generic Collection subclass, got: {diags:?}"
+        );
+    }
 }

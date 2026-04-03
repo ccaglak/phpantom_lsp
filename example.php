@@ -1772,6 +1772,12 @@ class ClosureParamInferenceDemo
 
         // Arrow function variant
         $pipeline->tap(fn($p) => $p->through([]));
+
+        // Function-level @template callable inference
+        // array_any(@param array<TKey, TValue>, @param callable(TValue, TKey): bool)
+        // $item is inferred as Pen from the array's element type via template substitution
+        $holder = new ScaffoldingTemplateCallableHolder();
+        array_any($holder->tools, fn($item) => $item->write() !== '');
     }
 }
 
@@ -3495,6 +3501,12 @@ class ScaffoldingClosureParamInference
     public FluentCollection $items;
 
     public function __construct() { $this->items = new FluentCollection([new Pen('red'), new Pen('blue')]); }
+}
+
+class ScaffoldingTemplateCallableHolder
+{
+    /** @var array<int, Pen> */
+    public array $tools = [];
 }
 
 /**
@@ -5304,6 +5316,12 @@ function runDemoAssertions(): void
         $closureReceived[] = $pen;
     });
     assert(count($closureReceived) === 2, 'each() must invoke callback for every item');
+
+    // Function-level @template callable inference (array_any pattern)
+    $tplHolder = new ScaffoldingTemplateCallableHolder();
+    $tplHolder->tools = [new Pen('red'), new Pen('blue')];
+    $tplResult = array_any($tplHolder->tools, fn($t) => $t->color() === 'red');
+    assert($tplResult === true, 'array_any with template callable must work');
 
     // ── Type alias resolution ───────────────────────────────────────────
     $aliasDemo = new TypeAliasDemo();

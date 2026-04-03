@@ -301,6 +301,35 @@ impl Backend {
                                 docblock::extract_param_description_from_info(info, &param.name);
                         }
 
+                        // Positional fallback for `@param` tags that omit
+                        // the parameter name (common in phpstorm-stubs,
+                        // e.g. `@param callable(TValue, TKey): bool`
+                        // without `$callback`).  When the name-based merge
+                        // above didn't enrich a parameter's type hint, try
+                        // matching unnamed `@param` tags by position.
+                        let positional_tags =
+                            docblock::extract_param_types_positional_from_info(info);
+                        for (idx, param) in parameters.iter_mut().enumerate() {
+                            // Skip parameters that already got a richer
+                            // docblock type from the name-based merge.
+                            let already_enriched =
+                                docblock::extract_param_raw_type_from_info(info, &param.name)
+                                    .is_some();
+                            if already_enriched {
+                                continue;
+                            }
+                            // Find the positional @param tag at this index.
+                            if let Some(&(None, ref doc_type)) = positional_tags.get(idx) {
+                                let effective = docblock::resolve_effective_type(
+                                    param.type_hint.as_ref().map(|t| t.to_string()).as_deref(),
+                                    Some(doc_type),
+                                );
+                                if effective.is_some() {
+                                    param.type_hint = effective;
+                                }
+                            }
+                        }
+
                         // Populate `closure_this_type` from
                         // `@param-closure-this` tags so that `$this`
                         // inside a closure argument resolves to the

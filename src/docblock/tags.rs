@@ -645,6 +645,46 @@ pub fn extract_all_param_tags_from_info(info: &DocblockInfo) -> Vec<(String, Str
     results
 }
 
+/// Extract `@param` type strings in order of appearance, including
+/// tags that omit the parameter name.
+///
+/// Returns a list of `(Option<param_name>, type_string)` pairs in
+/// docblock order.  When a `@param` tag has no `$name` token (common
+/// in phpstorm-stubs, e.g. `@param callable(TValue, TKey): bool`),
+/// the first element is `None`.  Callers can match these entries to
+/// native parameters by position.
+///
+/// This is used as a positional fallback when name-based matching
+/// via [`extract_param_raw_type_from_info`] fails to find a docblock
+/// type for a parameter.
+pub fn extract_param_types_positional_from_info(
+    info: &DocblockInfo,
+) -> Vec<(Option<String>, String)> {
+    let mut results = Vec::new();
+
+    for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
+        let desc = tag.description.trim();
+        if desc.is_empty() {
+            continue;
+        }
+
+        let (type_token, remainder) = split_type_token(desc);
+
+        let param_name = remainder.split_whitespace().next().and_then(|name| {
+            let name = name.strip_prefix("...").unwrap_or(name);
+            if name.starts_with('$') {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        });
+
+        results.push((param_name, type_token.to_string()));
+    }
+
+    results
+}
+
 /// Extract all `@param-closure-this` declarations from a docblock.
 ///
 /// The tag format is `@param-closure-this TypeName $paramName`, declaring

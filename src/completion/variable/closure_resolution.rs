@@ -994,7 +994,14 @@ fn try_resolve_in_closure_call<'b>(
                     &fc.argument_list.arguments,
                     ctx,
                     results,
-                    |arg_idx| infer_callable_params_from_function(&func_name, arg_idx, ctx),
+                    |arg_idx| {
+                        infer_callable_params_from_function(
+                            &func_name,
+                            arg_idx,
+                            &fc.argument_list.arguments,
+                            ctx,
+                        )
+                    },
                 )
             {
                 return true;
@@ -1429,9 +1436,17 @@ fn extract_function_name_from_call(fc: &FunctionCall<'_>) -> Option<String> {
 
 /// Infer callable parameter types for a closure passed at position
 /// `arg_idx` to a standalone function call.
+///
+/// When the function has `@template` parameters (e.g.
+/// `array_any(array<TKey, TValue> $array, callable(TValue, TKey): bool $cb)`),
+/// the template substitution map is built from the other call-site
+/// arguments and applied to the callable's parameter types.  This turns
+/// raw template names like `TValue` into concrete types like
+/// `PurchaseFileProduct`.
 fn infer_callable_params_from_function(
     func_name: &str,
     arg_idx: usize,
+    arguments: &TokenSeparatedSequence<'_, argument::Argument<'_>>,
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<String> {
     let rctx = ctx.as_resolution_ctx();
@@ -1441,10 +1456,59 @@ fn infer_callable_params_from_function(
         None
     };
     if let Some(fi) = func_info {
-        extract_callable_params_at(&fi.parameters, arg_idx, ctx)
+        let mut params = extract_callable_params_at(&fi.parameters, arg_idx, ctx);
+
+        // When the function has template parameters, build a
+        // substitution map from the concrete call-site arguments and
+        // apply it to the extracted callable param types.  Without
+        // this, functions like `array_any($this->items, fn($item) => …)`
+        // would pass raw template names (`TValue`) instead of the
+        // concrete element type (`PurchaseFileProduct`).
+        if !params.is_empty() && !fi.template_params.is_empty() && !fi.template_bindings.is_empty()
+        {
+            let text_args = extract_argument_texts(arguments, ctx.content);
+            let text_args_joined = text_args.join(", ");
+            let subs =
+                super::rhs_resolution::build_function_template_subs(&fi, &text_args_joined, &rctx);
+            if !subs.is_empty() {
+                params = params
+                    .into_iter()
+                    .map(|p| {
+                        let substituted = crate::inheritance::apply_substitution(&p, &subs);
+                        substituted.into_owned()
+                    })
+                    .collect();
+            }
+        }
+
+        params
     } else {
         vec![]
     }
+}
+
+/// Extract the source text of each positional argument in a call's
+/// argument list.
+fn extract_argument_texts(
+    arguments: &TokenSeparatedSequence<'_, argument::Argument<'_>>,
+    content: &str,
+) -> Vec<String> {
+    arguments
+        .iter()
+        .map(|arg| {
+            let span = match arg {
+                argument::Argument::Positional(pos) => pos.value.span(),
+                argument::Argument::Named(named) => named.value.span(),
+            };
+            let start = span.start.offset as usize;
+            let end = span.end.offset as usize;
+            if end <= content.len() {
+                content[start..end].to_string()
+            } else {
+                String::new()
+            }
+        })
+        .collect()
 }
 
 /// Infer callable parameter types for a closure passed at position

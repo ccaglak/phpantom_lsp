@@ -1035,6 +1035,32 @@ fn resolve_arg_variable_raw_type(
         return None;
     }
 
+    // ── Property chain: `$this->items`, `$obj->prop` ────────────
+    // When the argument is a property access chain, resolve the base
+    // object's type and look up the property's type hint.  This is
+    // needed for template substitution in calls like
+    // `array_any($this->items, fn($item) => …)` where `$this->items`
+    // is `array<int, PurchaseFileProduct>` after generic substitution.
+    if let Some(arrow_pos) = var_name.find("->") {
+        let base = &var_name[..arrow_pos];
+        let prop = &var_name[arrow_pos + 2..];
+        // Only handle simple single-level property access for now.
+        if !prop.is_empty() && !prop.contains("->") && !prop.contains('(') {
+            let base_classes = crate::completion::resolver::resolve_target_classes(
+                base,
+                crate::types::AccessKind::Arrow,
+                rctx,
+            );
+            for cls in &base_classes {
+                if let Some(hint) =
+                    crate::inheritance::resolve_property_type_hint(cls, prop, rctx.class_loader)
+                {
+                    return Some(hint.to_string());
+                }
+            }
+        }
+    }
+
     // 1. Try docblock annotation (@var).
     if let Some(raw) = crate::docblock::find_iterable_raw_type_in_source(
         rctx.content,

@@ -2500,3 +2500,109 @@ async fn test_arrow_fn_in_if_condition_inside_switch_case() {
         names_b,
     );
 }
+
+/// Simpler case: standalone function with @template and callable param,
+/// variable passed directly (no `$this->` involved).
+#[tokio::test]
+async fn test_arrow_fn_untyped_param_inferred_from_function_template_simple() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///template_callable_simple.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",                                                                        // 0
+        "/**\n",                                                                          // 1
+        " * @template TKey\n",                                                            // 2
+        " * @template TValue\n",                                                          // 3
+        " * @param array<TKey, TValue> $array\n",                                         // 4
+        " * @param callable(TValue, TKey): bool $callback\n",                             // 5
+        " * @return bool\n",                                                              // 6
+        " */\n",                                                                          // 7
+        "function array_any(array $array, callable $callback): bool { return false; }\n", // 8
+        "\n",                                                                             // 9
+        "class Product {\n",                                                              // 10
+        "    public int $amount = 0;\n",                                                  // 11
+        "    public string $sku = '';\n",                                                 // 12
+        "}\n",                                                                            // 13
+        "\n",                                                                             // 14
+        "/** @var array<int, Product> $products */\n",                                    // 15
+        "$products = [];\n",                                                              // 16
+        "array_any($products, fn($item) => $item->amount > 0);\n",                        // 17
+    );
+
+    // `$item->` on line 17
+    // "array_any($products, fn($item) => $item->amount > 0);"
+    //                                          ^ after `$item->`
+    let items = complete_at(&backend, &uri, src, 17, 42).await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"amount"),
+        "Expected 'amount' inferred from function template binding, got props: {:?}",
+        props,
+    );
+    assert!(
+        props.contains(&"sku"),
+        "Expected 'sku' inferred from function template binding, got props: {:?}",
+        props,
+    );
+}
+
+/// When `array_any($this->items, fn($item) => $item->...)` is used and
+/// `$item` has NO explicit type hint, the type should be inferred from
+/// the function's `@template` binding.  `array_any` declares
+/// `@param array<TKey, TValue> $array` and
+/// `@param callable(TValue, TKey): bool $callback`, so the concrete
+/// element type flows from the first argument into the closure param.
+#[tokio::test]
+async fn test_arrow_fn_untyped_param_inferred_from_function_template() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///template_callable_infer.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " * @param array<TKey, TValue> $array\n",
+        " * @param callable(TValue, TKey): bool $callback\n",
+        " * @return bool\n",
+        " */\n",
+        "function array_any(array $array, callable $callback): bool { return false; }\n",
+        "\n",
+        "class PurchaseFileProduct {\n",
+        "    public int $order_amount = 0;\n",
+        "    public string $name = '';\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /** @var array<TKey, TValue> */\n",
+        "    public array $items = [];\n",
+        "}\n",
+        "\n",
+        "/** @extends Collection<int, PurchaseFileProduct> */\n",
+        "final class PurchaseFileProductCollection extends Collection {\n",
+        "    public function hasIssues(): bool {\n",
+        "        return array_any($this->items, fn($item) => $item->order_amount > 0);\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // `$item->` is inside the arrow fn on line 27
+    // "        return array_any($this->items, fn($item) => $item->order_amount > 0);"
+    //                                                            ^ after `$item->`
+    let items = complete_at(&backend, &uri, src, 27, 62).await;
+    let props = property_names(&items);
+    assert!(
+        props.contains(&"order_amount"),
+        "Expected 'order_amount' inferred from function template binding, got props: {:?}",
+        props,
+    );
+    assert!(
+        props.contains(&"name"),
+        "Expected 'name' inferred from function template binding, got props: {:?}",
+        props,
+    );
+}
