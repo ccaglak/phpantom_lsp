@@ -218,6 +218,45 @@ class TypeNarrowingDemo
 }
 
 
+// ── Type Guard Narrowing (is_array, is_object, …) ──────────────────────────
+
+class TypeGuardNarrowingDemo
+{
+    /**
+     * @param null|list<Pen>|Pen $input
+     */
+    public function demo(null|array|Pen $input): void
+    {
+        // is_array() narrows the union to the array-like PHPDoc member,
+        // preserving the generic element type for foreach iteration.
+        if (is_array($input)) {
+            foreach ($input as $pen) {
+                $pen->write();                    // list<Pen> → Pen
+            }
+        }
+
+        // Else branch: non-array members survive
+        if (is_array($input)) {
+            // array branch
+        } else {
+            // $input is null|Pen here
+        }
+
+        // Guard clause: is_array() + early return
+        if (is_array($input)) {
+            return;
+        }
+        // $input is null|Pen after the guard
+
+        // is_object() narrows to class members only
+        $mixed = pickRockOrBanana();              // Rock|Banana
+        if (is_object($mixed)) {
+            $mixed->weigh();                      // both Rock and Banana have weigh()
+        }
+    }
+}
+
+
 // ── instanceof self/static/parent Narrowing ────────────────────────────────
 
 class InstanceofSelfDemo extends ScaffoldingSedan
@@ -5713,6 +5752,23 @@ function runDemoAssertions(): void
             $vfTool instanceof Pen || $vfTool instanceof Pencil,
             'Variadic union element must be Pen or Pencil'
         );
+    }
+
+    // ── Type guard narrowing ────────────────────────────────────────────
+    /** @var list<Pen> $tgPens */
+    $tgPens = [new Pen('a'), new Pen('b')];
+    /** @var null|list<Pen>|Pen $tgInput */
+    $tgInput = $tgPens;
+    if (is_array($tgInput)) {
+        foreach ($tgInput as $tgPen) {
+            assert($tgPen instanceof Pen, 'is_array() narrowed foreach element must be Pen');
+        }
+    }
+    $tgSingle = new Pen('solo');
+    /** @var list<Pen>|Pen $tgMixed */
+    $tgMixed = $tgSingle;
+    if (!is_array($tgMixed)) {
+        assert($tgMixed instanceof Pen, 'Else branch of is_array() must be Pen');
     }
 
     echo "All assertions passed.\n";

@@ -452,6 +452,25 @@ impl PhpType {
         matches!(self, PhpType::Named(s) if s == "null")
     }
 
+    /// Returns `true` when this type represents an array-like PHP type.
+    ///
+    /// Matches:
+    ///   - Named types: `array`, `list`, `non-empty-array`, `non-empty-list`, `iterable`
+    ///   - Generic array types: `array<K, V>`, `list<T>`, `non-empty-array<K, V>`, etc.
+    ///   - Array slice syntax: `T[]`
+    ///   - Array shapes: `array{key: string, ...}`
+    ///   - Nullable wrappers around any of the above
+    pub fn is_array_like(&self) -> bool {
+        match self {
+            PhpType::Named(s) => is_array_like_name(s),
+            PhpType::Generic(name, _) => is_array_like_name(name),
+            PhpType::Array(_) => true,
+            PhpType::ArrayShape(_) => true,
+            PhpType::Nullable(inner) => inner.is_array_like(),
+            _ => false,
+        }
+    }
+
     /// Matches built-in PHP types and common PHPDoc pseudo-types like
     /// `mixed`, `class-string`, etc.
     pub fn is_scalar(&self) -> bool {
@@ -1802,6 +1821,20 @@ fn is_primitive_scalar_name(name: &str) -> bool {
             | "iterable"
             | "resource"
     )
+}
+
+/// Returns `true` for type names that represent array-like types in PHP.
+fn is_array_like_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "array" | "list" | "non-empty-array" | "non-empty-list" | "iterable"
+    )
+}
+
+/// Public wrapper around [`is_scalar_name`] for use by other modules
+/// (e.g. type-guard narrowing in `narrowing.rs`).
+pub fn is_scalar_name_pub(name: &str) -> bool {
+    is_scalar_name(name)
 }
 
 fn is_scalar_name(name: &str) -> bool {
@@ -3470,6 +3503,50 @@ mod tests {
     #[test]
     fn is_scalar_nullable_class() {
         assert!(!PhpType::parse("?User").is_scalar());
+    }
+
+    // ─── is_array_like tests ────────────────────────────────────────────────
+
+    #[test]
+    fn is_array_like_named() {
+        assert!(PhpType::Named("array".to_owned()).is_array_like());
+        assert!(PhpType::Named("list".to_owned()).is_array_like());
+        assert!(PhpType::Named("iterable".to_owned()).is_array_like());
+        assert!(PhpType::Named("non-empty-array".to_owned()).is_array_like());
+        assert!(PhpType::Named("non-empty-list".to_owned()).is_array_like());
+    }
+
+    #[test]
+    fn is_array_like_generic() {
+        assert!(PhpType::parse("array<int, string>").is_array_like());
+        assert!(PhpType::parse("list<User>").is_array_like());
+        assert!(PhpType::parse("non-empty-array<string, int>").is_array_like());
+    }
+
+    #[test]
+    fn is_array_like_slice() {
+        assert!(PhpType::parse("User[]").is_array_like());
+        assert!(PhpType::parse("int[]").is_array_like());
+    }
+
+    #[test]
+    fn is_array_like_shape() {
+        assert!(PhpType::parse("array{name: string}").is_array_like());
+    }
+
+    #[test]
+    fn is_array_like_nullable() {
+        assert!(PhpType::parse("?array").is_array_like());
+        assert!(PhpType::parse("?list<User>").is_array_like());
+    }
+
+    #[test]
+    fn is_array_like_non_array() {
+        assert!(!PhpType::Named("string".to_owned()).is_array_like());
+        assert!(!PhpType::Named("int".to_owned()).is_array_like());
+        assert!(!PhpType::Named("User".to_owned()).is_array_like());
+        assert!(!PhpType::Named("null".to_owned()).is_array_like());
+        assert!(!PhpType::parse("Collection<int, User>").is_array_like());
     }
 
     // ─── base_name tests ────────────────────────────────────────────────────

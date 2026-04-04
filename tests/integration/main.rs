@@ -63,6 +63,7 @@ mod completion_ternary;
 mod completion_throws;
 mod completion_traits;
 mod completion_type_aliases;
+mod completion_type_guard_narrowing;
 mod completion_type_hints;
 mod completion_unset;
 mod completion_variable_names;

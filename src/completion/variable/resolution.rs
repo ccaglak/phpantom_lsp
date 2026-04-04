@@ -1585,6 +1585,14 @@ fn walk_if_statement<'b>(
                 ctx,
                 results,
             );
+            // ── type-guard narrowing for then-body ──
+            // `is_array($var)`, `is_string($var)`, etc.
+            narrowing::try_apply_type_guard_narrowing(
+                if_stmt.condition,
+                body.statement.span(),
+                ctx,
+                results,
+            );
             check_statement_for_assignments(body.statement, ctx, results, true);
 
             for else_if in body.else_if_clauses.iter() {
@@ -1628,6 +1636,13 @@ fn walk_if_statement<'b>(
                         classes,
                     );
                 });
+                // ── type-guard narrowing for elseif-body ──
+                narrowing::try_apply_type_guard_narrowing(
+                    else_if.condition,
+                    else_if.statement.span(),
+                    ctx,
+                    results,
+                );
                 check_statement_for_assignments(else_if.statement, ctx, results, true);
             }
             if let Some(else_clause) = &body.else_clause {
@@ -1667,6 +1682,13 @@ fn walk_if_statement<'b>(
                     ctx,
                     results,
                 );
+                // ── inverse type-guard narrowing for else-body ──
+                narrowing::try_apply_type_guard_narrowing_inverse(
+                    if_stmt.condition,
+                    else_span,
+                    ctx,
+                    results,
+                );
                 // Also apply inverse narrowing for every elseif condition.
                 // In the else branch, all preceding conditions were false,
                 // so each elseif's condition is also inverted.
@@ -1696,6 +1718,12 @@ fn walk_if_statement<'b>(
                             classes,
                         );
                     });
+                    narrowing::try_apply_type_guard_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
                 }
                 check_statement_for_assignments(else_clause.statement, ctx, results, true);
             }
@@ -1743,6 +1771,8 @@ fn walk_if_statement<'b>(
             });
             // ── null narrowing for then-body ──
             narrowing::try_apply_if_body_null_narrowing(if_stmt.condition, then_span, ctx, results);
+            // ── type-guard narrowing for then-body ──
+            narrowing::try_apply_type_guard_narrowing(if_stmt.condition, then_span, ctx, results);
             walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
             for else_if in body.else_if_clauses.iter() {
                 // ── inline && narrowing for elseif condition ──
@@ -1799,6 +1829,8 @@ fn walk_if_statement<'b>(
                     ctx,
                     results,
                 );
+                // ── type-guard narrowing for elseif-body ──
+                narrowing::try_apply_type_guard_narrowing(else_if.condition, ei_span, ctx, results);
                 walk_statements_for_assignments(else_if.statements.iter(), ctx, results, true);
             }
             if let Some(else_clause) = &body.else_clause {
@@ -1846,6 +1878,13 @@ fn walk_if_statement<'b>(
                     ctx,
                     results,
                 );
+                // ── inverse type-guard narrowing for else-body ──
+                narrowing::try_apply_type_guard_narrowing_inverse(
+                    if_stmt.condition,
+                    else_span,
+                    ctx,
+                    results,
+                );
                 // Also apply inverse narrowing for every elseif condition.
                 for else_if in body.else_if_clauses.iter() {
                     ResolvedType::apply_narrowing(results, |classes| {
@@ -1873,6 +1912,12 @@ fn walk_if_statement<'b>(
                             classes,
                         );
                     });
+                    narrowing::try_apply_type_guard_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
                 }
                 walk_statements_for_assignments(else_clause.statements.iter(), ctx, results, true);
             }
@@ -1902,6 +1947,9 @@ fn walk_if_statement<'b>(
         // This operates on `ResolvedType` directly because `null` is
         // not a class and would be missed by class-level narrowing.
         narrowing::apply_guard_clause_null_narrowing(if_stmt, ctx, results);
+        // ── Type-guard guard clause narrowing ──
+        // `if (is_array($x)) { return; }` → after if, $x is NOT array.
+        narrowing::apply_guard_clause_type_guard_narrowing(if_stmt, ctx, results);
     }
 }
 
@@ -1962,6 +2010,13 @@ fn walk_if_branch_aware<'b>(
                     ctx,
                     results,
                 );
+                // ── type-guard narrowing for then-body ──
+                narrowing::try_apply_type_guard_narrowing(
+                    if_stmt.condition,
+                    then_span,
+                    ctx,
+                    results,
+                );
                 check_statement_for_assignments(body.statement, ctx, results, false);
                 return Some(());
             }
@@ -1998,6 +2053,13 @@ fn walk_if_branch_aware<'b>(
                         );
                     });
                     narrowing::try_apply_if_body_null_narrowing(
+                        else_if.condition,
+                        ei_span,
+                        ctx,
+                        results,
+                    );
+                    // ── type-guard narrowing for elseif-body ──
+                    narrowing::try_apply_type_guard_narrowing(
                         else_if.condition,
                         ei_span,
                         ctx,
@@ -2053,6 +2115,13 @@ fn walk_if_branch_aware<'b>(
                         ctx,
                         results,
                     );
+                    // ── inverse type-guard narrowing for else-body ──
+                    narrowing::try_apply_type_guard_narrowing_inverse(
+                        if_stmt.condition,
+                        el_span,
+                        ctx,
+                        results,
+                    );
                     // Also apply inverse narrowing for every elseif condition.
                     for else_if in body.else_if_clauses.iter() {
                         ResolvedType::apply_narrowing(results, |classes| {
@@ -2080,6 +2149,12 @@ fn walk_if_branch_aware<'b>(
                                 classes,
                             );
                         });
+                        narrowing::try_apply_type_guard_narrowing_inverse(
+                            else_if.condition,
+                            el_span,
+                            ctx,
+                            results,
+                        );
                     }
                     check_statement_for_assignments(else_clause.statement, ctx, results, false);
                     return Some(());
@@ -2142,6 +2217,13 @@ fn walk_if_branch_aware<'b>(
                     ctx,
                     results,
                 );
+                // ── type-guard narrowing for then-body ──
+                narrowing::try_apply_type_guard_narrowing(
+                    if_stmt.condition,
+                    then_span,
+                    ctx,
+                    results,
+                );
                 walk_statements_for_assignments(body.statements.iter(), ctx, results, false);
                 return Some(());
             }
@@ -2192,6 +2274,13 @@ fn walk_if_branch_aware<'b>(
                         );
                     });
                     narrowing::try_apply_if_body_null_narrowing(
+                        else_if.condition,
+                        ei_span,
+                        ctx,
+                        results,
+                    );
+                    // ── type-guard narrowing for elseif-body ──
+                    narrowing::try_apply_type_guard_narrowing(
                         else_if.condition,
                         ei_span,
                         ctx,
@@ -2252,6 +2341,13 @@ fn walk_if_branch_aware<'b>(
                         ctx,
                         results,
                     );
+                    // ── inverse type-guard narrowing for else-body ──
+                    narrowing::try_apply_type_guard_narrowing_inverse(
+                        if_stmt.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
                     // Also apply inverse narrowing for every elseif condition.
                     for else_if in body.else_if_clauses.iter() {
                         ResolvedType::apply_narrowing(results, |classes| {
@@ -2279,6 +2375,12 @@ fn walk_if_branch_aware<'b>(
                                 classes,
                             );
                         });
+                        narrowing::try_apply_type_guard_narrowing_inverse(
+                            else_if.condition,
+                            else_span,
+                            ctx,
+                            results,
+                        );
                     }
                     walk_statements_for_assignments(
                         else_clause.statements.iter(),

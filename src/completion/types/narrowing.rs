@@ -22,6 +22,10 @@ use mago_syntax::ast::*;
 ///     `return`, `throw`, `continue`, or `break`.
 ///   - `in_array($var, $haystack, true)` — narrows `$var` to the
 ///     haystack's element type when the third argument is `true`.
+///   - `is_array($var)` — narrows to only the array-like members of a
+///     union type, preserving generic element types from PHPDoc.
+///   - `is_string($var)`, `is_int($var)`, `is_bool($var)`, etc. —
+///     narrows to the corresponding scalar type.
 use std::sync::Arc;
 
 use crate::php_type::PhpType;
@@ -2481,5 +2485,330 @@ fn condition_checks_non_null(condition: &Expression<'_>, var_name: &str) -> bool
         }
         Expression::Parenthesized(inner) => condition_checks_non_null(inner.expression, var_name),
         _ => matches!(try_extract_null_check(condition, var_name), Some(true)),
+    }
+}
+
+// ── PHP type-guard function narrowing (`is_array`, `is_string`, …) ──────
+
+/// The category of a PHP type-checking function like `is_array`, `is_string`, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeGuardKind {
+    Array,
+    String,
+    Int,
+    Float,
+    Bool,
+    Object,
+    Numeric,
+    Callable,
+}
+
+/// Try to extract a type-guard function call on a variable.
+///
+/// Matches `is_array($var)`, `is_string($var)`, etc. (with optional
+/// parenthesisation and negation).
+///
+/// Returns `Some((kind, negated))` when the expression is a recognised
+/// type-guard call on `var_name`.
+fn try_extract_type_guard(expr: &Expression<'_>, var_name: &str) -> Option<(TypeGuardKind, bool)> {
+    match expr {
+        Expression::Parenthesized(inner) => try_extract_type_guard(inner.expression, var_name),
+        Expression::UnaryPrefix(prefix) if prefix.operator.is_not() => {
+            try_extract_type_guard(prefix.operand, var_name).map(|(kind, neg)| (kind, !neg))
+        }
+        Expression::Call(Call::Function(fc)) => {
+            let func_name = match &fc.function {
+                Expression::Identifier(ident) => ident.value(),
+                _ => return None,
+            };
+            let kind = match func_name {
+                "is_array" => TypeGuardKind::Array,
+                "is_string" => TypeGuardKind::String,
+                "is_int" | "is_integer" | "is_long" => TypeGuardKind::Int,
+                "is_float" | "is_double" | "is_real" => TypeGuardKind::Float,
+                "is_bool" => TypeGuardKind::Bool,
+                "is_object" => TypeGuardKind::Object,
+                "is_numeric" => TypeGuardKind::Numeric,
+                "is_callable" => TypeGuardKind::Callable,
+                _ => return None,
+            };
+            let args = &fc.argument_list.arguments;
+            if args.len() != 1 {
+                return None;
+            }
+            let arg_expr = match args.first() {
+                Some(Argument::Positional(pos)) => pos.value,
+                Some(Argument::Named(named)) => named.value,
+                _ => return None,
+            };
+            let arg_name = expr_to_subject_key(arg_expr)?;
+            if arg_name != var_name {
+                return None;
+            }
+            Some((kind, false))
+        }
+        _ => None,
+    }
+}
+
+/// Check whether a `PhpType` matches a given type-guard kind.
+///
+/// For `TypeGuardKind::Array`, returns `true` for array-like types
+/// (`array`, `list<T>`, `T[]`, `array{…}`, `iterable`, etc.).
+fn type_matches_guard(ty: &PhpType, kind: TypeGuardKind) -> bool {
+    match kind {
+        TypeGuardKind::Array => ty.is_array_like(),
+        TypeGuardKind::String => match ty {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "string"
+                    | "non-empty-string"
+                    | "numeric-string"
+                    | "class-string"
+                    | "literal-string"
+                    | "lowercase-string"
+                    | "non-empty-lowercase-string"
+                    | "truthy-string"
+                    | "non-falsy-string"
+            ),
+            PhpType::ClassString(_) | PhpType::InterfaceString(_) => true,
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Int => match ty {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "int"
+                    | "integer"
+                    | "positive-int"
+                    | "negative-int"
+                    | "non-positive-int"
+                    | "non-negative-int"
+                    | "non-zero-int"
+            ),
+            PhpType::IntRange(_, _) => true,
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Float => match ty {
+            PhpType::Named(s) => matches!(s.to_ascii_lowercase().as_str(), "float" | "double"),
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Bool => match ty {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "bool" | "boolean" | "true" | "false"
+            ),
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Object => match ty {
+            PhpType::Named(s) => {
+                let lower = s.to_ascii_lowercase();
+                // `object` keyword or any non-scalar class name
+                lower == "object" || !crate::php_type::is_scalar_name_pub(s)
+            }
+            PhpType::Generic(name, _) => !crate::php_type::is_scalar_name_pub(name),
+            PhpType::ObjectShape(_) => true,
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Numeric => match ty {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "int"
+                    | "integer"
+                    | "float"
+                    | "double"
+                    | "numeric"
+                    | "numeric-string"
+                    | "positive-int"
+                    | "negative-int"
+                    | "non-positive-int"
+                    | "non-negative-int"
+                    | "non-zero-int"
+            ),
+            PhpType::IntRange(_, _) => true,
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+        TypeGuardKind::Callable => match ty {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "callable" | "closure" | "\\closure"
+            ),
+            PhpType::Callable { .. } => true,
+            PhpType::Nullable(inner) => type_matches_guard(inner, kind),
+            _ => false,
+        },
+    }
+}
+
+/// Narrow `results` to only the union members that match the given
+/// type-guard kind.
+///
+/// For example, when `kind` is `Array` and the type string is
+/// `null|list<Request>|Request`, the result is narrowed to
+/// `list<Request>`.
+fn apply_type_guard_inclusion(kind: TypeGuardKind, results: &mut Vec<ResolvedType>) {
+    for rt in results.iter_mut() {
+        let filtered = filter_type_by_guard(&rt.type_string, kind, true);
+        if let Some(narrowed) = filtered {
+            rt.type_string = narrowed;
+            // If the narrowed type no longer matches the class_info's
+            // class (e.g. narrowed from `Request|list<Request>` to
+            // `list<Request>`), clear the class_info.
+            if let Some(ref ci) = rt.class_info {
+                let ci_type = PhpType::Named(ci.name.clone());
+                if !type_matches_guard(&ci_type, kind) {
+                    rt.class_info = None;
+                }
+            }
+        }
+    }
+    // Remove entries that became empty (no union member matched).
+    results.retain(|rt| !matches!(&rt.type_string, PhpType::Named(s) if s == "__empty"));
+}
+
+/// Narrow `results` to only the union members that do NOT match the
+/// given type-guard kind (inverse / else-body narrowing).
+fn apply_type_guard_exclusion(kind: TypeGuardKind, results: &mut Vec<ResolvedType>) {
+    for rt in results.iter_mut() {
+        let filtered = filter_type_by_guard(&rt.type_string, kind, false);
+        if let Some(narrowed) = filtered {
+            rt.type_string = narrowed;
+        }
+    }
+    results.retain(|rt| !matches!(&rt.type_string, PhpType::Named(s) if s == "__empty"));
+}
+
+/// Filter a `PhpType` to keep only members that match (or don't match)
+/// the given type-guard kind.
+///
+/// When `keep_matching` is `true`, keeps only members where
+/// `type_matches_guard` returns `true` (then-body semantics).
+/// When `false`, keeps only members where it returns `false`
+/// (else-body semantics).
+///
+/// Returns `None` when no filtering is needed (non-union type that
+/// already satisfies the predicate).  Returns `Some(Named("__empty"))`
+/// when all members are filtered out.
+fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) -> Option<PhpType> {
+    match ty {
+        PhpType::Union(members) => {
+            let filtered: Vec<PhpType> = members
+                .iter()
+                .filter(|m| type_matches_guard(m, kind) == keep_matching)
+                .cloned()
+                .collect();
+            if filtered.len() == members.len() {
+                // Nothing was filtered out.
+                None
+            } else if filtered.is_empty() {
+                Some(PhpType::Named("__empty".to_string()))
+            } else if filtered.len() == 1 {
+                Some(filtered.into_iter().next().unwrap())
+            } else {
+                Some(PhpType::Union(filtered))
+            }
+        }
+        PhpType::Nullable(inner) => {
+            // `?T` is `T|null`.  For `is_array`, null doesn't match,
+            // so we keep only the inner type (if it matches) or only
+            // null (if it doesn't).
+            let inner_matches = type_matches_guard(inner, kind);
+            let null_matches = type_matches_guard(&PhpType::Named("null".to_string()), kind);
+            match (
+                inner_matches == keep_matching,
+                null_matches == keep_matching,
+            ) {
+                (true, true) => None, // keep both → no change
+                (true, false) => Some(inner.as_ref().clone()),
+                (false, true) => Some(PhpType::Named("null".to_string())),
+                (false, false) => Some(PhpType::Named("__empty".to_string())),
+            }
+        }
+        other => {
+            // Non-union type: if it matches the predicate, keep it.
+            if type_matches_guard(other, kind) == keep_matching {
+                None // no change needed
+            } else {
+                Some(PhpType::Named("__empty".to_string()))
+            }
+        }
+    }
+}
+
+/// Apply type-guard narrowing (`is_array`, `is_string`, etc.) when the
+/// cursor is inside the then-body of an `if` whose condition is a
+/// type-guard call on the resolved variable.
+///
+/// Works on `Vec<ResolvedType>` directly (like null narrowing) because
+/// the narrowing modifies `type_string` rather than `class_info`.
+pub(in crate::completion) fn try_apply_type_guard_narrowing(
+    condition: &Expression<'_>,
+    body_span: mago_span::Span,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ResolvedType>,
+) {
+    if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
+        return;
+    }
+    if let Some((kind, negated)) = try_extract_type_guard(condition, ctx.var_name) {
+        if negated {
+            apply_type_guard_exclusion(kind, results);
+        } else {
+            apply_type_guard_inclusion(kind, results);
+        }
+    }
+}
+
+/// Inverse of [`try_apply_type_guard_narrowing`] — used for the `else`
+/// branch of an `if (is_array($var))` check.
+pub(in crate::completion) fn try_apply_type_guard_narrowing_inverse(
+    condition: &Expression<'_>,
+    body_span: mago_span::Span,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ResolvedType>,
+) {
+    if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
+        return;
+    }
+    if let Some((kind, negated)) = try_extract_type_guard(condition, ctx.var_name) {
+        // Flip polarity for else-body.
+        if negated {
+            apply_type_guard_inclusion(kind, results);
+        } else {
+            apply_type_guard_exclusion(kind, results);
+        }
+    }
+}
+
+/// Apply type-guard narrowing after a guard clause (`if (is_array($x))
+/// { return; }`).  The then-body exits, so code after the if sees the
+/// inverse narrowing.
+pub(in crate::completion) fn apply_guard_clause_type_guard_narrowing(
+    if_stmt: &If<'_>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ResolvedType>,
+) {
+    if !then_body_unconditionally_exits(&if_stmt.body) {
+        return;
+    }
+    if if_stmt.body.has_else_clause() || if_stmt.body.has_else_if_clauses() {
+        return;
+    }
+    let (inner, condition_negated) = unwrap_condition_negation(if_stmt.condition);
+    if let Some((kind, negated)) = try_extract_type_guard(inner, ctx.var_name) {
+        let effectively_negated = negated ^ condition_negated;
+        // Then-body exits, so post-if sees the inverse.
+        if effectively_negated {
+            // Guard was `!is_array($x) { return; }` → after if, $x IS array.
+            apply_type_guard_inclusion(kind, results);
+        } else {
+            // Guard was `is_array($x) { return; }` → after if, $x is NOT array.
+            apply_type_guard_exclusion(kind, results);
+        }
     }
 }
