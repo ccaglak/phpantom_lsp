@@ -551,9 +551,14 @@ resolve_class_fully(class)
 ├── 1. resolve_class_with_inheritance(class)
 │   └── Returns base-resolved ClassInfo
 │
-└── 2. For each provider (in priority order):
-    └── if applies_to(class): merge provide(class) into result
-        └── Skips members that already exist (no overwrites)
+├── 2. For each provider (in priority order):
+│   └── if applies_to(class): merge provide(class) into result
+│       └── Skips members that already exist (no overwrites)
+│
+├── 3. Merge members from implemented interfaces
+│
+└── 4. apply_laravel_patches(class, fqn)
+    └── Post-resolution fixups for Laravel classes (see below)
 ```
 
 Provider priority order (highest first):
@@ -565,6 +570,18 @@ Two providers are currently registered in `default_providers()`:
 
 - **`LaravelModelProvider`** (`virtual_members/laravel.rs`): synthesizes virtual members for classes extending `Illuminate\Database\Eloquent\Model`. Produces relationship properties (methods returning `HasMany`, `HasOne`, `BelongsTo`, etc. generate a virtual property typed from the relationship's generic parameters), scope methods (both the `scopeActive` naming convention and the `#[Scope]` attribute from Laravel 11+ are supported; either style becomes `active()` as both static and instance), Builder-as-static forwarding (`User::where()->get()` resolves end-to-end), accessors (legacy `getXAttribute()` and modern `Attribute` casts), and cast properties (`$casts` array or `casts()` method entries are mapped to PHP types like `datetime` to `\Carbon\Carbon`, `boolean` to `bool`, custom cast classes to their `get()` return type). Highest priority among virtual member providers. Scope methods are also injected onto `Builder<Model>` instances via a post-generic-substitution hook in `type_hint_to_classes_depth` (see "Scope Methods on Builder Instances" below).
 - **`PHPDocProvider`** (`virtual_members/phpdoc.rs`): parses `@method`, `@property`, `@property-read`, `@property-write`, and `@mixin` tags from the class-level docblock stored in `ClassInfo.class_docblock`. Explicit `@method` / `@property` tags are not parsed eagerly during AST extraction; instead, the raw docblock string is preserved and parsed lazily when `provide` is called. For `@mixin` tags, the provider loads the referenced classes and merges their public members. Within the provider, explicit tags take precedence over mixin members. Recurses into mixin-of-mixin chains up to `MAX_MIXIN_DEPTH`.
+
+### Laravel Class Patches
+
+After virtual members and interface members are merged, `resolve_class_fully_inner` calls `apply_laravel_patches(class, fqn)` from `virtual_members/laravel/patches.rs`. Unlike virtual member providers (which *add* new members), patches *modify* existing members' type information to fix framework-specific type inaccuracies that break chain resolution.
+
+The patch system is centralized in a single module with one entry point. Dispatching is based on the fully-qualified class name and trait usage. Current patches:
+
+1. **`Eloquent\Builder::__call` / `__callStatic` return type.** Laravel's `Builder::__call()` is declared as returning `mixed`, but in practice always returns `$this` (scope dispatch, macro dispatch, Query\Builder forwarding). The patch overrides the return type to `static` so that method chains through unknown calls preserve the Builder type.
+
+2. **`Conditionable::when()` / `unless()` return type.** The trait declares `@return $this|TWhenReturnType` but the unresolved method-level template parameter `TWhenReturnType` prevents `is_self_like_type` from recognizing the return as self-referential, breaking method chain resolution on Builder and Collection. The patch replaces the return type with `$this`. Applied to the `Conditionable` trait itself, to `Eloquent\Builder` (which uses the trait), and to any class whose `used_traits` includes `Conditionable`.
+
+3. **Bare `Builder` return types on scope methods.** Handled separately in `scopes.rs` (`is_bare_builder_type`) because it runs at scope-injection time (post-generic-substitution), not during `resolve_class_fully_inner`. Documented in the patch module as part of the inventory but not dispatched from it.
 
 ### Precedence Rules
 

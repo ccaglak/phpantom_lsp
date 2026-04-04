@@ -428,6 +428,3 @@ hard-coding the two known classes.  A simpler approach: add
 `@method` tags to bundled stubs for the most common dynamic `with*`
 methods, or document this as a known limitation.
 
-
-
-

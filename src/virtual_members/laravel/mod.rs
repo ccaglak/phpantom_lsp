@@ -80,6 +80,7 @@ mod builder;
 mod casts;
 mod factory;
 mod helpers;
+pub(crate) mod patches;
 mod relationships;
 mod scopes;
 mod where_property;

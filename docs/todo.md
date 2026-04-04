@@ -154,6 +154,7 @@ unlikely to move the needle for most users.
 | E2   | Project-level stubs as type resolution source                                                                                                                               | Medium      | Medium         |
 | E3   | IDE-provided and `.phpantom.toml` stub paths                                                                                                                                | Low-Medium  | Low            |
 | E6   | Stub install prompt for non-Composer projects                                                                                                                               | Low         | Low            |
+| E7   | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                     | Medium      | Medium         |
 |      | **[Performance](todo/performance.md)**                                                                                                                                      |             |                |
 | P1.5 | [Layered class resolution (zero-copy inheritance)](todo/performance.md#p15-layered-class-resolution-zero-copy-inheritance)                                                  | High        | Very High      |
 | P13  | [Tiered storage: drop per-file maps for non-open files](todo/performance.md#p13-tiered-storage-drop-per-file-maps-for-non-open-files)                                       | Medium-High | Medium-High    |

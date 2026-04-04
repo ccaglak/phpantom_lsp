@@ -1768,6 +1768,12 @@ class EloquentQueryDemo
         Bakery::whereOvenCode('X9');                  // from $hidden
         Bakery::whereFlour('rye')->whereApricot(true)->get();
         Bakery::where('open', true)->whereFlour('spelt')->fresh()->first();
+
+        // Conditionable when()/unless() chain continuation
+        // The patch replaces the unresolved TWhenReturnType template param
+        // with $this so that chained calls after when()/unless() resolve.
+        BlogAuthor::where('active', 1)->when(true, fn($q) => $q)->get();
+        BlogAuthor::where('active', 1)->unless(false, fn($q) => $q)->first();
     }
 }
 
@@ -5819,6 +5825,7 @@ namespace Illuminate\Database\Eloquent {
     class Builder implements \Illuminate\Contracts\Database\Eloquent\Builder {
         /** @use \Illuminate\Database\Concerns\BuildsQueries<TModel> */
         use \Illuminate\Database\Concerns\BuildsQueries;
+        use \Illuminate\Support\Traits\Conditionable;
 
         /**
          * @param  (\Closure(static): mixed)|string|array  $column
@@ -5960,6 +5967,27 @@ namespace Illuminate\Support {
          */
         public function each(callable $callback): static { return $this; }
         public function getIterator(): \ArrayIterator { return new \ArrayIterator([]); }
+    }
+}
+
+namespace Illuminate\Support\Traits {
+
+    /**
+     * @template TWhenReturnType
+     * @template TUnlessReturnType
+     */
+    trait Conditionable {
+        /**
+         * @param  (callable($this): TWhenReturnType)|null  $callback
+         * @return $this|TWhenReturnType
+         */
+        public function when(mixed $value = null, ?callable $callback = null, ?callable $default = null): mixed { return $this; }
+
+        /**
+         * @param  (callable($this): TUnlessReturnType)|null  $callback
+         * @return $this|TUnlessReturnType
+         */
+        public function unless(mixed $value = null, ?callable $callback = null, ?callable $default = null): mixed { return $this; }
     }
 }
 
