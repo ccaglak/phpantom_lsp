@@ -21,11 +21,15 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit & type inference
 
-| #   | Item                                                                                                                                             | Impact | Effort |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
-| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium | Medium |
-| H6  | `return.type` — update return type to match actual returns                                                                                       | Medium | Medium |
-|     | **Release 0.7.0**                                                                                                                                |        |        |
+| #   | Item                                                                                                                                             | Impact      | Effort      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
+| T24 | [`stdClass` dynamic property access](todo/type-inference.md#t24-stdclass-dynamic-property-access) (suppress diagnostics on `stdClass`/`object`)  | Low-Medium  | Low         |
+| T22 | [Array value type tracking from loop assignments](todo/type-inference.md#t22-array-value-type-tracking-from-loop-assignments)                    | Medium      | Medium      |
+| T23 | [`class-string<T>` static method dispatch](todo/type-inference.md#t23-class-stringt-static-method-dispatch)                                     | Medium      | Medium      |
+| T21 | [Bidirectional template inference](todo/type-inference.md#t21-bidirectional-template-inference-upperlower-bounds) (closure return type → generic) | Medium      | Medium-High |
+| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium      | Medium      |
+| H6  | `return.type` — update return type to match actual returns                                                                                       | Medium      | Medium      |
+|     | **Release 0.7.0**                                                                                                                                |             |             |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -91,7 +95,6 @@ unlikely to move the needle for most users.
 |      | **[Type Inference](todo/type-inference.md)**                                                                                                                                |             |                |
 | T19  | [Structured type representation](todo/type-inference.md#t19-structured-type-representation) (replace string-based types with `PhpType` enum)                                | High        | Very High      |
 | T20  | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (sure/sureNot tracking, AND/OR algebra)                             | Medium-High | High           |
-| T21  | [Bidirectional template inference](todo/type-inference.md#t21-bidirectional-template-inference-upperlower-bounds) (upper/lower bounds, variance)                            | Medium      | Medium-High    |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium     |
 | T12  | [Intersection types flattened to unions by `type_strings_joined`](todo/type-inference.md#t12-intersection-types-flattened-to-unions-by-type_strings_joined)                 | Low-Medium  | Low (after M4) |
 | T13  | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                                             | Low-Medium  | Medium         |

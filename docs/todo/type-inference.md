@@ -488,6 +488,64 @@ simpler, but basic reconciliation can work with strings too).
 
 ---
 
+## T22. Array value type tracking from loop assignments
+**Impact: Medium · Effort: Medium**
+
+When a variable is initialized as `$arr = []` and then populated
+inside a loop with `$arr[$key] = $value`, PHPantom loses the element
+type entirely — it resolves `$arr` as bare `array`. Iterating the
+array in a subsequent `foreach` then produces `unresolved_member_access`
+on every element access.
+
+Examples from triage:
+
+- `$bundleProductCounts[$id] = ['bundle' => $productBundle, 'count' => 1]`
+  in a loop, then `$bundleProductCount['bundle']->parentProduct()` in
+  a second loop. (`ProductSupplyAmountChangeListener:56,58`.)
+- `$warehouseOrderLines[$key] = $orderLine` (where `$orderLine` is
+  `PCNPurchaseOrderLine`) in a loop, then
+  `$warehouseOrderLines[$key] ?? null` resolves as just `null` instead
+  of `PCNPurchaseOrderLine|null`. (`PCNService:1073,1077`.)
+
+The second example also requires the null-coalescing operator (`??`)
+to produce a union of both sides rather than only the fallback.
+
+**Implementation:** when processing an assignment like
+`$arr[$expr] = $rhs`, record the RHS type as the array's value type.
+When the same variable is accessed in a `foreach` or via bracket
+access, use the recorded value type for the element. For `$a ?? $b`,
+the result type should be `type($a) | type($b)` with `null` removed
+from the left side.
+
+---
+
+## T23. `class-string<T>` static method dispatch
+**Impact: Medium · Effort: Medium**
+
+When a variable is typed as `class-string<Foo>` (via `@param` or
+native type), calling static methods on it (e.g. `$class::cases()`,
+`$class::create()`) should resolve through `Foo` as the base class.
+PHPantom currently does not resolve static method calls on
+`class-string`-typed variables, so the return type is unknown and
+any chaining breaks.
+
+A specific sub-problem is the `static` return type: `UnitEnum::cases()`
+returns `static[]`. When called via `$class::cases()` where `$class`
+is `class-string<BackedEnum>`, the return type should resolve as
+`BackedEnum[]`, making `$item->name` and `$item->value` accessible
+in a `foreach`.
+
+Example from triage: `OptionList:27,30` — `$class::cases()` where
+`$class` is typed as `class-string<BackedEnum>`. Properties `name`
+and `value` on the iterated elements are unresolved.
+
+**Implementation:** in the static call resolution path, detect when
+the subject is a variable with a `class-string<T>` type. Extract `T`
+and resolve the method on that class. When the return type contains
+`static`, substitute it with `T`.
+
+---
+
 ## T21. Bidirectional template inference (upper/lower bounds)
 **Impact: Medium · Effort: Medium-High**
 
@@ -508,9 +566,47 @@ Key gaps:
 3. No variance tracking. `@template-covariant T` vs `@template T`
    affects whether `Container<Cat>` is assignable to
    `Container<Animal>`.
+4. Template parameters not instantiated from closure return type at
+   call sites. Example: `Collection::reduce(fn(Decimal $c, ...):
+   Decimal => ..., new Decimal('0'))` — `TReduceReturnType` should
+   be inferred as `Decimal` from the callback return type, and
+   `TReduceInitial` as `Decimal` from the `$initial` argument.
+   Currently the return type of `reduce()` is unresolved.
+   (Triage: `FlowService:517`.)
 
 **Implementation:** add a `TemplateResolution` struct that accumulates
 lower and upper bounds during call-site analysis, with a `resolve()`
 method that picks the most specific bound.
+
+---
+
+## T24. `stdClass` dynamic property access
+**Impact: Low-Medium · Effort: Low**
+
+`stdClass` is PHP's generic dynamic-property container. Accessing any
+property on a value known to be `stdClass` (or narrowed to `object`
+via `is_object()`) should not produce `unresolved_member_access`
+diagnostics, because `stdClass` permits arbitrary properties by
+design.
+
+This affects two common patterns:
+
+1. `json_decode($json, false)` returns `mixed`. After an
+   `is_object($data)` guard, `$data` should narrow to `object`, and
+   property access like `$data->error_link` should be permitted
+   without a diagnostic. (`Order:646,647`.)
+2. `DB::select()` returns `array`. After `$result[0] instanceof
+   stdClass`, the element should narrow to `stdClass` and property
+   access should be permitted. (`PurchaseFileService:1081,1083`.)
+
+Both patterns also depend on narrowing improvements tracked in T20
+(`is_object()` narrowing, `instanceof` on array element access).
+This item covers the additional step: once the type is narrowed to
+`stdClass` or `object`, suppress member-not-found diagnostics.
+
+**Implementation:** in the diagnostic emission path for
+`unknown_member` and `unresolved_member_access`, skip the diagnostic
+when the resolved type is `stdClass` or bare `object`. Optionally,
+resolve any property access on `stdClass` as `mixed`.
 
 ---
