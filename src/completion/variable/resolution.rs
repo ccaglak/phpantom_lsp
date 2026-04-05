@@ -69,17 +69,18 @@ thread_local! {
 
 /// Maximum nesting depth for `resolve_variable_types` calls.
 ///
-/// Three levels covers legitimate nested resolution such as:
-///   depth 0: resolve `$item` in a foreach body
-///   depth 1: resolve `$collection` (the foreach iterator expression)
-///   depth 2: resolve `$node` (RHS of `$collection = $node->method()`)
+/// Four levels covers legitimate nested resolution such as:
+///   depth 0: resolve `$arr` built via `$arr[$key] = ['k' => $var]`
+///   depth 1: resolve `$var` (array element variable in the shape literal)
+///   depth 2: resolve `$item->prop` (RHS of `$var = $item->prop`)
+///   depth 3: resolve `$item` (foreach value binding → iterable param)
 ///
 /// Cycles like `foreach ($x->method() as $x)` are caught by a
 /// targeted check in `try_resolve_foreach_value_type` (which skips
 /// resolution when the value variable shadows the iterator receiver)
 /// rather than by this depth limit alone.  The depth limit is a
 /// safety net for any remaining recursive patterns.
-const MAX_VAR_RESOLUTION_DEPTH: u8 = 3;
+const MAX_VAR_RESOLUTION_DEPTH: u8 = 4;
 
 /// Returns `true` when any `resolve_variable_types` call on the
 /// current stack has returned empty because the depth guard fired.

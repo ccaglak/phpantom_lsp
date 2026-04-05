@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                                      | Impact | Effort     |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
-| B13 | [Array shape tracking from keyed literal assignments in loops](todo/bugs.md#b13-array-shape-tracking-from-keyed-literal-assignments-in-loops)             | Low    | High       |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union)          | Medium | Medium     |
 | H6  | `return.type` — update return type to match actual returns                                                                                                | Medium | Medium     |
 |     | **Release 0.7.0**                                                                                                                                         |        |            |
@@ -90,6 +89,7 @@ unlikely to move the needle for most users.
 | C6   | `#[ExpectedValues]` parameter value suggestions                                                                                                                             | Low         | Medium         |
 | C10  | [Deprecation markers on class-name completions from all sources](todo/completion.md#c10-deprecation-markers-on-class-name-completions-from-all-sources)                     | Low         | Low            |
 |      | **[Type Inference](todo/type-inference.md)**                                                                                                                                |             |                |
+| T25  | [Forward-walking scope model](todo/type-inference.md#t25-forward-walking-scope-model-for-variable-type-resolution) (eliminate backward-scanning depth limit)                | High        | Very High      |
 | T19  | [Structured type representation](todo/type-inference.md#t19-structured-type-representation) (replace string-based types with `PhpType` enum)                                | High        | Very High      |
 | T20  | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (sure/sureNot tracking, AND/OR algebra)                             | Medium-High | High           |
 | T6   | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium     |

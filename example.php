@@ -3286,6 +3286,34 @@ class LoopArrayBuildDemo
     }
 }
 
+class ConditionalLoopShapeDemo
+{
+    /** @param list<Pen> $pens */
+    public function demo(array $pens): void
+    {
+        // Array built with variable keys inside a loop where the assignment
+        // is inside a conditional branch (if/else). The shape type from
+        // the array literal is preserved through foreach iteration.
+        $grouped = [];
+        foreach ($pens as $pen) {
+            $key = $pen->color();
+            if (array_key_exists($key, $grouped)) {
+                $grouped[$key]['count']++;
+            } else {
+                $grouped[$key] = [
+                    'tool'  => $pen,
+                    'count' => 1,
+                ];
+            }
+        }
+
+        // Foreach over the built array resolves shape keys
+        foreach ($grouped as $entry) {
+            $entry['tool']->write();      // Pen method via shape tracking
+        }
+    }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -5967,6 +5995,24 @@ function runDemoAssertions(): void
     }
     $labFound = $labIndexed['blue'] ?? null;
     assert($labFound instanceof Pen, 'Null-coalesce on variable-key array must resolve to Pen');
+
+    // ── Conditional loop shape (keyed assignment in if/else) ────────────
+    $shapePens = [new Pen('red'), new Pen('blue'), new Pen('red')];
+    $shapeGrouped = [];
+    foreach ($shapePens as $shapePen) {
+        $shapeKey = $shapePen->color();
+        if (array_key_exists($shapeKey, $shapeGrouped)) {
+            $shapeGrouped[$shapeKey]['count']++;
+        } else {
+            $shapeGrouped[$shapeKey] = [
+                'tool'  => $shapePen,
+                'count' => 1,
+            ];
+        }
+    }
+    foreach ($shapeGrouped as $shapeEntry) {
+        assert($shapeEntry['tool'] instanceof Pen, 'Shape key from conditional loop must resolve to Pen');
+    }
 
     echo "All assertions passed.\n";
 }
