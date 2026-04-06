@@ -18,12 +18,11 @@ use super::helpers::extends_eloquent_model;
 
 /// Build the default return type for scope methods that don't declare a return
 /// type or return `void`.
-fn default_scope_return_type() -> String {
+fn default_scope_return_type() -> PhpType {
     PhpType::Generic(
         "Illuminate\\Database\\Eloquent\\Builder".to_string(),
         vec![PhpType::static_()],
     )
-    .to_string()
 }
 
 /// Determine whether a method is an Eloquent scope.
@@ -81,10 +80,11 @@ pub(super) fn scope_name(method_name: &str) -> String {
 /// Uses the scope method's declared return type.  If the return type is
 /// `void` or absent, defaults to
 /// `\Illuminate\Database\Eloquent\Builder<static>`.
-pub(super) fn scope_return_type(method: &MethodInfo) -> String {
-    match method.return_type_str().as_deref() {
-        Some("void") | None => default_scope_return_type(),
-        Some(rt) => rt.to_string(),
+pub(super) fn scope_return_type(method: &MethodInfo) -> PhpType {
+    match &method.return_type {
+        Some(t) if t.is_void() => default_scope_return_type(),
+        Some(t) => t.clone(),
+        None => default_scope_return_type(),
     }
 }
 
@@ -97,7 +97,7 @@ pub(super) fn scope_return_type(method: &MethodInfo) -> String {
 /// `User::active()` (static) and `$user->active()` (instance).
 pub(super) fn build_scope_methods(method: &MethodInfo) -> [MethodInfo; 2] {
     let name = scope_name_for(method);
-    let return_type = Some(scope_return_type(method));
+    let return_type = scope_return_type(method);
 
     // Strip the first parameter ($query / $builder) that Laravel injects.
     let parameters: Vec<_> = if method.parameters.is_empty() {
@@ -109,14 +109,16 @@ pub(super) fn build_scope_methods(method: &MethodInfo) -> [MethodInfo; 2] {
     let instance_method = MethodInfo {
         parameters: parameters.clone(),
         deprecation_message: method.deprecation_message.clone(),
-        ..MethodInfo::virtual_method(&name, return_type.as_deref())
+        return_type: Some(return_type.clone()),
+        ..MethodInfo::virtual_method(&name, None)
     };
 
     let static_method = MethodInfo {
         parameters,
         is_static: true,
         deprecation_message: method.deprecation_message.clone(),
-        ..MethodInfo::virtual_method(&name, return_type.as_deref())
+        return_type: Some(return_type),
+        ..MethodInfo::virtual_method(&name, None)
     };
 
     [instance_method, static_method]

@@ -852,8 +852,7 @@ pub(crate) fn resolve_target_classes_expr(
                 ctx.content,
                 ctx.cursor_offset as usize,
                 &base_var,
-            )
-            .map(|s| PhpType::parse(&s));
+            );
             let ast_type: Option<PhpType> = {
                 let dummy_class;
                 let effective_class = match current_class {
@@ -1125,7 +1124,8 @@ pub(crate) fn resolve_subject_outcome(
         // stdClass / object — synthetic resolution.
         if resolved.iter().any(|rt| {
             matches!(&rt.type_string,
-                PhpType::Named(s) if s.eq_ignore_ascii_case("stdclass") || s == "object")
+                PhpType::Named(s) if s.eq_ignore_ascii_case("stdclass"))
+                || rt.type_string.is_object()
         }) {
             let synthetic = Arc::new(ClassInfo {
                 name: "stdClass".to_string(),
@@ -1157,9 +1157,8 @@ pub(crate) fn resolve_subject_outcome(
         if let SubjectExpr::FunctionCall(fn_name) = callee.as_ref()
             && let Some(fl) = ctx.function_loader
             && let Some(func_info) = fl(fn_name.as_str())
-            && let Some(raw_type) = func_info.return_type_str()
-            && let Some(unresolved) =
-                check_unresolvable_class_name(&PhpType::parse(&raw_type), ctx.class_loader)
+            && let Some(ref raw_type) = func_info.return_type
+            && let Some(unresolved) = check_unresolvable_class_name(raw_type, ctx.class_loader)
         {
             return SubjectOutcome::UnresolvableClass(unresolved);
         }

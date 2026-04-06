@@ -40,7 +40,7 @@ pub(in crate::completion) use crate::subject_expr::parse_new_expression_class as
 pub(in crate::completion) fn extract_function_return_from_source(
     func_name: &str,
     content: &str,
-) -> Option<String> {
+) -> Option<PhpType> {
     // Look for `function funcName(` in the source.
     let pattern = format!("function {}(", func_name);
     let func_pos = content.find(&pattern)?;
@@ -54,7 +54,7 @@ pub(in crate::completion) fn extract_function_return_from_source(
     let open_pos = trimmed.rfind("/**")?;
     let docblock = &trimmed[open_pos..];
 
-    docblock::extract_return_type(docblock)
+    docblock::extract_return_type(docblock).map(|s| PhpType::parse(&s))
 }
 
 /// Scan backward through `content` for a closure or arrow-function
@@ -72,7 +72,7 @@ pub(in crate::completion) fn extract_closure_return_type_from_assignment(
     var_name: &str,
     content: &str,
     cursor_offset: u32,
-) -> Option<String> {
+) -> Option<PhpType> {
     let search_area = content.get(..cursor_offset as usize)?;
 
     // Look for `$fn = function` or `$fn = fn` assignment.
@@ -149,7 +149,7 @@ pub(in crate::completion) fn extract_closure_return_type_from_assignment(
         return None;
     }
 
-    Some(ret_type.to_string())
+    Some(PhpType::parse(ret_type))
 }
 
 /// Extract the return type annotation from a closure or arrow-function
@@ -166,7 +166,7 @@ pub(in crate::completion) fn extract_closure_return_type_from_assignment(
 ///
 /// Returns `None` if the text is not a closure/arrow-function or if
 /// there is no return type hint.
-pub(in crate::completion) fn extract_closure_return_type_from_text(text: &str) -> Option<String> {
+pub(in crate::completion) fn extract_closure_return_type_from_text(text: &str) -> Option<PhpType> {
     let trimmed = text.trim();
 
     let is_arrow = trimmed.starts_with("fn")
@@ -243,7 +243,7 @@ pub(in crate::completion) fn extract_closure_return_type_from_text(text: &str) -
         return None;
     }
 
-    Some(ret_type.to_string())
+    Some(PhpType::parse(ret_type))
 }
 
 /// Extract the type annotation of the Nth parameter from a closure or
@@ -264,7 +264,7 @@ pub(in crate::completion) fn extract_closure_return_type_from_text(text: &str) -
 pub(in crate::completion) fn extract_closure_param_type_from_text(
     text: &str,
     position: usize,
-) -> Option<String> {
+) -> Option<PhpType> {
     let trimmed = text.trim();
 
     let is_arrow = trimmed.starts_with("fn")
@@ -339,7 +339,7 @@ pub(in crate::completion) fn extract_closure_param_type_from_text(
         return None;
     }
 
-    Some(before_dollar.to_string())
+    Some(PhpType::parse(before_dollar))
 }
 
 /// Split a parameter list string by commas at depth zero, respecting
@@ -380,7 +380,7 @@ fn split_params_at_depth_zero(text: &str) -> Vec<&str> {
 pub(in crate::completion) fn extract_first_class_callable_return_type(
     var_name: &str,
     rctx: &ResolutionCtx<'_>,
-) -> Option<String> {
+) -> Option<PhpType> {
     let content = rctx.content;
     let cursor_offset = rctx.cursor_offset;
     let current_class = rctx.current_class;
@@ -437,7 +437,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
 
         if let Some(cls) = owner {
             return crate::inheritance::resolve_method_return_type(&cls, method_name, class_loader)
-                .map(|ret| ret.replace_self(&cls.name).to_string());
+                .map(|ret| ret.replace_self(&cls.name));
         }
         return None;
     }
@@ -464,7 +464,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
 
         if let Some(cls) = owner {
             return crate::inheritance::resolve_method_return_type(&cls, method_name, class_loader)
-                .map(|ret| ret.replace_self(&cls.name).to_string());
+                .map(|ret| ret.replace_self(&cls.name));
         }
         return None;
     }
@@ -476,7 +476,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
         && !callable_text.starts_with('$')
     {
         let func_info = function_loader?(callable_text)?;
-        return func_info.return_type_str();
+        return func_info.return_type.clone();
     }
 
     None
@@ -532,9 +532,8 @@ fn walk_array_segments_and_resolve(
     // `array{name: string, pen: Pen}`.  Without expansion the
     // segment walk would fail to extract shape values.
     let mut current = if let PhpType::Named(_) = base_type {
-        let name_str = base_type.to_string();
-        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-            &name_str,
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias_typed(
+            base_type,
             current_class_name,
             all_classes,
             class_loader,
@@ -581,19 +580,14 @@ fn walk_array_segments_and_resolve(
                 )
             });
 
-            if let Some(element) = class_element {
-                PhpType::parse(&element)
-            } else {
-                return None;
-            }
+            class_element?
         };
 
         // After each segment, the resulting type might itself be an
         // alias (e.g. a shape value defined as another alias).
         // Convert to string only for alias resolution.
-        let type_str = current.to_string();
-        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-            &type_str,
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias_typed(
+            &current,
             current_class_name,
             all_classes,
             class_loader,
@@ -634,7 +628,7 @@ fn resolve_raw_type_from_call_chain(
     current_class: Option<&ClassInfo>,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     // Split at the rightmost `->` to get the final method name and
     // the LHS expression that produces the owning object.
     let pos = callee.rfind("->")?;
@@ -648,7 +642,6 @@ fn resolve_raw_type_from_call_chain(
     // Resolve LHS to a class.
     let owner = resolve_lhs_to_class(lhs, current_class, all_classes, class_loader)?;
     crate::inheritance::resolve_method_return_type(&owner, method_name, class_loader)
-        .map(|ret| ret.to_string())
 }
 
 /// Resolve the left-hand side of a chained expression to a `ClassInfo`.
@@ -720,8 +713,7 @@ fn resolve_lhs_to_class(
                 .or_else(|| inner_callee.strip_prefix("$this?->"))
             {
                 let owner = current_class?;
-                return crate::inheritance::resolve_method_return_type(owner, m, class_loader)
-                    .map(|ret| ret.to_string());
+                return crate::inheritance::resolve_method_return_type(owner, m, class_loader);
             }
             // `ClassName::method`
             if let Some((cls_part, m_part)) = inner_callee.rsplit_once("::") {
@@ -740,16 +732,14 @@ fn resolve_lhs_to_class(
                         &cls,
                         m_part,
                         class_loader,
-                    )
-                    .map(|ret| ret.to_string());
+                    );
                 }
             }
             None
         })?;
 
-        // `ret_type` is a type string — resolve it to ClassInfo.
-        let parsed = PhpType::parse(&ret_type);
-        let effective = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+        // `ret_type` is a PhpType — resolve it to ClassInfo.
+        let effective = ret_type.non_null_type().unwrap_or_else(|| ret_type.clone());
         if let Some(base) = effective.base_name() {
             let lookup = short_name(base);
             return all_classes
@@ -788,73 +778,73 @@ mod tests {
 
     #[test]
     fn arrow_fn_with_return_type() {
-        let text = "fn(Decimal $carry, Orderproduct $p): Decimal => $carry->add($p->price)";
+        let text = "fn(int $x): Decimal => $x";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("Decimal".to_string())
+            Some(PhpType::parse("Decimal"))
         );
     }
 
     #[test]
     fn arrow_fn_without_return_type() {
-        let text = "fn($carry, $p) => $carry + $p";
+        let text = "fn(int $x) => $x * 2";
         assert_eq!(extract_closure_return_type_from_text(text), None);
     }
 
     #[test]
     fn closure_with_return_type() {
-        let text = "function(Money $carry, LineItem $item): Money { return $carry; }";
+        let text = "function(int $x): Decimal { return new Decimal($x); }";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("Money".to_string())
+            Some(PhpType::parse("Decimal"))
         );
     }
 
     #[test]
     fn closure_with_use_and_return_type() {
-        let text = "function(int $carry) use ($factor): Result { return new Result(); }";
+        let text = "function(int $x) use ($y): Decimal { return new Decimal($x + $y); }";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("Result".to_string())
+            Some(PhpType::parse("Decimal"))
         );
     }
 
     #[test]
     fn closure_without_return_type() {
-        let text = "function($carry, $item) { return $carry; }";
+        let text = "function(int $x) { return $x * 2; }";
         assert_eq!(extract_closure_return_type_from_text(text), None);
     }
 
     #[test]
     fn not_a_closure() {
-        let text = "new Decimal('0')";
+        let text = "42 + $x";
         assert_eq!(extract_closure_return_type_from_text(text), None);
     }
 
     #[test]
     fn arrow_fn_fqn_return_type() {
-        let text = r"fn(\App\Models\User $u): \App\Models\User => $u";
+        let text = "fn(int $x): \\App\\Models\\User => findUser($x)";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some(r"\App\Models\User".to_string())
+            Some(PhpType::parse("\\App\\Models\\User"))
         );
     }
 
     #[test]
     fn arrow_fn_nullable_return_type() {
-        let text = "fn(int $x): ?string => null";
+        let text = "fn(int $x): ?User => findUser($x)";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("?string".to_string())
+            Some(PhpType::parse("?User"))
         );
     }
 
     #[test]
     fn closure_with_nested_parens_in_params() {
-        let text = "function(array $items = []): Collection { return new Collection(); }";
+        let text = "function(array $a = []): Iterator { yield from $a; }";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("Collection".to_string())
+            Some(PhpType::parse("Iterator"))
         );
     }
 
@@ -866,10 +856,10 @@ mod tests {
 
     #[test]
     fn whitespace_around_text() {
-        let text = "  fn(int $x): string => ''  ";
+        let text = "  fn(int $x): Result => ok($x)  ";
         assert_eq!(
             extract_closure_return_type_from_text(text),
-            Some("string".to_string())
+            Some(PhpType::parse("Result"))
         );
     }
 
@@ -877,28 +867,28 @@ mod tests {
 
     #[test]
     fn param_type_arrow_fn_first_param() {
-        let text = "fn(User $u, int $count): void => doSomething($u)";
+        let text = "fn(User $u, int $count): void => doStuff($u, $count)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("User".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
     #[test]
     fn param_type_arrow_fn_second_param() {
-        let text = "fn(User $u, int $count): void => doSomething($u)";
+        let text = "fn(User $u, int $count): void => doStuff($u, $count)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 1),
-            Some("int".to_string())
+            Some(PhpType::parse("int"))
         );
     }
 
     #[test]
     fn param_type_closure_first_param() {
-        let text = "function(Order $order): void { $order->process(); }";
+        let text = "function(User $u, int $count): void { doStuff($u, $count); }";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("Order".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
@@ -916,37 +906,37 @@ mod tests {
 
     #[test]
     fn param_type_nullable() {
-        let text = "fn(?string $name): void => trim($name)";
+        let text = "fn(?User $u): void => doStuff($u)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("?string".to_string())
+            Some(PhpType::parse("?User"))
         );
     }
 
     #[test]
     fn param_type_fqn() {
-        let text = r"fn(\App\Models\User $u): void => $u->save()";
+        let text = "fn(\\App\\Models\\User $u): void => doStuff($u)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some(r"\App\Models\User".to_string())
+            Some(PhpType::parse("\\App\\Models\\User"))
         );
     }
 
     #[test]
     fn param_type_by_reference() {
-        let text = "fn(int &$count): void => $count++";
+        let text = "fn(User &$u): void => doStuff($u)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("int".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
     #[test]
     fn param_type_variadic() {
-        let text = "fn(string ...$items): void => implode($items)";
+        let text = "fn(User ...$users): void => doStuff($users)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("string".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
@@ -964,19 +954,19 @@ mod tests {
 
     #[test]
     fn param_type_closure_with_use_clause() {
-        let text = "function(Product $p) use ($factor): void { $p->scale($factor); }";
+        let text = "function(User $u) use ($y): void { doStuff($u, $y); }";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("Product".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
     #[test]
     fn param_type_whitespace_around() {
-        let text = "  fn( User $u ): void => $u->save()  ";
+        let text = "  fn( User $u , int $count ): void => doStuff($u, $count)  ";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("User".to_string())
+            Some(PhpType::parse("User"))
         );
     }
 
@@ -988,15 +978,15 @@ mod tests {
 
     #[test]
     fn param_type_mixed_typed_and_untyped() {
-        let text = "fn(User $u, $count, string $label): void => null";
+        let text = "fn(User $u, $count, string $label): void => doStuff($u, $count, $label)";
         assert_eq!(
             extract_closure_param_type_from_text(text, 0),
-            Some("User".to_string())
+            Some(PhpType::parse("User"))
         );
         assert_eq!(extract_closure_param_type_from_text(text, 1), None);
         assert_eq!(
             extract_closure_param_type_from_text(text, 2),
-            Some("string".to_string())
+            Some(PhpType::parse("string"))
         );
     }
 }

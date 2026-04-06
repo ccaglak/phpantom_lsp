@@ -581,7 +581,10 @@ impl VirtualMemberProvider for LaravelModelProvider {
             for (column, cast_type) in &laravel.casts_definitions {
                 let php_type = cast_type_to_php_type(cast_type, class_loader);
                 seen_props.insert(column.clone());
-                properties.push(PropertyInfo::virtual_property(column, Some(&php_type)));
+                properties.push(PropertyInfo::virtual_property_typed(
+                    column,
+                    Some(&php_type),
+                ));
             }
 
             // ── $dates properties (deprecated, lower priority than $casts) ──
@@ -591,20 +594,20 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 if !seen_props.insert(column.clone()) {
                     continue;
                 }
-                properties.push(PropertyInfo::virtual_property(
+                properties.push(PropertyInfo::virtual_property_typed(
                     column,
-                    Some("Carbon\\Carbon"),
+                    Some(&PhpType::Named("Carbon\\Carbon".to_string())),
                 ));
             }
 
             // ── Attribute default properties (fallback) ─────────────
             // Only add properties for columns not already covered by $casts
             // or $dates.
-            for (column, php_type) in &laravel.attributes_definitions {
+            for (column, php_type_str) in &laravel.attributes_definitions {
                 if !seen_props.insert(column.clone()) {
                     continue;
                 }
-                properties.push(PropertyInfo::virtual_property(column, Some(php_type)));
+                properties.push(PropertyInfo::virtual_property(column, Some(php_type_str)));
             }
 
             // ── Column name properties (last-resort fallback) ───────
@@ -614,7 +617,10 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 if !seen_props.insert(column.clone()) {
                     continue;
                 }
-                properties.push(PropertyInfo::virtual_property(column, Some("mixed")));
+                properties.push(PropertyInfo::virtual_property_typed(
+                    column,
+                    Some(&PhpType::mixed()),
+                ));
             }
 
             // ── Timestamp properties ────────────────────────────────
@@ -637,8 +643,10 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 };
                 for col in [created_col, updated_col].into_iter().flatten() {
                     if seen_props.insert(col.to_string()) {
-                        properties
-                            .push(PropertyInfo::virtual_property(col, Some("Carbon\\Carbon")));
+                        properties.push(PropertyInfo::virtual_property_typed(
+                            col,
+                            Some(&PhpType::Named("Carbon\\Carbon".to_string())),
+                        ));
                     }
                 }
             }
@@ -661,10 +669,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 let prop_name = legacy_accessor_property_name(&method.name);
                 properties.push(PropertyInfo {
                     deprecation_message: method.deprecation_message.clone(),
-                    ..PropertyInfo::virtual_property(
-                        &prop_name,
-                        method.return_type_str().as_deref(),
-                    )
+                    ..PropertyInfo::virtual_property_typed(&prop_name, method.return_type.as_ref())
                 });
                 continue;
             }
@@ -675,7 +680,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 let accessor_type = extract_modern_accessor_type(method);
                 properties.push(PropertyInfo {
                     deprecation_message: method.deprecation_message.clone(),
-                    ..PropertyInfo::virtual_property(&prop_name, Some(&accessor_type))
+                    ..PropertyInfo::virtual_property_typed(&prop_name, Some(&accessor_type))
                 });
                 continue;
             }
@@ -718,7 +723,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 build_property_type(kind, related_type.as_deref(), custom_collection.as_deref());
 
             if let Some(ref th) = type_hint {
-                properties.push(PropertyInfo::virtual_property(&method.name, Some(th)));
+                properties.push(PropertyInfo::virtual_property_typed(&method.name, Some(th)));
             }
         }
 
@@ -740,7 +745,10 @@ impl VirtualMemberProvider for LaravelModelProvider {
             if !seen_props.insert(count_name.clone()) {
                 continue;
             }
-            properties.push(PropertyInfo::virtual_property(&count_name, Some("int")));
+            properties.push(PropertyInfo::virtual_property_typed(
+                &count_name,
+                Some(&PhpType::int()),
+            ));
         }
 
         // ── Builder-as-static forwarding ────────────────────────────

@@ -777,9 +777,8 @@ impl Backend {
         // We specifically look for return types whose base type is
         // the Eloquent Builder and extract the first generic arg as
         // the model name.
-        let extract_model_from_builder_ret = |ret: &str| -> Option<String> {
-            let parsed = crate::php_type::PhpType::parse(ret);
-            match &parsed {
+        let extract_model_from_builder_ret = |ret: &crate::php_type::PhpType| -> Option<String> {
+            match ret {
                 crate::php_type::PhpType::Generic(base, args) if !args.is_empty() => {
                     // Check that the base type is the Eloquent Builder.
                     if base != ELOQUENT_BUILDER_FQN && base != "Builder" {
@@ -798,17 +797,18 @@ impl Backend {
         // the model name.  All scope methods on the same
         // Builder<Model> instance share the same model, so any match
         // is valid.
-        let scope_ret_str = scope_method.return_type_str();
-        let model_name = scope_ret_str
-            .as_deref()
+        let model_name = scope_method
+            .return_type
+            .as_ref()
             .and_then(&extract_model_from_builder_ret)
             .or_else(|| {
                 resolved_candidate.methods.iter().find_map(|m| {
                     if m.is_static {
                         return None;
                     }
-                    let ret_str = m.return_type_str();
-                    ret_str.as_deref().and_then(&extract_model_from_builder_ret)
+                    m.return_type
+                        .as_ref()
+                        .and_then(&extract_model_from_builder_ret)
                 })
             })?;
 

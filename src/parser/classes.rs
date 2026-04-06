@@ -329,25 +329,37 @@ fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Opti
     let return_type_str = return_type.to_string();
 
     // Strip generic parameters (e.g. `TaskCollection<int, static>` → `TaskCollection`).
+    // `base_name()` already strips leading `\`, so `base` is suitable for
+    // comparison but not for returning to `resolve_name` which needs the
+    // original form (with leading `\` for FQNs) to resolve correctly.
     let base = return_type.base_name().unwrap_or(return_type_str.as_str());
-
-    // Compare without leading backslash for the standard Collection check,
-    // but preserve the original form so that `resolve_name` in
-    // `resolve_parent_class_names` can correctly handle both FQN
-    // (`\App\Collections\X`) and short names (`X`) via the use map.
-    let stripped = strip_fqn_prefix(base);
 
     // Ignore the standard Eloquent Collection — that's the default, not
     // a custom override.
-    if stripped == "Illuminate\\Database\\Eloquent\\Collection" || stripped == "Collection" {
+    if base == "Illuminate\\Database\\Eloquent\\Collection" || base == "Collection" {
         return None;
     }
 
-    if stripped.is_empty() {
+    if base.is_empty() {
         return None;
     }
 
-    Some(base.to_string())
+    // Use `return_type_str` to preserve the original form (including a
+    // leading `\` for FQNs) so that `resolve_name` in
+    // `resolve_parent_class_names` can distinguish FQN from short names.
+    // For generic return types like `TaskCollection<int, static>`, fall
+    // back to `base` (which has generics stripped by `base_name()`).
+    let raw = strip_fqn_prefix(&return_type_str);
+    if raw == base {
+        // No generics were stripped — use the original string which
+        // preserves the leading `\` when present.
+        Some(return_type_str)
+    } else {
+        // Generics were stripped by `base_name()`; the original string
+        // cannot be used as-is. `base` is already without `\`, which is
+        // the canonical FQN form used throughout the codebase.
+        Some(base.to_string())
+    }
 }
 
 /// Extract Eloquent cast definitions from a class's members.
@@ -583,65 +595,12 @@ fn parse_attributes_array(text: &str) -> Vec<(String, String)> {
             continue;
         }
 
-        if let Some(php_type) = infer_type_from_literal(value_part) {
-            results.push((key, php_type));
+        if let Some(php_type) = crate::util::infer_type_from_literal(value_part) {
+            results.push((key, php_type.to_string()));
         }
     }
 
     results
-}
-
-/// Infer a PHP type from a literal value in source text.
-///
-/// Recognises:
-/// - `true` / `false` → `"bool"`
-/// - `null` → `"null"`
-/// - Integer literals (e.g. `0`, `-42`) → `"int"`
-/// - Float literals (e.g. `1.5`, `-0.1`) → `"float"`
-/// - Single- or double-quoted strings → `"string"`
-/// - Array literals `[...]` → `"array"`
-///
-/// Returns `None` for unrecognised expressions (function calls,
-/// constants, variables, etc.).
-fn infer_type_from_literal(value: &str) -> Option<String> {
-    let v = value.trim();
-    if v.is_empty() {
-        return None;
-    }
-
-    let lower = v.to_lowercase();
-
-    // Boolean literals
-    if lower == "true" || lower == "false" {
-        return Some("bool".to_string());
-    }
-
-    // Null literal
-    if lower == "null" {
-        return Some("null".to_string());
-    }
-
-    // String literals (single or double quoted)
-    if (v.starts_with('\'') && v.ends_with('\'')) || (v.starts_with('"') && v.ends_with('"')) {
-        return Some("string".to_string());
-    }
-
-    // Array literal
-    if v.starts_with('[') {
-        return Some("array".to_string());
-    }
-
-    // Numeric literals — try float first (contains `.`), then int.
-    // Strip optional leading `-` for negative numbers.
-    let numeric = v.strip_prefix('-').unwrap_or(v).trim();
-    if !numeric.is_empty() && numeric.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-        if numeric.contains('.') {
-            return Some("float".to_string());
-        }
-        return Some("int".to_string());
-    }
-
-    None
 }
 
 /// Extract timestamp configuration from a model class.
@@ -845,7 +804,7 @@ fn parse_string_list(text: &str) -> Vec<String> {
 fn infer_relationship_from_method<'a>(
     method: &Method<'a>,
     doc_ctx: Option<&DocblockCtx<'a>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     let ctx = doc_ctx?;
     let MethodBody::Concrete(block) = &method.body else {
         return None;
@@ -2059,7 +2018,7 @@ impl Backend {
                     // For example, `$this->hasMany(Post::class)` produces
                     // a return type of `HasMany<Post>`.
                     let return_type = if return_type.is_none() {
-                        infer_relationship_from_method(method, doc_ctx).map(|s| PhpType::parse(&s))
+                        infer_relationship_from_method(method, doc_ctx)
                     } else {
                         return_type
                     };

@@ -180,7 +180,6 @@ pub(in crate::completion) fn try_resolve_foreach_value_type<'b>(
 
         let foreach_offset = foreach.foreach.span().start.offset as usize;
         docblock::find_iterable_raw_type_in_source(ctx.content, foreach_offset, expr_text)
-            .map(|s| PhpType::parse(&s))
     })
     .or_else(|| {
         // Fallback 2: for simple `$variable` expressions, resolve the
@@ -235,9 +234,8 @@ pub(in crate::completion) fn try_resolve_foreach_value_type<'b>(
     // `@phpstan-type UserList array<int, User>`), expand it so that
     // `PhpType::extract_value_type` can see the underlying generic type.
     let raw_type = raw_type.map(|rt| {
-        let rt_str = rt.to_string();
-        crate::completion::type_resolution::resolve_type_alias(
-            &rt_str,
+        crate::completion::type_resolution::resolve_type_alias_typed(
+            &rt,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
@@ -296,7 +294,7 @@ pub(in crate::completion) fn try_resolve_foreach_value_type<'b>(
         if let Some(value_type) =
             extract_iterable_element_type_from_class(&merged, ctx.class_loader)
         {
-            push_foreach_resolved_types(&value_type, ctx, results, conditional);
+            push_foreach_resolved_types_typed(&value_type, ctx, results, conditional);
             return;
         }
     }
@@ -354,7 +352,6 @@ pub(in crate::completion) fn try_resolve_foreach_key_type<'b>(
 
             let foreach_offset = foreach.foreach.span().start.offset as usize;
             docblock::find_iterable_raw_type_in_source(ctx.content, foreach_offset, expr_text)
-                .map(|s| PhpType::parse(&s))
         })
         .or_else(|| {
             // Fallback 2: for simple `$variable` expressions, resolve the
@@ -403,9 +400,8 @@ pub(in crate::completion) fn try_resolve_foreach_key_type<'b>(
     // expand it so that `PhpType::extract_key_type` can see the underlying
     // generic type.
     let raw_type = raw_type.map(|rt| {
-        let rt_str = rt.to_string();
-        crate::completion::type_resolution::resolve_type_alias(
-            &rt_str,
+        crate::completion::type_resolution::resolve_type_alias_typed(
+            &rt,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
@@ -443,7 +439,7 @@ pub(in crate::completion) fn try_resolve_foreach_key_type<'b>(
             ctx.resolved_class_cache,
         );
         if let Some(key_type) = extract_iterable_key_type_from_class(&merged, ctx.class_loader) {
-            push_foreach_resolved_types(&key_type, ctx, results, conditional);
+            push_foreach_resolved_types_typed(&key_type, ctx, results, conditional);
             return;
         }
     }
@@ -452,19 +448,7 @@ pub(in crate::completion) fn try_resolve_foreach_key_type<'b>(
 /// Push resolved foreach element types into the results list.
 ///
 /// Shared by both value and key foreach resolution paths: resolves a
-/// type string to `ResolvedType`(s) and merges them into `results`.
-fn push_foreach_resolved_types(
-    type_str: &str,
-    ctx: &VarResolutionCtx<'_>,
-    results: &mut Vec<ResolvedType>,
-    conditional: bool,
-) {
-    let parsed = PhpType::parse(type_str);
-    push_foreach_resolved_types_typed(&parsed, ctx, results, conditional);
-}
-
-/// Like [`push_foreach_resolved_types`] but accepts a pre-parsed [`PhpType`]
-/// to avoid a parse→stringify→reparse round-trip.
+/// `PhpType` to `ResolvedType`(s) and merges them into `results`.
 fn push_foreach_resolved_types_typed(
     ty: &PhpType,
     ctx: &VarResolutionCtx<'_>,
@@ -555,14 +539,14 @@ const ITERABLE_IFACE_NAMES: &[&str] = &[
 pub(in crate::completion) fn extract_iterable_element_type_from_class(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     // 1. Check implements_generics for known iterable interfaces.
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
             let value = args.last().unwrap();
             if !value.is_scalar() {
-                return Some(value.to_string());
+                return Some(value.clone());
             }
         }
     }
@@ -579,7 +563,7 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
         {
             let value = args.last().unwrap();
             if !value.is_scalar() {
-                return Some(value.to_string());
+                return Some(value.clone());
             }
         }
     }
@@ -590,7 +574,7 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
         if !args.is_empty() {
             let value = args.last().unwrap();
             if !value.is_scalar() {
-                return Some(value.to_string());
+                return Some(value.clone());
             }
         }
     }
@@ -609,14 +593,14 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
 fn extract_iterable_key_type_from_class(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     // 1. Check implements_generics for known iterable interfaces.
     for (name, args) in &class.implements_generics {
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && args.len() >= 2 {
             let key = &args[0];
             if !key.is_scalar() {
-                return Some(key.to_string());
+                return Some(key.clone());
             }
         }
     }
@@ -632,7 +616,7 @@ fn extract_iterable_key_type_from_class(
         {
             let key = &args[0];
             if !key.is_scalar() {
-                return Some(key.to_string());
+                return Some(key.clone());
             }
         }
     }
@@ -642,7 +626,7 @@ fn extract_iterable_key_type_from_class(
         if args.len() >= 2 {
             let key = &args[0];
             if !key.is_scalar() {
-                return Some(key.to_string());
+                return Some(key.clone());
             }
         }
     }
@@ -817,9 +801,8 @@ pub(in crate::completion) fn try_resolve_destructured_type<'b>(
     // that `extract_array_shape_value_type` and
     // `PhpType::extract_value_type` can see the underlying type.
     let raw_type = raw_type.map(|rt| {
-        let rt_str = rt.to_string();
-        crate::completion::type_resolution::resolve_type_alias(
-            &rt_str,
+        crate::completion::type_resolution::resolve_type_alias_typed(
+            &rt,
             current_class_name,
             all_classes,
             class_loader,

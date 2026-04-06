@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **PhpType migration complete.** All type-string manipulation now uses structured `PhpType` operations. Over 60 call sites that round-tripped through `PhpType::parse()` and `.to_string()` have been eliminated, type construction uses `PhpType` constructors instead of `format!`, and ad-hoc string parsers (`strip_generic_params`, `find_phpdoc_type_end`, naive bracket matching) have been replaced with proper `PhpType` methods and `split_type_token`. Duplicated keyword lists, literal-type inference functions, and type-shortening logic have been consolidated into shared utilities. Return type inference, iterable type inference, PHPDoc tag editing, method stub generation, and diagnostics all operate on structured types end-to-end.
+
 ### Added
 
 - **`@psalm-return`, `@psalm-param`, and `@psalm-var` tag support.** Psalm-prefixed docblock tags are now recognized alongside their PHPStan equivalents for return types, parameter types, variable types, conditional return types, template parameter bindings, and semantic token highlighting.

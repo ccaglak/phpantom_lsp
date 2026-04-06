@@ -699,7 +699,7 @@ pub fn build_phpdoc_completions(
                     continue;
                 }
                 if let Some(ref ret) = sym.return_type
-                    && ret != "void"
+                    && !PhpType::parse(ret).is_void()
                 {
                     // Plain label for display.
                     let parsed_ret = PhpType::parse(ret);

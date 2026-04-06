@@ -175,7 +175,6 @@ pub(super) fn build_param_return_section(
             (Some(eff_type), None) => !eff_type.is_mixed(),
             _ => false,
         };
-        let eff_str = p.type_hint_str();
         let has_desc = p.description.as_ref().is_some_and(|d| !d.is_empty());
 
         if !type_differs && !has_desc {
@@ -184,8 +183,8 @@ pub(super) fn build_param_return_section(
 
         let mut entry = format!("**{}**", p.name);
         if type_differs {
-            if let Some(ref eff) = eff_str {
-                entry.push_str(&format!(" `{}`", shorten_type_string(eff)));
+            if let Some(ref eff_type) = p.type_hint {
+                entry.push_str(&format!(" `{}`", shorten_php_type(eff_type)));
             }
             if p.is_variadic {
                 entry.push_str(" ...");
@@ -539,6 +538,7 @@ pub(crate) fn extract_docblock_description(docblock: Option<&str>) -> Option<Str
 ///   - `"App\\Models\\User"` → `"User"`
 ///   - `"list<App\\Models\\User>"` → `"list<User>"`
 ///   - `"App\\Foo|App\\Bar|null"` → `"Foo|Bar|null"`
+#[cfg(test)]
 pub(crate) fn shorten_type_string(ty: &str) -> String {
     use crate::php_type::PhpType;
 

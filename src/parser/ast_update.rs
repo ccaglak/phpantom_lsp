@@ -1005,6 +1005,15 @@ impl Backend {
         }
     }
 
+    /// Resolve class-like identifiers within a [`PhpType`] to their
+    /// fully-qualified forms, using `PhpType::resolve_names()`.
+    ///
+    /// This is for callers that already have a parsed `PhpType`, avoiding
+    /// a redundant parse→stringify→parse cycle.
+    fn resolve_type_via_php_type(ty: &PhpType, resolver: &dyn Fn(&str) -> String) -> PhpType {
+        ty.resolve_names(resolver)
+    }
+
     /// Resolve class-like identifiers within a type string to their
     /// fully-qualified forms, using `PhpType::resolve_names()`.
     ///
@@ -1016,9 +1025,7 @@ impl Backend {
         type_str: &str,
         resolver: &dyn Fn(&str) -> String,
     ) -> String {
-        let parsed = PhpType::parse(type_str);
-        let resolved = parsed.resolve_names(resolver);
-        resolved.to_string()
+        Self::resolve_type_via_php_type(&PhpType::parse(type_str), resolver).to_string()
     }
 
     /// Resolve a class name to its fully-qualified form given a use_map and

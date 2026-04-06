@@ -598,13 +598,13 @@ fn resolve_closure_this_type(
     owner: Option<&ClassInfo>,
     ctx: &ResolutionCtx<'_>,
 ) -> Option<ClassInfo> {
-    let raw_type = php_type.to_string();
-    let type_str = raw_type.trim_start_matches('\\');
-
     // `$this`, `static`, and `self` all refer to the declaring class.
-    if type_str == "$this" || type_str == "static" || type_str == "self" {
+    if php_type.is_self_like() {
         return owner.cloned().or_else(|| ctx.current_class.cloned());
     }
+
+    // Extract the base class name without stringifying.
+    let type_str = php_type.base_name()?;
 
     // Try local classes first, then the cross-file loader.
     if let Some(cls) = ctx.all_classes.iter().find(|c| c.name == type_str) {
@@ -1241,7 +1241,7 @@ pub(in crate::completion) fn try_standalone_var_docblock(
         ctx.cursor_offset as usize,
         ctx.var_name,
     ) {
-        let parsed = PhpType::parse(&raw_type);
+        let parsed = raw_type;
         let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
             &parsed,
             &ctx.current_class.name,
@@ -1373,16 +1373,16 @@ fn resolve_closure_params_with_inferred(
                     param_start,
                     ctx.var_name,
                 );
-                if let Some(ref dt) = docblock_type {
-                    let parsed_dt = PhpType::parse(dt);
+                if let Some(ref parsed_dt) = docblock_type {
                     let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
-                        &parsed_dt,
+                        parsed_dt,
                         &ctx.current_class.name,
                         ctx.all_classes,
                         ctx.class_loader,
                     );
                     if !resolved.is_empty() {
-                        *results = ResolvedType::from_classes_with_hint(resolved, parsed_dt);
+                        *results =
+                            ResolvedType::from_classes_with_hint(resolved, parsed_dt.clone());
                         break;
                     }
                 }
@@ -1391,8 +1391,8 @@ fn resolve_closure_params_with_inferred(
                 // hover and diagnostics can see the parameter's type
                 // even when it's a scalar.  Prefer the docblock type
                 // over the native type when available.
-                let best_type = docblock_type.unwrap_or(type_str);
-                *results = vec![ResolvedType::from_type_string(PhpType::parse(&best_type))];
+                let best_type = docblock_type.unwrap_or_else(|| PhpType::parse(&type_str));
+                *results = vec![ResolvedType::from_type_string(best_type)];
                 break;
             }
             // 2. Fall back to the inferred type from the callable
@@ -1880,10 +1880,9 @@ fn extract_generic_args_from_methods(class: &ClassInfo, class_fqn: &str) -> Opti
             let base_short = crate::util::short_name(base);
             if (base == class_fqn || base_short.eq_ignore_ascii_case(class_short))
                 && !args.is_empty()
-                && args.iter().all(|a| {
-                    let s = a.to_string();
-                    !class.template_params.contains(&s)
-                })
+                && args
+                    .iter()
+                    .all(|a| !matches!(a, PhpType::Named(n) if class.template_params.contains(n)))
             {
                 return Some(args.clone());
             }
@@ -1922,18 +1921,15 @@ fn find_model_from_receivers(
 /// scanning its method return types for `Builder<X>` and returning `X`.
 fn extract_model_from_builder(builder: &ClassInfo) -> Option<String> {
     for method in &builder.methods {
-        if let Some(ref ret) = method.return_type {
-            let ret_str = ret.to_string();
-            let parsed = PhpType::parse(&ret_str);
-            if let PhpType::Generic(base, args) = &parsed
-                && !args.is_empty()
-                && (base == ELOQUENT_BUILDER_FQN || base == "Builder")
-            {
-                let model = args[0].to_string();
-                // Skip unsubstituted template params like "TModel".
-                if !model.is_empty() && model != "TModel" {
-                    return Some(model);
-                }
+        if let Some(ref ret) = method.return_type
+            && let PhpType::Generic(base, args) = ret
+            && !args.is_empty()
+            && (base == ELOQUENT_BUILDER_FQN || base == "Builder")
+        {
+            let model = args[0].to_string();
+            // Skip unsubstituted template params like "TModel".
+            if !model.is_empty() && model != "TModel" {
+                return Some(model);
             }
         }
     }

@@ -802,12 +802,12 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
             // ExpectedType $actual`), substitute it using the call-site
             // argument bound via `class-string<T>`.
             let effective_type =
-                resolve_assertion_template_type(&assertion.asserted_type.to_string(), &info, ctx);
+                resolve_assertion_template_type(&assertion.asserted_type, &info, ctx);
 
             if assertion.negated {
-                apply_instanceof_exclusion(&effective_type, ctx, results);
+                apply_instanceof_exclusion_typed(&effective_type, ctx, results);
             } else {
-                apply_instanceof_inclusion(&effective_type, false, ctx, results);
+                apply_instanceof_inclusion_typed(&effective_type, false, ctx, results);
             }
         }
     }
@@ -832,45 +832,44 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
 /// Returns the original type unchanged when it is not a template param
 /// or when the concrete type cannot be determined.
 fn resolve_assertion_template_type(
-    asserted_type: &str,
+    asserted_type: &PhpType,
     info: &CallAssertionInfo<'_>,
     ctx: &VarResolutionCtx<'_>,
-) -> String {
+) -> PhpType {
     // Check if the asserted type is a template parameter.
-    if !info.template_params.iter().any(|t| t == asserted_type) {
-        return asserted_type.to_string();
-    }
+    let tpl_name = match asserted_type {
+        PhpType::Named(n) if info.template_params.iter().any(|t| t == n) => n.as_str(),
+        _ => return asserted_type.clone(),
+    };
 
     // Find the parameter name that binds this template param.
     let bound_param = info
         .template_bindings
         .iter()
-        .find(|(tpl, _)| tpl == asserted_type)
+        .find(|(tpl, _)| tpl == tpl_name)
         .map(|(_, param)| param.as_str());
 
     let bound_param = match bound_param {
         Some(p) => p,
-        None => return asserted_type.to_string(),
+        None => return asserted_type.clone(),
     };
 
     // Find the positional index of that parameter.
     let param_idx = match info.parameters.iter().position(|p| p.name == bound_param) {
         Some(idx) => idx,
-        None => return asserted_type.to_string(),
+        None => return asserted_type.clone(),
     };
 
     // Get the call-site argument at that position.
     let arg_expr = match info.argument_list.arguments.iter().nth(param_idx) {
         Some(Argument::Positional(pos)) => pos.value,
         Some(Argument::Named(named)) => named.value,
-        None => return asserted_type.to_string(),
+        None => return asserted_type.clone(),
     };
 
     // Try to extract a class name from the argument expression.
-    // Handles `Foo::class` and `\Foo\Bar::class`.
-    // Reuses the existing helper from the conditional module.
     if let Some(class_name) = extract_class_string_from_expr(arg_expr) {
-        return class_name;
+        return PhpType::Named(class_name);
     }
 
     // Try to resolve a variable argument's class-string type.
@@ -886,11 +885,11 @@ fn resolve_assertion_template_type(
                 ctx.class_loader,
             );
         if let Some(first) = targets.into_iter().next() {
-            return first.name;
+            return PhpType::Named(first.name);
         }
     }
 
-    asserted_type.to_string()
+    asserted_type.clone()
 }
 
 /// Apply narrowing from `@phpstan-assert-if-true` / `-if-false`
@@ -1041,11 +1040,10 @@ fn apply_this_assert_condition_narrowing(
     }
 
     for (asserted_type, should_exclude) in to_apply {
-        let type_str = asserted_type.to_string();
         if should_exclude {
-            apply_instanceof_exclusion(&type_str, ctx, results);
+            apply_instanceof_exclusion_typed(&asserted_type, ctx, results);
         } else {
-            apply_instanceof_inclusion(&type_str, false, ctx, results);
+            apply_instanceof_inclusion_typed(&asserted_type, false, ctx, results);
         }
     }
 }
@@ -2130,10 +2128,10 @@ fn try_extract_in_array<'b>(
 fn resolve_in_array_element_type(
     haystack_expr: &Expression<'_>,
     ctx: &VarResolutionCtx<'_>,
-) -> Option<String> {
+) -> Option<PhpType> {
     let raw_type =
         crate::completion::variable::resolution::resolve_arg_raw_type(haystack_expr, ctx)?;
-    raw_type.extract_element_type().map(|t| t.to_string())
+    raw_type.extract_element_type().cloned()
 }
 
 /// Apply `in_array($var, $haystack, true)` narrowing when the call
@@ -2159,9 +2157,9 @@ pub(in crate::completion) fn try_apply_in_array_narrowing(
             if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
                 return;
             }
-            apply_instanceof_exclusion(&element_type, ctx, results);
+            apply_instanceof_exclusion_typed(&element_type, ctx, results);
         } else {
-            apply_instanceof_inclusion(&element_type, false, ctx, results);
+            apply_instanceof_inclusion_typed(&element_type, false, ctx, results);
         }
     }
 }
@@ -2187,12 +2185,12 @@ pub(in crate::completion) fn try_apply_in_array_narrowing_inverse(
     {
         // Flip polarity for the else branch.
         if negated {
-            apply_instanceof_inclusion(&element_type, false, ctx, results);
+            apply_instanceof_inclusion_typed(&element_type, false, ctx, results);
         } else {
             if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
                 return;
             }
-            apply_instanceof_exclusion(&element_type, ctx, results);
+            apply_instanceof_exclusion_typed(&element_type, ctx, results);
         }
     }
 }
@@ -2209,13 +2207,12 @@ pub(in crate::completion) fn try_apply_in_array_narrowing_inverse(
 /// `BackedEnum` from the resolved types — the variable is still a
 /// `BackedEnum`, just not one of the excluded values.
 fn would_exclude_all_results(
-    element_type: &str,
+    element_type: &PhpType,
     results: &[ClassInfo],
     ctx: &VarResolutionCtx<'_>,
 ) -> bool {
-    let parsed = PhpType::parse(element_type);
     let excluded = super::resolution::type_hint_to_classes_typed(
-        &parsed,
+        element_type,
         &ctx.current_class.name,
         ctx.all_classes,
         ctx.class_loader,
@@ -2257,7 +2254,7 @@ pub(in crate::completion) fn apply_guard_clause_in_array_narrowing(
         // Positive in_array + exit → exclude (var is NOT in haystack)
         // Negated in_array + exit → include (var IS in haystack)
         if condition_negated {
-            apply_instanceof_inclusion(&element_type, false, ctx, results);
+            apply_instanceof_inclusion_typed(&element_type, false, ctx, results);
         } else {
             // Skip exclusion when it would remove ALL type information.
             // `in_array($item, $exclude)` where both `$item` and the
@@ -2268,7 +2265,7 @@ pub(in crate::completion) fn apply_guard_clause_in_array_narrowing(
             if !results.is_empty() && would_exclude_all_results(&element_type, results, ctx) {
                 return;
             }
-            apply_instanceof_exclusion(&element_type, ctx, results);
+            apply_instanceof_exclusion_typed(&element_type, ctx, results);
         }
     }
 }
@@ -2813,9 +2810,7 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
             // `is_object($mixed)` → `object`).  In the else-body
             // (`keep_matching = false`), `mixed` minus one kind is
             // still effectively `mixed`, so leave it unchanged.
-            if let PhpType::Named(name) = other
-                && name.eq_ignore_ascii_case("mixed")
-            {
+            if other.is_mixed() {
                 return if keep_matching {
                     Some(guard_kind_to_narrowed_type(kind))
                 } else {

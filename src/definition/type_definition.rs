@@ -163,7 +163,7 @@ impl Backend {
                     .iter()
                     .find(|m| m.name.eq_ignore_ascii_case(member_name))
                 {
-                    let default_type = PhpType::parse("");
+                    let default_type = PhpType::Named(String::new());
                     let ret_type = method.return_type.as_ref().unwrap_or(&default_type);
 
                     // Replace self/static/$this with the owning class name.
@@ -177,7 +177,7 @@ impl Backend {
             } else {
                 // Property access — resolve the property type.
                 if let Some(prop) = merged.properties.iter().find(|p| p.name == member_name) {
-                    let default_type = PhpType::parse("");
+                    let default_type = PhpType::Named(String::new());
                     let prop_type = prop.type_hint.as_ref().unwrap_or(&default_type);
 
                     let resolved = prop_type.replace_self(&merged.name);
@@ -190,7 +190,7 @@ impl Backend {
 
                 // Constants.
                 if let Some(constant) = merged.constants.iter().find(|c| c.name == member_name) {
-                    let default_type = PhpType::parse("");
+                    let default_type = PhpType::Named(String::new());
                     let const_type = constant.type_hint.as_ref().unwrap_or(&default_type);
 
                     let names = const_type.top_level_class_names();
@@ -217,7 +217,7 @@ impl Backend {
 
         for candidate in &candidates {
             if let Some(func) = function_loader(candidate) {
-                let default_type = PhpType::parse("");
+                let default_type = PhpType::Named(String::new());
                 let ret_type = func.return_type.as_ref().unwrap_or(&default_type);
 
                 let names = ret_type.top_level_class_names();
@@ -242,7 +242,7 @@ impl Backend {
         let mut locations = Vec::new();
 
         for name in type_names {
-            if PhpType::parse(name).is_scalar() {
+            if crate::php_type::is_scalar_name_pub(name) {
                 continue;
             }
 
@@ -324,7 +324,7 @@ fn resolve_variable_type_names(
     types
         .into_iter()
         .map(|c| c.name.clone())
-        .filter(|n| !PhpType::parse(n).is_scalar())
+        .filter(|n| !crate::php_type::is_scalar_name_pub(n))
         .collect()
 }
 

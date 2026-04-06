@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::enrich_builder_type_in_scope;
+use crate::php_type::PhpType;
 use crate::test_fixtures::make_class;
 
 use crate::completion::resolver::Loaders;
@@ -29,7 +30,7 @@ fn enrich_scope_method_with_builder_type() {
     let model = make_model("App\\Models\\User");
     let result =
         enrich_builder_type_in_scope("Builder", "scopeActive", false, &model, &model_loader);
-    assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
+    assert_eq!(result, Some(PhpType::parse("Builder<App\\Models\\User>")));
 }
 
 #[test]
@@ -44,7 +45,9 @@ fn enrich_scope_method_with_fqn_builder() {
     );
     assert_eq!(
         result,
-        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
+        Some(PhpType::parse(
+            "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"
+        ))
     );
 }
 
@@ -91,7 +94,7 @@ fn enrich_scope_multi_word_method_name() {
     let model = make_model("App\\Models\\User");
     let result =
         enrich_builder_type_in_scope("Builder", "scopeByAuthor", false, &model, &model_loader);
-    assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
+    assert_eq!(result, Some(PhpType::parse("Builder<App\\Models\\User>")));
 }
 
 #[test]
@@ -106,7 +109,9 @@ fn enrich_scope_with_fqn_builder() {
     );
     assert_eq!(
         result,
-        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
+        Some(PhpType::parse(
+            "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"
+        ))
     );
 }
 
@@ -116,7 +121,7 @@ fn enrich_scope_with_fqn_builder() {
 fn enrich_scope_attribute_method_with_builder_type() {
     let model = make_model("App\\Models\\User");
     let result = enrich_builder_type_in_scope("Builder", "active", true, &model, &model_loader);
-    assert_eq!(result, Some("Builder<App\\Models\\User>".to_string()));
+    assert_eq!(result, Some(PhpType::parse("Builder<App\\Models\\User>")));
 }
 
 #[test]
@@ -131,7 +136,9 @@ fn enrich_scope_attribute_with_fqn_builder() {
     );
     assert_eq!(
         result,
-        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
+        Some(PhpType::parse(
+            "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"
+        ))
     );
 }
 

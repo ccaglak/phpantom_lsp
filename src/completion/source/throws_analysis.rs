@@ -29,6 +29,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::Position;
 
 use super::comment_position::position_to_byte_offset;
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, FunctionLoader};
 use crate::util::short_name;
 
@@ -456,14 +457,13 @@ pub(crate) fn find_method_return_type(file_content: &str, method_name: &str) -> 
             if let Some(rest) = after_close.strip_prefix(':') {
                 let rest = rest.trim_start();
                 let type_end = rest.find(['{', ';']).unwrap_or(rest.len());
-                let type_str = rest[..type_end].trim().trim_start_matches('?');
+                let type_str = rest[..type_end].trim();
                 if !type_str.is_empty() {
-                    let short = type_str
-                        .trim_start_matches('\\')
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or(type_str);
-                    return Some(short.to_string());
+                    let parsed = PhpType::parse(type_str);
+                    let non_null = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+                    if let Some(name) = non_null.base_name() {
+                        return Some(name.to_string());
+                    }
                 }
             }
         }
@@ -479,15 +479,14 @@ pub(crate) fn find_method_return_type(file_content: &str, method_name: &str) -> 
                 if let Some(tag) = info.first_tag_by_kind(TagKind::Return) {
                     let rest = tag.description.trim();
                     if let Some(type_str) = rest.split_whitespace().next() {
-                        let clean = type_str.trim_start_matches('\\').trim_start_matches('?');
-                        let short = short_name(clean);
-                        if !short.is_empty()
-                            && short != "void"
-                            && short != "mixed"
-                            && short != "self"
-                            && short != "static"
+                        let parsed = PhpType::parse(type_str);
+                        let non_null = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+                        if let Some(name) = non_null.base_name()
+                            && !parsed.is_void()
+                            && !parsed.is_mixed()
+                            && !parsed.is_self_like()
                         {
-                            return Some(short.to_string());
+                            return Some(name.to_string());
                         }
                     }
                 }
@@ -1243,11 +1242,17 @@ fn parse_param_type_map(signature: &str) -> Vec<(String, String)> {
             continue;
         }
 
-        // Clean the type: strip leading `?` for nullable, strip leading `\`.
-        let cleaned_type = type_token.trim_start_matches('?').trim_start_matches('\\');
-
-        if !cleaned_type.is_empty() {
-            result.push((var_name.to_string(), cleaned_type.to_string()));
+        // Clean the type: strip nullable wrapper and extract base name.
+        let parsed = PhpType::parse(type_token);
+        let non_null = parsed.non_null_type().unwrap_or_else(|| parsed.clone());
+        if let Some(name) = non_null.base_name() {
+            result.push((var_name.to_string(), name.to_string()));
+        } else {
+            // Fallback for scalars and other non-class types.
+            let cleaned_type = type_token.trim_start_matches('?').trim_start_matches('\\');
+            if !cleaned_type.is_empty() {
+                result.push((var_name.to_string(), cleaned_type.to_string()));
+            }
         }
     }
 

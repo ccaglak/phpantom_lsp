@@ -453,7 +453,7 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
 fn type_specificity(hint: &Option<PhpType>) -> u8 {
     match hint {
         None => 0,
-        Some(PhpType::Named(n)) if n == "mixed" => 0,
+        Some(t) if t.is_mixed() => 0,
         Some(PhpType::Raw(s)) if s.trim().is_empty() => 0,
         Some(t) if t.has_type_structure() => 2,
         Some(_) => 1,

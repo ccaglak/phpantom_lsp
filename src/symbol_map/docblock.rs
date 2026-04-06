@@ -27,76 +27,6 @@ use crate::util::strip_fqn_prefix;
 
 // ─── Navigability filter ────────────────────────────────────────────────────
 
-/// Non-navigable type names (scalars, pseudo-types, PHPStan utility types).
-/// Types in this list are skipped when extracting docblock symbol spans.
-const NON_NAVIGABLE: &[&str] = &[
-    "int",
-    "integer",
-    "float",
-    "double",
-    "string",
-    "bool",
-    "boolean",
-    "array",
-    "object",
-    "mixed",
-    "void",
-    "null",
-    "true",
-    "false",
-    "never",
-    "resource",
-    "callable",
-    "iterable",
-    "static",
-    "self",
-    "parent",
-    "class-string",
-    "positive-int",
-    "negative-int",
-    "non-empty-string",
-    "non-empty-array",
-    "non-empty-list",
-    "numeric-string",
-    "numeric",
-    "scalar",
-    "list",
-    "non-falsy-string",
-    "literal-string",
-    "callable-string",
-    "array-key",
-    "value-of",
-    "key-of",
-    "int-mask",
-    "int-mask-of",
-    "no-return",
-    "empty",
-    "number",
-    "non-positive-int",
-    "non-negative-int",
-    "non-zero-int",
-    "truthy-string",
-    "lowercase-string",
-    "uppercase-string",
-    "non-empty-lowercase-string",
-    "non-empty-uppercase-string",
-    "non-empty-literal-string",
-    "associative-array",
-    "interface-string",
-    "trait-string",
-    "enum-string",
-    "empty-scalar",
-    "non-empty-scalar",
-    "non-empty-mixed",
-    "callable-object",
-    "callable-array",
-    "closed-resource",
-    "open-resource",
-    "never-return",
-    "never-returns",
-    "noreturn",
-];
-
 /// Returns `true` when a type name refers to a class/interface that the
 /// user should be able to navigate to.
 ///
@@ -106,11 +36,11 @@ const NON_NAVIGABLE: &[&str] = &[
 pub(crate) fn is_navigable_type(name: &str) -> bool {
     let base = name.split('<').next().unwrap_or(name);
     let base = base.split('{').next().unwrap_or(base);
-    let lower = base.trim().to_ascii_lowercase();
-    if lower.is_empty() {
+    let base = base.trim();
+    if base.is_empty() {
         return false;
     }
-    !NON_NAVIGABLE.contains(&lower.as_str())
+    !crate::php_type::is_keyword_type(base)
 }
 
 // ─── Span construction helpers ──────────────────────────────────────────────

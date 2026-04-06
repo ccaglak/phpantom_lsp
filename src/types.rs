@@ -758,10 +758,19 @@ impl PropertyInfo {
     /// }
     /// ```
     pub fn virtual_property(name: &str, type_hint: Option<&str>) -> Self {
+        Self::virtual_property_typed(name, type_hint.map(PhpType::parse).as_ref())
+    }
+
+    /// Create a virtual property from a pre-parsed [`PhpType`].
+    ///
+    /// Same as [`virtual_property`](Self::virtual_property) but avoids a
+    /// `PhpType → String → PhpType` round-trip when the caller already
+    /// holds a `PhpType`.
+    pub fn virtual_property_typed(name: &str, type_hint: Option<&PhpType>) -> Self {
         Self {
             name: name.to_string(),
             name_offset: 0,
-            type_hint: type_hint.map(PhpType::parse),
+            type_hint: type_hint.cloned(),
             native_type_hint: None,
             description: None,
             is_static: false,

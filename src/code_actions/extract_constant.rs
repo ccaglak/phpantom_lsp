@@ -22,6 +22,7 @@ use crate::Backend;
 use crate::code_actions::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::types::PhpVersion;
+use crate::util::infer_type_from_literal;
 use crate::util::{find_identical_occurrences, offset_to_position, position_to_byte_offset};
 
 // ─── Literal detection ──────────────────────────────────────────────────────
@@ -266,43 +267,48 @@ fn literal_type_name(value: &str) -> Option<&'static str> {
         return None;
     }
 
-    // String literals
-    if (t.starts_with('\'') && t.ends_with('\'')) || (t.starts_with('"') && t.ends_with('"')) {
-        return Some("string");
-    }
-
-    // Boolean
-    let lower = t.to_ascii_lowercase();
-    if lower == "true" || lower == "false" {
-        return Some("bool");
-    }
-
     // null — PHP does not allow `null` as a typed constant type
-    if lower == "null" {
+    if t.eq_ignore_ascii_case("null") {
         return None;
     }
 
-    // Negative numeric (check before concat — `-3.14` contains `.`)
+    // Negative numeric — strip the `-` prefix and delegate for the
+    // absolute part so `infer_type_from_literal` handles the rest.
     if let Some(stripped) = t.strip_prefix('-') {
         let abs = stripped.trim_start();
-        if abs.contains('.') || abs.contains('e') || abs.contains('E') {
-            return Some("float");
-        }
-        if is_numeric_literal(abs) {
-            return Some("int");
+        if let Some(ty) = infer_type_from_literal(abs) {
+            if ty.is_int() {
+                return Some("int");
+            }
+            if ty.is_float() {
+                return Some("float");
+            }
         }
         return None;
     }
 
-    // Numeric literal (check before concat — `3.14` contains `.`)
-    if is_numeric_literal(t) {
-        if t.contains('.') || t.contains('e') || t.contains('E') {
+    // Delegate to the shared literal type inference utility.
+    // This must run BEFORE the concat check because `3.14` contains
+    // `.` which `is_concat_expression` would misinterpret as the PHP
+    // concatenation operator.
+    if let Some(ty) = infer_type_from_literal(t) {
+        if ty.is_int() {
+            return Some("int");
+        }
+        if ty.is_float() {
             return Some("float");
         }
-        return Some("int");
+        if ty.is_bool() {
+            return Some("bool");
+        }
+        if ty.is_string_type() {
+            return Some("string");
+        }
     }
 
-    // Concat expression — result is string but syntax is complex
+    // Concat expression — result is string but syntax is complex.
+    // Checked after the shared util so that floats like `3.14` are
+    // not misclassified as concatenation (`3 . 14`).
     if is_concat_expression(t) {
         return Some("string");
     }

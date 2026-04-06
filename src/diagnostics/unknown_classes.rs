@@ -24,6 +24,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::names::OwnedResolvedNames;
+use crate::php_type::PhpType;
 use crate::symbol_map::SymbolKind;
 use crate::types::ClassInfo;
 
@@ -129,7 +130,7 @@ impl Backend {
             // ── Skip names that are always resolvable ───────────────────
             // `self`, `static`, `parent`, `$this` are context-dependent
             // keywords and should never trigger an unknown-class warning.
-            if is_self_like(ref_name) {
+            if PhpType::parse(ref_name).is_self_like() {
                 continue;
             }
 
@@ -261,12 +262,6 @@ fn compute_attribute_ranges(content: &str) -> Vec<ByteRange> {
     }
 
     ranges
-}
-
-/// Returns `true` for context-dependent keywords that resolve to the
-/// enclosing class and should never be flagged as unknown.
-fn is_self_like(name: &str) -> bool {
-    matches!(name, "self" | "static" | "parent" | "$this")
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

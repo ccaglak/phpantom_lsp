@@ -7,6 +7,10 @@
 //! All parsing is delegated to `PhpType::parse()` (which uses
 //! `mago_type_syntax` internally), eliminating ~250 lines of
 //! hand-rolled depth-tracking parsers.
+//!
+//! Each public function has a `_typed` variant that accepts `&PhpType`
+//! directly (avoiding a redundant re-parse when the caller already has
+//! a parsed type), and a `&str` convenience wrapper that delegates to it.
 
 use crate::php_type::PhpType;
 
@@ -65,6 +69,22 @@ fn unwrap_object_shape(ty: &PhpType) -> Option<&[crate::php_type::ShapeEntry]> {
     }
 }
 
+// ─── Array shape ────────────────────────────────────────────────────────────
+
+/// Parse a pre-parsed `PhpType` as an array shape, returning its entries.
+///
+/// This is the `_typed` variant of [`parse_array_shape`] for callers
+/// that already hold a `PhpType` and want to avoid a redundant re-parse.
+///
+/// Handles both named and positional (implicit-key) entries, optional
+/// keys (with `?` suffix), and nested types.
+///
+/// Returns `None` if the type is not an array shape.
+pub fn parse_array_shape_typed(ty: &PhpType) -> Option<Vec<crate::php_type::ShapeEntry>> {
+    let entries = unwrap_array_shape(ty)?;
+    Some(resolve_shape_keys(entries))
+}
+
 /// Parse a PHPStan/Psalm array shape type string into its constituent
 /// entries.
 ///
@@ -80,9 +100,22 @@ fn unwrap_object_shape(ty: &PhpType) -> Option<&[crate::php_type::ShapeEntry]> {
 ///
 /// Returns `None` if the type is not an array shape.
 pub fn parse_array_shape(type_str: &str) -> Option<Vec<crate::php_type::ShapeEntry>> {
-    let parsed = PhpType::parse(type_str);
-    let entries = unwrap_array_shape(&parsed)?;
-    Some(resolve_shape_keys(entries))
+    parse_array_shape_typed(&PhpType::parse(type_str))
+}
+
+/// Look up the value type for a specific key in an already-parsed array
+/// shape `PhpType`.
+///
+/// This is the `_typed` variant of [`extract_array_shape_value_type`]
+/// for callers that already hold a `PhpType`.
+///
+/// Returns `None` if the type is not an array shape or the key is not found.
+pub fn extract_array_shape_value_type_typed(ty: &PhpType, key: &str) -> Option<PhpType> {
+    let entries = parse_array_shape_typed(ty)?;
+    entries
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(key))
+        .map(|e| e.value_type)
 }
 
 /// Look up the value type for a specific key in an array shape type string.
@@ -92,11 +125,20 @@ pub fn parse_array_shape(type_str: &str) -> Option<Vec<crate::php_type::ShapeEnt
 ///
 /// Returns `None` if the type is not an array shape or the key is not found.
 pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<PhpType> {
-    let entries = parse_array_shape(type_str)?;
-    entries
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(key))
-        .map(|e| e.value_type)
+    extract_array_shape_value_type_typed(&PhpType::parse(type_str), key)
+}
+
+// ─── Object shape ───────────────────────────────────────────────────────────
+
+/// Parse a pre-parsed `PhpType` as an object shape, returning its entries.
+///
+/// This is the `_typed` variant of [`parse_object_shape`] for callers
+/// that already hold a `PhpType` and want to avoid a redundant re-parse.
+///
+/// Returns `None` if the type is not an object shape.
+pub fn parse_object_shape_typed(ty: &PhpType) -> Option<Vec<crate::php_type::ShapeEntry>> {
+    let entries = unwrap_object_shape(ty)?;
+    Some(resolve_shape_keys(entries))
 }
 
 /// Parse a PHPStan object shape type string into its constituent entries.
@@ -112,14 +154,36 @@ pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<PhpTy
 ///
 /// Returns `None` if the type is not an object shape.
 pub fn parse_object_shape(type_str: &str) -> Option<Vec<crate::php_type::ShapeEntry>> {
-    let parsed = PhpType::parse(type_str);
-    let entries = unwrap_object_shape(&parsed)?;
-    Some(resolve_shape_keys(entries))
+    parse_object_shape_typed(&PhpType::parse(type_str))
+}
+
+/// Return `true` if the given `PhpType` is an object shape type.
+///
+/// This is the `_typed` variant of [`is_object_shape`] for callers
+/// that already hold a `PhpType`.
+pub fn is_object_shape_typed(ty: &PhpType) -> bool {
+    ty.is_object_shape()
 }
 
 /// Return `true` if `type_str` is an object shape type (e.g. `object{name: string}`).
 pub fn is_object_shape(type_str: &str) -> bool {
-    PhpType::parse(type_str).is_object_shape()
+    is_object_shape_typed(&PhpType::parse(type_str))
+}
+
+/// Look up the value type for a specific property in an already-parsed
+/// object shape `PhpType`.
+///
+/// This is the `_typed` variant of [`extract_object_shape_property_type`]
+/// for callers that already hold a `PhpType`.
+///
+/// Returns `None` if the type is not an object shape or the property
+/// is not found.
+pub fn extract_object_shape_property_type_typed(ty: &PhpType, prop: &str) -> Option<PhpType> {
+    let entries = parse_object_shape_typed(ty)?;
+    entries
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some(prop))
+        .map(|e| e.value_type)
 }
 
 /// Look up the value type for a specific property in an object shape.
@@ -130,9 +194,5 @@ pub fn is_object_shape(type_str: &str) -> bool {
 /// Returns `None` if the type is not an object shape or the property
 /// is not found.
 pub fn extract_object_shape_property_type(type_str: &str, prop: &str) -> Option<PhpType> {
-    let entries = parse_object_shape(type_str)?;
-    entries
-        .into_iter()
-        .find(|e| e.key.as_deref() == Some(prop))
-        .map(|e| e.value_type)
+    extract_object_shape_property_type_typed(&PhpType::parse(type_str), prop)
 }

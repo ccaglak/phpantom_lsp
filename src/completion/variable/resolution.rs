@@ -122,9 +122,9 @@ pub(in crate::completion) fn build_var_resolver_from_ctx<'a>(
 ///
 /// When `type_str` resolves to `Builder` (the Eloquent Builder, without
 /// generic parameters) and the enclosing method is a scope on a class
-/// that extends Eloquent Model, returns
-/// `Some("Builder<EnclosingModelName>")`.  Otherwise returns `None`,
-/// meaning the caller should use the original type string.
+/// that extends Eloquent Model, returns a `PhpType::Generic` wrapping
+/// the builder name and the enclosing model.  Otherwise returns `None`,
+/// meaning the caller should use the original type.
 ///
 /// A method is considered a scope when it uses the `scopeX` naming
 /// convention (name starts with `scope`, len > 5) **or** when
@@ -135,7 +135,7 @@ fn enrich_builder_type_in_scope(
     has_scope_attr: bool,
     current_class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     use crate::virtual_members::laravel::{ELOQUENT_BUILDER_FQN, extends_eloquent_model};
 
     // Only applies inside scope methods: either the scopeX naming
@@ -164,7 +164,10 @@ fn enrich_builder_type_in_scope(
     }
 
     // Build the enriched type with the enclosing model as the generic arg.
-    Some(format!("{type_str}<{}>", current_class.name))
+    Some(PhpType::Generic(
+        type_str.to_string(),
+        vec![PhpType::Named(current_class.name.clone())],
+    ))
 }
 
 /// Resolve the type of `$variable` by re-parsing the file and walking
@@ -799,7 +802,7 @@ fn resolve_variable_in_members<'b>(
                     // `Builder` (without generics), enrich it to
                     // `Builder<EnclosingModel>` so that the
                     // generic-args path injects scope methods.
-                    let enriched_type_str = native_type_str.as_deref().and_then(|ts| {
+                    let enriched_type = native_type_str.as_deref().and_then(|ts| {
                         let method_name = method.name.value.to_string();
                         // Check whether the method has a #[Scope]
                         // attribute so that the enrichment also
@@ -817,6 +820,7 @@ fn resolve_variable_in_members<'b>(
                             ctx.class_loader,
                         )
                     });
+                    let enriched_type_str = enriched_type.as_ref().map(|t| t.to_string());
 
                     let type_str_for_resolution =
                         enriched_type_str.as_deref().or(native_type_str.as_deref());
@@ -833,12 +837,12 @@ fn resolve_variable_in_members<'b>(
 
                     // Pick the effective type: docblock overrides native
                     // when it is a compatible refinement.
-                    let native_parsed = if let Some(ref enriched) = enriched_type_str {
-                        Some(PhpType::parse(enriched))
+                    let native_parsed = if let Some(ref enriched) = enriched_type {
+                        Some(enriched.clone())
                     } else {
                         native_type.clone()
                     };
-                    let doc_parsed = raw_docblock_type.as_ref().map(|s| PhpType::parse(s));
+                    let doc_parsed = raw_docblock_type.clone();
                     let effective_type = crate::docblock::resolve_effective_type_typed(
                         native_parsed.as_ref(),
                         doc_parsed.as_ref(),
@@ -888,7 +892,7 @@ fn resolve_variable_in_members<'b>(
                     // a more specific non-class type such as
                     // `object{foo: int, bar: string}`.
                     if let Some(ref raw_docblock_type) = raw_docblock_type {
-                        let parsed_docblock = PhpType::parse(raw_docblock_type);
+                        let parsed_docblock = raw_docblock_type.clone();
                         let resolved =
                             crate::completion::type_resolution::type_hint_to_classes_typed(
                                 &parsed_docblock,
@@ -910,7 +914,7 @@ fn resolve_variable_in_members<'b>(
                     // cases where the class declares `map(object $entity)`
                     // but the interface has `@param TEntity $entity` with
                     // `@implements Interface<Boo>` substituting `TEntity`.
-                    let mut merged_type_hint: Option<String> = None;
+                    let mut merged_type_hint: Option<PhpType> = None;
                     let method_name = method.name.value.to_string();
                     let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
                         ctx.current_class,
@@ -948,7 +952,7 @@ fn resolve_variable_in_members<'b>(
                             // but didn't resolve to a class. Remember
                             // it so the type-string-only fallback below
                             // uses it instead of the bare native hint.
-                            merged_type_hint = Some(hint_str);
+                            merged_type_hint = Some(hint.clone());
                         }
                     }
 
@@ -964,13 +968,14 @@ fn resolve_variable_in_members<'b>(
                     // parent/interface inheritance (e.g. `list<Pen>` from
                     // a parent's `@param`), prefer that over the bare
                     // native hint.
-                    let best_type_str = raw_docblock_type
-                        .as_deref()
-                        .or(merged_type_hint.as_deref())
-                        .or(type_str_for_resolution);
-                    if let Some(ts) = best_type_str {
-                        let mut parsed = PhpType::parse(ts);
-
+                    let best_type = if let Some(ref rdt) = raw_docblock_type {
+                        Some(rdt.clone())
+                    } else if let Some(ref mth) = merged_type_hint {
+                        Some(mth.clone())
+                    } else {
+                        type_str_for_resolution.map(PhpType::parse)
+                    };
+                    if let Some(mut parsed) = best_type {
                         // ── Substitute method-level template params
                         // in `class-string<T>` with their bounds ────────
                         // When the parameter type is `class-string<T>` and
@@ -2839,7 +2844,7 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
     // Determine the "native" return-type string from the RHS so we can
     // apply the same override check used for `@return` annotations.
     let native_type = extract_native_type_from_rhs(assignment.rhs, ctx);
-    let native_parsed = native_type.as_ref().map(|s| PhpType::parse(s));
+    let native_parsed = native_type.as_ref().cloned();
     let doc_parsed = PhpType::parse(&var_type);
     let effective =
         docblock::resolve_effective_type_typed(native_parsed.as_ref(), Some(&doc_parsed));
@@ -2890,8 +2895,8 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
 /// expression, without resolving it to `ClassInfo`.
 ///
 /// This is used by [`try_inline_var_override`] to feed
-/// [`docblock::resolve_effective_type`] with the same kind of type
-/// string that `@return` override checking uses.
+/// [`docblock::resolve_effective_type`] with the same kind of parsed
+/// `PhpType` that `@return` override checking uses.
 ///
 /// Returns `None` when the native type cannot be determined (the
 /// caller should treat this as "unknown", which lets the docblock type
@@ -2899,13 +2904,13 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
 fn extract_native_type_from_rhs<'b>(
     rhs: &'b Expression<'b>,
     ctx: &VarResolutionCtx<'_>,
-) -> Option<String> {
+) -> Option<PhpType> {
     match rhs {
         // `new ClassName(…)` → the class name.
         Expression::Instantiation(inst) => match inst.class {
-            Expression::Identifier(ident) => Some(ident.value().to_string()),
-            Expression::Self_(_) => Some(ctx.current_class.name.clone()),
-            Expression::Static(_) => Some(ctx.current_class.name.clone()),
+            Expression::Identifier(ident) => Some(PhpType::Named(ident.value().to_string())),
+            Expression::Self_(_) => Some(PhpType::Named(ctx.current_class.name.clone())),
+            Expression::Static(_) => Some(PhpType::Named(ctx.current_class.name.clone())),
             _ => None,
         },
         // Function / method calls → look up the return type.
@@ -2918,7 +2923,7 @@ fn extract_native_type_from_rhs<'b>(
                 func_name.and_then(|name| {
                     ctx.function_loader()
                         .and_then(|fl| fl(&name))
-                        .and_then(|fi| fi.return_type_str())
+                        .and_then(|fi| fi.return_type.clone())
                 })
             }
             Call::Method(method_call) => {
@@ -2934,7 +2939,7 @@ fn extract_native_type_from_rhs<'b>(
                             cls.methods
                                 .iter()
                                 .find(|m| m.name == method_name)
-                                .and_then(|m| m.return_type_str())
+                                .and_then(|m| m.return_type.clone())
                         })
                 } else {
                     None
@@ -2962,7 +2967,7 @@ fn extract_native_type_from_rhs<'b>(
                         o.methods
                             .iter()
                             .find(|m| m.name == method_name)
-                            .and_then(|m| m.return_type_str())
+                            .and_then(|m| m.return_type.clone())
                     })
                 } else {
                     None
@@ -2974,7 +2979,7 @@ fn extract_native_type_from_rhs<'b>(
         // functions always produce a Closure.
         Expression::PartialApplication(_)
         | Expression::Closure(_)
-        | Expression::ArrowFunction(_) => Some("\\Closure".to_string()),
+        | Expression::ArrowFunction(_) => Some(PhpType::Named("\\Closure".to_string())),
         _ => None,
     }
 }
@@ -3564,7 +3569,7 @@ pub(in crate::completion) fn resolve_arg_raw_type<'b>(
         let from_docblock =
             docblock::find_iterable_raw_type_in_source(ctx.content, offset, &var_text);
         if let Some(raw) = from_docblock {
-            return Some(PhpType::parse(&raw));
+            return Some(raw);
         }
 
         // No docblock — walk the AST for the variable's assignment

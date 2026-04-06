@@ -95,36 +95,6 @@ pub(super) fn build_var_resolver<'a>(
     }
 }
 
-/// Check whether a [`PhpType`] is a self-referencing return type
-/// (`static`, `self`, or `$this`), possibly wrapped in `Nullable`
-/// or `Union` with `null`.
-///
-/// This catches bare forms (`static`), nullable forms (`?static`),
-/// union-with-null forms (`static|null`), and generic forms
-/// (`static<T>`).  The check is intentionally shallow — composite
-/// types like `array<int, static>` are NOT considered self-like
-/// because they require full type resolution to unwrap.
-fn is_self_like_type(ty: &PhpType) -> bool {
-    fn is_self_keyword(name: &str) -> bool {
-        matches!(name, "static" | "self" | "$this")
-    }
-
-    match ty {
-        PhpType::Named(n) => is_self_keyword(n),
-        PhpType::Generic(n, _) => is_self_keyword(n),
-        PhpType::Nullable(inner) => is_self_like_type(inner),
-        PhpType::Union(members) => {
-            // `static|null` — every non-null member is self-like.
-            let non_null: Vec<_> = members
-                .iter()
-                .filter(|m| !matches!(m, PhpType::Named(n) if n == "null"))
-                .collect();
-            !non_null.is_empty() && non_null.iter().all(|m| is_self_like_type(m))
-        }
-        _ => false,
-    }
-}
-
 impl Backend {
     /// Resolve an instance method base expression + method name to a
     /// [`ResolvedCallableTarget`].
@@ -605,8 +575,7 @@ impl Backend {
                     content,
                     cursor_offset as usize,
                     var_name,
-                ) && let Some(ret_type) =
-                    crate::php_type::PhpType::parse(&raw_type).callable_return_type()
+                ) && let Some(ret_type) = raw_type.callable_return_type()
                 {
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes_typed(
@@ -631,10 +600,9 @@ impl Backend {
                         cursor_offset,
                     )
                 {
-                    let parsed_ret = PhpType::parse(&ret);
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes_typed(
-                            &parsed_ret,
+                            &ret,
                             "",
                             ctx.all_classes,
                             ctx.class_loader,
@@ -651,10 +619,9 @@ impl Backend {
                 if let Some(ret) =
                     super::source::helpers::extract_first_class_callable_return_type(var_name, ctx)
                 {
-                    let parsed_ret = PhpType::parse(&ret);
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes_typed(
-                            &parsed_ret,
+                            &ret,
                             "",
                             ctx.all_classes,
                             ctx.class_loader,
@@ -844,7 +811,7 @@ impl Backend {
                 // Match bare `self`/`static`/`$this` as well as nullable
                 // (`?static`) and union (`static|null`) forms, plus
                 // generic wrappers like `self<RuleError>`, `static<T>`.
-                if is_self_like_type(ret) {
+                if ret.is_self_like() {
                     return vec![Arc::new(class_info.clone())];
                 }
                 return super::type_resolution::type_hint_to_classes_typed(
@@ -1017,7 +984,7 @@ fn is_valid_virtual_narrowing(
     }
 
     // `object` — any class type is a valid narrowing.
-    if matches!(native_type, PhpType::Named(s) if s.eq_ignore_ascii_case("object")) {
+    if native_type.is_object() {
         // Only reject if the virtual type is a non-object scalar.
         return !virtual_type.is_scalar();
     }
@@ -1025,7 +992,7 @@ fn is_valid_virtual_narrowing(
     // Self-like types (`static`, `self`, `$this`) resolve to the owner
     // class at runtime.  The virtual type must be the owner class itself
     // or a subclass of it.
-    if is_self_like_type(native_type) {
+    if native_type.is_self_like() {
         return is_type_subclass_of(virtual_type, &owner_class.name, all_classes, class_loader);
     }
 
@@ -1048,11 +1015,7 @@ fn is_valid_virtual_narrowing(
 /// Strip any generic `<…>` suffix and leading `\` from a class name string.
 fn strip_class_name(name: &str) -> String {
     let parsed = PhpType::parse(name);
-    parsed
-        .base_name()
-        .unwrap_or(name)
-        .trim_start_matches('\\')
-        .to_string()
+    parsed.base_name().unwrap_or(name).to_string()
 }
 
 /// Check whether `candidate_type` is the same class as `ancestor_name` or
@@ -1070,7 +1033,7 @@ fn is_type_subclass_of(
 ) -> bool {
     // Extract the base class name directly from the type without stringifying.
     let candidate_base = match candidate_type.base_name() {
-        Some(name) => name.strip_prefix('\\').unwrap_or(name),
+        Some(name) => name,
         None => return false, // Not a class type
     };
     let ancestor_base = strip_class_name(ancestor_name);
@@ -1226,7 +1189,7 @@ impl Backend {
                     if let Some(ret_type) =
                         super::source::helpers::extract_closure_return_type_from_text(arg_text)
                     {
-                        subs.insert(tpl_name.clone(), PhpType::parse(&ret_type));
+                        subs.insert(tpl_name.clone(), ret_type);
                     }
                 }
                 TemplateBindingMode::CallableParamType(position) => {
@@ -1237,7 +1200,7 @@ impl Backend {
                             arg_text, position,
                         )
                     {
-                        subs.insert(tpl_name.clone(), PhpType::parse(&param_type));
+                        subs.insert(tpl_name.clone(), param_type);
                     }
                 }
                 TemplateBindingMode::ArrayElement => {
@@ -1379,7 +1342,7 @@ impl Backend {
                 ctx.cursor_offset as usize,
                 arg_text,
             ) {
-                return Some(raw);
+                return Some(raw.to_string());
             }
             // Fall back to the unified variable resolution pipeline.
             let default_class = ClassInfo::default();

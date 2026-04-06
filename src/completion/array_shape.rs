@@ -333,17 +333,14 @@ impl Backend {
         // the original parse failed due to syntax errors.
         let class_loader =
             self.class_loader_with(effective_classes, &file_ctx.use_map, &file_ctx.namespace);
-        let effective_type = super::type_resolution::resolve_type_alias(
-            &effective_type,
+        let parsed_type = PhpType::parse(&effective_type);
+        let parsed = super::type_resolution::resolve_type_alias_typed(
+            &parsed_type,
             "",
             effective_classes,
             &class_loader,
         )
-        .map(|t| t.to_string())
-        .unwrap_or(effective_type);
-
-        // Parse the array shape entries via PhpType.
-        let parsed = PhpType::parse(&effective_type);
+        .unwrap_or(parsed_type);
         let entries = match parsed.shape_entries() {
             Some(e) => e,
             None => return vec![],
@@ -519,7 +516,7 @@ impl Backend {
         if let Some(raw) =
             docblock::find_iterable_raw_type_in_source(content, cursor_offset, var_name)
         {
-            return Some(raw);
+            return Some(raw.to_string());
         }
 
         let current_class = find_class_at_offset(&file_ctx.classes, cursor_offset as u32);

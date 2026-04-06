@@ -26,6 +26,7 @@ use super::detect_indent_from_members;
 use crate::Backend;
 use crate::docblock::{extract_var_type, get_docblock_text_for_node};
 use crate::parser::extract_hint_type;
+use crate::php_type::PhpType;
 use crate::util::offset_to_position;
 
 // ── Data types ──────────────────────────────────────────────────────────────
@@ -308,11 +309,18 @@ fn collect_qualifying_properties<'a>(
 /// Returns `false` for union types (`int|string`), intersection types,
 /// array shapes, generic syntax, etc.
 fn is_simple_type(type_str: &str) -> bool {
-    use crate::php_type::PhpType;
+    is_simple_php_type(&PhpType::parse(type_str))
+}
 
-    match PhpType::parse(type_str) {
+/// Check whether a [`PhpType`] is a simple (non-compound) type suitable
+/// for use as a parameter type hint.
+///
+/// Accepts `Named` and `Nullable(Named)` types; rejects unions,
+/// intersections, array shapes, generics, etc.
+fn is_simple_php_type(ty: &PhpType) -> bool {
+    match ty {
         PhpType::Named(_) => true,
-        PhpType::Nullable(inner) => matches!(*inner, PhpType::Named(_)),
+        PhpType::Nullable(inner) => matches!(inner.as_ref(), PhpType::Named(_)),
         _ => false,
     }
 }

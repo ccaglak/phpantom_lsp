@@ -141,137 +141,95 @@ pub fn resolve_conditional_with_text_args_and_defaults(
             let args = split_text_args(text_args);
             let arg_text = args.get(param_idx).map(|s| s.trim());
 
-            match condition.as_ref() {
-                PhpType::ClassString(_) => {
-                    // For variadic class-string parameters, collect class
-                    // names from ALL arguments at and after param_idx and
-                    // form a union type (e.g. `A|B` from `A::class, B::class`).
-                    if is_variadic {
-                        let mut class_names: Vec<String> = Vec::new();
-                        for arg in args.iter().skip(param_idx) {
-                            let trimmed = arg.trim();
-                            if let Some(class_name) = extract_class_name_from_text(trimmed) {
-                                let class_name =
-                                    resolve_self_keyword(&class_name, calling_class_name)
-                                        .unwrap_or(class_name);
-                                if !class_names.contains(&class_name) {
-                                    class_names.push(class_name);
-                                }
-                            } else if trimmed.starts_with('$')
-                                && let Some(resolver) = var_resolver
-                            {
-                                for name in resolver(trimmed) {
-                                    if !class_names.contains(&name) {
-                                        class_names.push(name);
-                                    }
+            if matches!(condition.as_ref(), PhpType::ClassString(_)) {
+                // For variadic class-string parameters, collect class
+                // names from ALL arguments at and after param_idx and
+                // form a union type (e.g. `A|B` from `A::class, B::class`).
+                if is_variadic {
+                    let mut class_names: Vec<String> = Vec::new();
+                    for arg in args.iter().skip(param_idx) {
+                        let trimmed = arg.trim();
+                        if let Some(class_name) = extract_class_name_from_text(trimmed) {
+                            let class_name = resolve_self_keyword(&class_name, calling_class_name)
+                                .unwrap_or(class_name);
+                            if !class_names.contains(&class_name) {
+                                class_names.push(class_name);
+                            }
+                        } else if trimmed.starts_with('$')
+                            && let Some(resolver) = var_resolver
+                        {
+                            for name in resolver(trimmed) {
+                                if !class_names.contains(&name) {
+                                    class_names.push(name);
                                 }
                             }
                         }
-                        if !class_names.is_empty() {
-                            let ty = if class_names.len() == 1 {
-                                PhpType::Named(class_names.into_iter().next().unwrap())
-                            } else {
-                                PhpType::Union(
-                                    class_names.into_iter().map(PhpType::Named).collect(),
-                                )
-                            };
-                            return Some(ty);
-                        }
-                        return resolve_conditional_with_text_args_and_defaults(
-                            else_type,
-                            params,
-                            text_args,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        );
                     }
-
-                    // Check if the argument text matches `X::class`
-                    if let Some(arg) = arg_text
-                        && let Some(class_name) = extract_class_name_from_text(arg)
-                    {
-                        let class_name = resolve_self_keyword(&class_name, calling_class_name)
-                            .unwrap_or(class_name);
-                        return Some(PhpType::Named(class_name));
-                    }
-                    // Check if the argument is a variable holding class-string
-                    // value(s) (e.g. from a match expression).
-                    if let Some(arg) = arg_text
-                        && let trimmed = arg.trim()
-                        && trimmed.starts_with('$')
-                        && let Some(resolver) = var_resolver
-                    {
-                        let names = resolver(trimmed);
-                        if !names.is_empty() {
-                            let ty = if names.len() == 1 {
-                                PhpType::Named(names.into_iter().next().unwrap())
-                            } else {
-                                PhpType::Union(names.into_iter().map(PhpType::Named).collect())
-                            };
-                            return Some(ty);
-                        }
-                    }
-                    // Argument isn't a ::class literal or resolvable variable → try else branch
-                    resolve_conditional_with_text_args_and_defaults(
-                        else_type,
-                        params,
-                        text_args,
-                        var_resolver,
-                        calling_class_name,
-                        template_defaults,
-                    )
-                }
-                PhpType::Named(s) if s == "null" => {
-                    if arg_text.is_none() || arg_text == Some("") || arg_text == Some("null") {
-                        // No argument provided or explicitly null → null branch
-                        resolve_conditional_with_text_args_and_defaults(
-                            then_type,
-                            params,
-                            text_args,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
-                    } else {
-                        // Argument was provided → not null
-                        resolve_conditional_with_text_args_and_defaults(
-                            else_type,
-                            params,
-                            text_args,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
-                    }
-                }
-                PhpType::Literal(s) => {
-                    // Strip quotes from the literal to get the expected value.
-                    let expected = crate::util::unquote_php_string(s).unwrap_or(s);
-
-                    // Check if the argument is a quoted string literal
-                    // matching the expected value (e.g. `'foo'` or `"foo"`).
-                    if let Some(arg) = arg_text {
-                        let trimmed = arg.trim();
-                        let arg_value = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-                            || (trimmed.starts_with('"') && trimmed.ends_with('"'))
-                        {
-                            Some(&trimmed[1..trimmed.len() - 1])
+                    if !class_names.is_empty() {
+                        let ty = if class_names.len() == 1 {
+                            PhpType::Named(class_names.into_iter().next().unwrap())
                         } else {
-                            None
+                            PhpType::Union(class_names.into_iter().map(PhpType::Named).collect())
                         };
-                        if arg_value == Some(expected) {
-                            return resolve_conditional_with_text_args_and_defaults(
-                                then_type,
-                                params,
-                                text_args,
-                                var_resolver,
-                                calling_class_name,
-                                template_defaults,
-                            );
-                        }
+                        return Some(ty);
                     }
-                    // Argument doesn't match the literal → else branch.
+                    return resolve_conditional_with_text_args_and_defaults(
+                        else_type,
+                        params,
+                        text_args,
+                        var_resolver,
+                        calling_class_name,
+                        template_defaults,
+                    );
+                }
+
+                // Check if the argument text matches `X::class`
+                if let Some(arg) = arg_text
+                    && let Some(class_name) = extract_class_name_from_text(arg)
+                {
+                    let class_name =
+                        resolve_self_keyword(&class_name, calling_class_name).unwrap_or(class_name);
+                    return Some(PhpType::Named(class_name));
+                }
+                // Check if the argument is a variable holding class-string
+                // value(s) (e.g. from a match expression).
+                if let Some(arg) = arg_text
+                    && let trimmed = arg.trim()
+                    && trimmed.starts_with('$')
+                    && let Some(resolver) = var_resolver
+                {
+                    let names = resolver(trimmed);
+                    if !names.is_empty() {
+                        let ty = if names.len() == 1 {
+                            PhpType::Named(names.into_iter().next().unwrap())
+                        } else {
+                            PhpType::Union(names.into_iter().map(PhpType::Named).collect())
+                        };
+                        return Some(ty);
+                    }
+                }
+                // Argument isn't a ::class literal or resolvable variable → try else branch
+                resolve_conditional_with_text_args_and_defaults(
+                    else_type,
+                    params,
+                    text_args,
+                    var_resolver,
+                    calling_class_name,
+                    template_defaults,
+                )
+            } else if condition.as_ref().is_null() {
+                if arg_text.is_none() || arg_text == Some("") || arg_text == Some("null") {
+                    // No argument provided or explicitly null → null branch
+                    resolve_conditional_with_text_args_and_defaults(
+                        then_type,
+                        params,
+                        text_args,
+                        var_resolver,
+                        calling_class_name,
+                        template_defaults,
+                    )
+                } else {
+                    // Argument was provided → not null
                     resolve_conditional_with_text_args_and_defaults(
                         else_type,
                         params,
@@ -281,15 +239,22 @@ pub fn resolve_conditional_with_text_args_and_defaults(
                         template_defaults,
                     )
                 }
-                _ => {
-                    // IsType equivalent: can't statically determine most
-                    // conditions, but we handle `array` specially.
-                    // Check if the condition mentions `array` and the
-                    // argument is an array literal (starts with `[`).
-                    if condition_includes_array(condition.as_ref())
-                        && let Some(arg) = arg_text
-                        && arg.trim_start().starts_with('[')
+            } else if let PhpType::Literal(s) = condition.as_ref() {
+                // Strip quotes from the literal to get the expected value.
+                let expected = crate::util::unquote_php_string(s).unwrap_or(s);
+
+                // Check if the argument is a quoted string literal
+                // matching the expected value (e.g. `'foo'` or `"foo"`).
+                if let Some(arg) = arg_text {
+                    let trimmed = arg.trim();
+                    let arg_value = if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
                     {
+                        Some(&trimmed[1..trimmed.len() - 1])
+                    } else {
+                        None
+                    };
+                    if arg_value == Some(expected) {
                         return resolve_conditional_with_text_args_and_defaults(
                             then_type,
                             params,
@@ -299,16 +264,43 @@ pub fn resolve_conditional_with_text_args_and_defaults(
                             template_defaults,
                         );
                     }
-                    // Can't statically determine; fall through to else.
-                    resolve_conditional_with_text_args_and_defaults(
-                        else_type,
+                }
+                // Argument doesn't match the literal → else branch.
+                resolve_conditional_with_text_args_and_defaults(
+                    else_type,
+                    params,
+                    text_args,
+                    var_resolver,
+                    calling_class_name,
+                    template_defaults,
+                )
+            } else {
+                // IsType equivalent: can't statically determine most
+                // conditions, but we handle `array` specially.
+                // Check if the condition mentions `array` and the
+                // argument is an array literal (starts with `[`).
+                if condition_includes_array(condition.as_ref())
+                    && let Some(arg) = arg_text
+                    && arg.trim_start().starts_with('[')
+                {
+                    return resolve_conditional_with_text_args_and_defaults(
+                        then_type,
                         params,
                         text_args,
                         var_resolver,
                         calling_class_name,
                         template_defaults,
-                    )
+                    );
                 }
+                // Can't statically determine; fall through to else.
+                resolve_conditional_with_text_args_and_defaults(
+                    else_type,
+                    params,
+                    text_args,
+                    var_resolver,
+                    calling_class_name,
+                    template_defaults,
+                )
             }
         }
         // Non-Conditional PhpType variant (replaces Concrete)
@@ -327,9 +319,10 @@ pub fn resolve_conditional_with_text_args_and_defaults(
 /// Checks whether the PhpType is `Named("array")`, `Generic("array", _)`,
 /// or a `Union` containing any such member.
 fn condition_includes_array(condition: &PhpType) -> bool {
+    if condition.is_array_like() {
+        return true;
+    }
     match condition {
-        PhpType::Named(s) if s == "array" => true,
-        PhpType::Generic(s, _) if s == "array" => true,
         PhpType::Union(members) => members.iter().any(condition_includes_array),
         _ => false,
     }
@@ -478,30 +471,50 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                     }
                 });
 
-            match condition.as_ref() {
-                PhpType::ClassString(_) => {
-                    // Check if the argument is `X::class`
-                    if let Some(class_name) = arg_expr.and_then(extract_class_string_from_expr) {
-                        let class_name = resolve_self_keyword(&class_name, calling_class_name)
-                            .unwrap_or(class_name);
-                        return Some(PhpType::Named(class_name));
+            if matches!(condition.as_ref(), PhpType::ClassString(_)) {
+                // Check if the argument is `X::class`
+                if let Some(class_name) = arg_expr.and_then(extract_class_string_from_expr) {
+                    let class_name =
+                        resolve_self_keyword(&class_name, calling_class_name).unwrap_or(class_name);
+                    return Some(PhpType::Named(class_name));
+                }
+                // Check if the argument is a variable holding class-string
+                // value(s) (e.g. from a match expression).
+                if let Some(Expression::Variable(Variable::Direct(dv))) = arg_expr
+                    && let Some(resolver) = var_resolver
+                {
+                    let names = resolver(dv.name);
+                    if !names.is_empty() {
+                        let ty = if names.len() == 1 {
+                            PhpType::Named(names.into_iter().next().unwrap())
+                        } else {
+                            PhpType::Union(names.into_iter().map(PhpType::Named).collect())
+                        };
+                        return Some(ty);
                     }
-                    // Check if the argument is a variable holding class-string
-                    // value(s) (e.g. from a match expression).
-                    if let Some(Expression::Variable(Variable::Direct(dv))) = arg_expr
-                        && let Some(resolver) = var_resolver
-                    {
-                        let names = resolver(dv.name);
-                        if !names.is_empty() {
-                            let ty = if names.len() == 1 {
-                                PhpType::Named(names.into_iter().next().unwrap())
-                            } else {
-                                PhpType::Union(names.into_iter().map(PhpType::Named).collect())
-                            };
-                            return Some(ty);
-                        }
-                    }
-                    // Argument isn't a ::class literal or resolvable variable → try else branch
+                }
+                // Argument isn't a ::class literal or resolvable variable → try else branch
+                resolve_conditional_with_args_and_defaults(
+                    else_type,
+                    params,
+                    argument_list,
+                    var_resolver,
+                    calling_class_name,
+                    template_defaults,
+                )
+            } else if condition.as_ref().is_null() {
+                if arg_expr.is_none() {
+                    // No argument provided → param uses default (null)
+                    resolve_conditional_with_args_and_defaults(
+                        then_type,
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        template_defaults,
+                    )
+                } else {
+                    // Argument was provided → not null
                     resolve_conditional_with_args_and_defaults(
                         else_type,
                         params,
@@ -511,86 +524,35 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                         template_defaults,
                     )
                 }
-                PhpType::Named(s) if s == "null" => {
-                    if arg_expr.is_none() {
-                        // No argument provided → param uses default (null)
-                        resolve_conditional_with_args_and_defaults(
-                            then_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
-                    } else {
-                        // Argument was provided → not null
-                        resolve_conditional_with_args_and_defaults(
-                            else_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
-                    }
-                }
-                PhpType::Literal(s) => {
-                    // Strip quotes from the literal to get the expected value.
-                    let expected = crate::util::unquote_php_string(s).unwrap_or(s);
+            } else if let PhpType::Literal(s) = condition.as_ref() {
+                // Strip quotes from the literal to get the expected value.
+                let expected = crate::util::unquote_php_string(s).unwrap_or(s);
 
-                    // Check if the argument is a string literal matching
-                    // the expected value.
-                    let matches = match arg_expr {
-                        Some(Expression::Literal(Literal::String(lit_str))) => {
-                            // `value` is the unquoted content; fall back
-                            // to stripping quotes from `raw`.
-                            let inner = lit_str.value.map(|v| v.to_string()).unwrap_or_else(|| {
-                                crate::util::unquote_php_string(lit_str.raw)
-                                    .unwrap_or(lit_str.raw)
-                                    .to_string()
-                            });
-                            inner == *expected
-                        }
-                        _ => false,
-                    };
-                    if matches {
-                        resolve_conditional_with_args_and_defaults(
-                            then_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
-                    } else {
-                        resolve_conditional_with_args_and_defaults(
-                            else_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        )
+                // Check if the argument is a string literal matching
+                // the expected value.
+                let matches = match arg_expr {
+                    Some(Expression::Literal(Literal::String(lit_str))) => {
+                        // `value` is the unquoted content; fall back
+                        // to stripping quotes from `raw`.
+                        let inner = lit_str.value.map(|v| v.to_string()).unwrap_or_else(|| {
+                            crate::util::unquote_php_string(lit_str.raw)
+                                .unwrap_or(lit_str.raw)
+                                .to_string()
+                        });
+                        inner == *expected
                     }
-                }
-                _ => {
-                    // IsType equivalent
-                    // Check if the condition mentions `array` and the
-                    // argument is an array literal (`[...]`).
-                    if condition_includes_array(condition.as_ref())
-                        && let Some(Expression::Array(_)) = arg_expr
-                    {
-                        return resolve_conditional_with_args_and_defaults(
-                            then_type,
-                            params,
-                            argument_list,
-                            var_resolver,
-                            calling_class_name,
-                            template_defaults,
-                        );
-                    }
-                    // We can't statically determine the type of an
-                    // arbitrary expression; fall through to else.
+                    _ => false,
+                };
+                if matches {
+                    resolve_conditional_with_args_and_defaults(
+                        then_type,
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        template_defaults,
+                    )
+                } else {
                     resolve_conditional_with_args_and_defaults(
                         else_type,
                         params,
@@ -600,6 +562,32 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                         template_defaults,
                     )
                 }
+            } else {
+                // IsType equivalent
+                // Check if the condition mentions `array` and the
+                // argument is an array literal (`[...]`).
+                if condition_includes_array(condition.as_ref())
+                    && let Some(Expression::Array(_)) = arg_expr
+                {
+                    return resolve_conditional_with_args_and_defaults(
+                        then_type,
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        template_defaults,
+                    );
+                }
+                // We can't statically determine the type of an
+                // arbitrary expression; fall through to else.
+                resolve_conditional_with_args_and_defaults(
+                    else_type,
+                    params,
+                    argument_list,
+                    var_resolver,
+                    calling_class_name,
+                    template_defaults,
+                )
             }
         }
         // Non-Conditional PhpType variant (replaces Concrete)
@@ -666,22 +654,11 @@ pub fn resolve_conditional_without_args_and_defaults(
             let param_info = params.iter().find(|p| p.name == target);
             let has_null_default = param_info.is_some_and(|p| !p.is_required);
 
-            match condition.as_ref() {
-                PhpType::Named(s) if s == "null" && has_null_default => {
-                    resolve_conditional_without_args_and_defaults(
-                        then_type,
-                        params,
-                        template_defaults,
-                    )
-                }
-                _ => {
-                    // Try else branch
-                    resolve_conditional_without_args_and_defaults(
-                        else_type,
-                        params,
-                        template_defaults,
-                    )
-                }
+            if condition.as_ref().is_null() && has_null_default {
+                resolve_conditional_without_args_and_defaults(then_type, params, template_defaults)
+            } else {
+                // Try else branch
+                resolve_conditional_without_args_and_defaults(else_type, params, template_defaults)
             }
         }
         // Non-Conditional PhpType variant (replaces Concrete)
@@ -719,30 +696,26 @@ fn try_resolve_with_template_default(
     let default_value = defaults.get(template_name)?;
 
     // Determine whether the default value matches the condition.
-    let condition_matches = match condition {
-        // `TAsync is false` — check if the default is literally `false`
-        PhpType::Named(s) if s == "false" => default_value == "false",
-        // `TAsync is true` — check if the default is literally `true`
-        PhpType::Named(s) if s == "true" => default_value == "true",
-        // `TAsync is null` — check if the default is literally `null`
-        PhpType::Named(s) if s == "null" => default_value == "null",
-        // `TAsync is bool` — check if the default is `true` or `false`
-        PhpType::Named(s) if s == "bool" => default_value == "true" || default_value == "false",
-        // `TAsync is string` — check if the default looks like a string
-        PhpType::Named(s) if s == "string" => {
-            (default_value.starts_with('\'') && default_value.ends_with('\''))
-                || (default_value.starts_with('"') && default_value.ends_with('"'))
-        }
-        // `TAsync is int` — check if the default is numeric
-        PhpType::Named(s) if s == "int" || s == "integer" => default_value.parse::<i64>().is_ok(),
-        // Literal string comparison: `TAsync is 'value'`
-        PhpType::Literal(s) => {
-            let expected = crate::util::unquote_php_string(s).unwrap_or(s);
-            default_value == expected
-        }
-        // Named type comparison (general): check if the default matches the type name
-        PhpType::Named(s) => default_value == s.as_str(),
-        _ => return None,
+    let condition_matches = if condition.is_false() {
+        default_value == "false"
+    } else if condition.is_true() {
+        default_value == "true"
+    } else if condition.is_null() {
+        default_value == "null"
+    } else if condition.is_bool() {
+        default_value == "true" || default_value == "false"
+    } else if condition.is_string_type() {
+        (default_value.starts_with('\'') && default_value.ends_with('\''))
+            || (default_value.starts_with('"') && default_value.ends_with('"'))
+    } else if condition.is_int() {
+        default_value.parse::<i64>().is_ok()
+    } else if let PhpType::Literal(s) = condition {
+        let expected = crate::util::unquote_php_string(s).unwrap_or(s);
+        default_value == expected
+    } else if let PhpType::Named(s) = condition {
+        default_value == s.as_str()
+    } else {
+        return None;
     };
 
     let effective_match = if negated {

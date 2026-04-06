@@ -79,16 +79,16 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
         }
         // ── Array literals ──────────────────────────────────────────
         Expression::Array(arr) => {
-            let ts =
+            let pt =
                 super::raw_type_inference::infer_array_literal_raw_type(arr.elements.iter(), ctx)
-                    .unwrap_or_else(|| "array".to_string());
-            vec![ResolvedType::from_type_string(PhpType::parse(&ts))]
+                    .unwrap_or_else(PhpType::array);
+            vec![ResolvedType::from_type_string(pt)]
         }
         Expression::LegacyArray(arr) => {
-            let ts =
+            let pt =
                 super::raw_type_inference::infer_array_literal_raw_type(arr.elements.iter(), ctx)
-                    .unwrap_or_else(|| "array".to_string());
-            vec![ResolvedType::from_type_string(PhpType::parse(&ts))]
+                    .unwrap_or_else(PhpType::array);
+            vec![ResolvedType::from_type_string(pt)]
         }
         Expression::Instantiation(inst) => resolve_rhs_instantiation(inst, ctx),
         // ── Anonymous class: `new class extends Foo { … }` ──────────
@@ -581,7 +581,7 @@ fn build_constructor_template_subs(
                         arg_text,
                     )
                 {
-                    subs.insert(tpl_name.clone(), PhpType::parse(&ret_type));
+                    subs.insert(tpl_name.clone(), ret_type);
                 }
             }
             TemplateBindingMode::CallableParamType(position) => {
@@ -592,7 +592,7 @@ fn build_constructor_template_subs(
                         arg_text, position,
                     )
                 {
-                    subs.insert(tpl_name.clone(), PhpType::parse(&param_type));
+                    subs.insert(tpl_name.clone(), param_type);
                 }
             }
             TemplateBindingMode::ArrayElement => {
@@ -678,7 +678,7 @@ fn classify_from_php_type(tpl_name: &str, ty: &PhpType) -> TemplateBindingMode {
         PhpType::Nullable(inner) => classify_from_php_type(tpl_name, inner),
         PhpType::Union(members) => {
             for member in members {
-                if matches!(member, PhpType::Named(n) if n == "null") {
+                if member.is_null() {
                     continue;
                 }
                 let result = classify_from_php_type(tpl_name, member);
@@ -839,7 +839,6 @@ fn resolve_rhs_array_access<'b>(
         if let Expression::Variable(Variable::Direct(base_dv)) = current_expr {
             let base_var = base_dv.name.to_string();
             docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var)
-                .map(|s| PhpType::parse(&s))
                 .or_else(|| {
                     let resolved = super::resolution::resolve_variable_types(
                         &base_var,
@@ -874,9 +873,8 @@ fn resolve_rhs_array_access<'b>(
 
     // Expand type aliases so that shape/generic extraction can see the
     // underlying type (e.g. a `@phpstan-type` alias).
-    let current_str = current.to_string();
-    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-        &current_str,
+    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias_typed(
+        &current,
         &ctx.current_class.name,
         ctx.all_classes,
         ctx.class_loader,
@@ -919,7 +917,7 @@ fn resolve_rhs_array_access<'b>(
             });
 
             if let Some(element) = class_element {
-                current = PhpType::parse(&element);
+                current = element;
             } else {
                 return vec![];
             }
@@ -927,9 +925,8 @@ fn resolve_rhs_array_access<'b>(
 
         // After each segment, the resulting type might itself be an
         // alias (e.g. a shape value defined as another alias).
-        let seg_str = current.to_string();
-        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-            &seg_str,
+        if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias_typed(
+            &current,
             &ctx.current_class.name,
             ctx.all_classes,
             ctx.class_loader,
@@ -1026,7 +1023,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text,
                     )
                 {
-                    subs.insert(tpl_name.clone(), PhpType::parse(&ret_type));
+                    subs.insert(tpl_name.clone(), ret_type);
                 }
             }
             TemplateBindingMode::CallableParamType(position) => {
@@ -1037,7 +1034,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text, position,
                     )
                 {
-                    subs.insert(tpl_name.clone(), PhpType::parse(&param_type));
+                    subs.insert(tpl_name.clone(), param_type);
                 }
             }
             TemplateBindingMode::ArrayElement => {
@@ -1135,7 +1132,7 @@ fn resolve_arg_variable_raw_type(
         rctx.cursor_offset as usize,
         var_name,
     ) {
-        return Some(raw);
+        return Some(raw.to_string());
     }
 
     // 2. Fall back to unified variable resolution pipeline.
@@ -1221,12 +1218,10 @@ fn extract_array_type_at_position(raw_type: &str, position: usize) -> Option<Str
 /// This covers `array`, `iterable`, `list`, and common Laravel/PHPStan
 /// collection interfaces whose generic args follow `<TKey, TValue>`.
 fn is_array_like_wrapper(name: &str) -> bool {
-    // Compare the short name (last segment after `\`) case-insensitively.
-    let short = crate::util::short_name(name);
     matches!(
-        short.to_ascii_lowercase().as_str(),
-        "array" | "iterable" | "list" | "non-empty-array" | "non-empty-list" | "arrayable"
-    )
+        name.to_ascii_lowercase().as_str(),
+        "array" | "list" | "non-empty-array" | "non-empty-list" | "iterable"
+    ) || crate::util::short_name(name).eq_ignore_ascii_case("arrayable")
 }
 
 /// Resolve function, method, and static method calls to their return
@@ -1411,20 +1406,19 @@ fn resolve_rhs_function_call<'b>(
         && let Some(ret) =
             crate::completion::source::helpers::extract_function_return_from_source(name, content)
     {
-        let parsed_ret = PhpType::parse(&ret);
         let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
-            &parsed_ret,
+            &ret,
             current_class_name,
             all_classes,
             class_loader,
         );
         if !resolved.is_empty() {
-            return ResolvedType::from_classes_with_hint(resolved, parsed_ret);
+            return ResolvedType::from_classes_with_hint(resolved, ret);
         }
-        if parsed_ret == PhpType::void() {
+        if ret == PhpType::void() {
             return vec![ResolvedType::from_type_string(PhpType::null())];
         }
-        return vec![ResolvedType::from_type_string(parsed_ret)];
+        return vec![ResolvedType::from_type_string(ret)];
     }
 
     // ── Variable invocation: $fn() ──────────────────
@@ -1441,8 +1435,7 @@ fn resolve_rhs_function_call<'b>(
         //    `@param callable(int): Response $fn`
         if let Some(raw_type) =
             crate::docblock::find_iterable_raw_type_in_source(content, offset, &var_name)
-            && let Some(ret_type) =
-                crate::php_type::PhpType::parse(&raw_type).callable_return_type()
+            && let Some(ret_type) = raw_type.callable_return_type()
         {
             let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                 ret_type,
@@ -1464,15 +1457,14 @@ fn resolve_rhs_function_call<'b>(
                 ctx.cursor_offset,
             )
         {
-            let parsed_ret = PhpType::parse(&ret);
             let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
-                &parsed_ret,
+                &ret,
                 current_class_name,
                 all_classes,
                 class_loader,
             );
             if !resolved.is_empty() {
-                return ResolvedType::from_classes_with_hint(resolved, parsed_ret);
+                return ResolvedType::from_classes_with_hint(resolved, ret);
             }
         }
 
@@ -1486,15 +1478,14 @@ fn resolve_rhs_function_call<'b>(
                 &var_name, &rctx,
             )
         {
-            let parsed_ret = PhpType::parse(&ret);
             let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
-                &parsed_ret,
+                &ret,
                 current_class_name,
                 all_classes,
                 class_loader,
             );
             if !resolved.is_empty() {
-                return ResolvedType::from_classes_with_hint(resolved, parsed_ret);
+                return ResolvedType::from_classes_with_hint(resolved, ret);
             }
         }
 
@@ -1755,9 +1746,8 @@ fn resolve_rhs_method_call_inner<'b>(
         // `@phpstan-type UserList array<int, User>` with
         // `@return UserList` is expanded to its concrete type.
         if let Some(ref hint) = ret_type_string {
-            let hint_str = hint.to_string();
-            let expanded = crate::completion::type_resolution::resolve_type_alias(
-                &hint_str,
+            let expanded = crate::completion::type_resolution::resolve_type_alias_typed(
+                hint,
                 &owner.name,
                 ctx.all_classes,
                 ctx.class_loader,

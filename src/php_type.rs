@@ -548,6 +548,128 @@ impl PhpType {
         matches!(self, PhpType::Named(s) if s == "null")
     }
 
+    /// Whether this type is `bool` or `boolean` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?bool` (nullable wrapper).
+    pub fn is_bool(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(s.to_ascii_lowercase().as_str(), "bool" | "boolean"),
+            PhpType::Nullable(inner) => inner.is_bool(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `true` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?true` (nullable wrapper).
+    pub fn is_true(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("true"),
+            PhpType::Nullable(inner) => inner.is_true(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `false` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?false` (nullable wrapper).
+    pub fn is_false(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("false"),
+            PhpType::Nullable(inner) => inner.is_false(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `int` or `integer` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?int` (nullable wrapper).
+    pub fn is_int(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(s.to_ascii_lowercase().as_str(), "int" | "integer"),
+            PhpType::Nullable(inner) => inner.is_int(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `string` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?string` (nullable wrapper).
+    pub fn is_string_type(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("string"),
+            PhpType::Nullable(inner) => inner.is_string_type(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `float` or `double` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?float` (nullable wrapper).
+    pub fn is_float(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(s.to_ascii_lowercase().as_str(), "float" | "double"),
+            PhpType::Nullable(inner) => inner.is_float(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `object` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?object` (nullable wrapper).
+    pub fn is_object(&self) -> bool {
+        match self {
+            PhpType::Named(s) => s.eq_ignore_ascii_case("object"),
+            PhpType::Nullable(inner) => inner.is_object(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `callable`, `Closure`, or a callable specification
+    /// (case-insensitive).
+    ///
+    /// Also returns `true` when the type is `?callable` (nullable wrapper)
+    /// or a `Callable { .. }` variant.
+    pub fn is_callable(&self) -> bool {
+        match self {
+            PhpType::Named(s) => {
+                s.eq_ignore_ascii_case("callable") || s.eq_ignore_ascii_case("Closure")
+            }
+            PhpType::Callable { .. } => true,
+            PhpType::Nullable(inner) => inner.is_callable(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is one of the self-referencing keywords:
+    /// `self`, `static`, `$this`, or `parent` (case-insensitive).
+    ///
+    /// Also returns `true` when the type is nullable (e.g. `?static`).
+    pub fn is_self_like(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "self" | "static" | "$this" | "parent"
+            ),
+            PhpType::Generic(name, _) => {
+                // e.g. `self<RuleError>`, `static<T>` — check the generic base name directly.
+                // Cannot use `base_name()` here because it filters out self-like
+                // names via `is_scalar_name`.
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "self" | "static" | "$this" | "parent"
+                )
+            }
+            PhpType::Nullable(inner) => inner.is_self_like(),
+            PhpType::Union(members) => {
+                // `static|null` — every non-null member is self-like.
+                let non_null: Vec<_> = members.iter().filter(|m| !m.is_null()).collect();
+                !non_null.is_empty() && non_null.iter().all(|m| m.is_self_like())
+            }
+            _ => false,
+        }
+    }
+
     /// Returns `true` when this type represents an array-like PHP type.
     ///
     /// Matches:
@@ -599,8 +721,12 @@ impl PhpType {
     /// callables, shapes, and other non-class types.
     pub fn base_name(&self) -> Option<&str> {
         match self {
-            PhpType::Named(s) if !is_scalar_name(s) => Some(s.as_str()),
-            PhpType::Generic(name, _) if !is_scalar_name(name) => Some(name.as_str()),
+            PhpType::Named(s) if !is_scalar_name(s) => {
+                Some(s.strip_prefix('\\').unwrap_or(s.as_str()))
+            }
+            PhpType::Generic(name, _) if !is_scalar_name(name) => {
+                Some(name.strip_prefix('\\').unwrap_or(name.as_str()))
+            }
             PhpType::Nullable(inner) => inner.base_name(),
             _ => None,
         }
@@ -969,10 +1095,7 @@ impl PhpType {
         match self {
             PhpType::Nullable(inner) => Some(inner.as_ref().clone()),
             PhpType::Union(members) => {
-                let non_null: Vec<&PhpType> = members
-                    .iter()
-                    .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
-                    .collect();
+                let non_null: Vec<&PhpType> = members.iter().filter(|m| !m.is_null()).collect();
                 match non_null.len() {
                     0 => None,
                     1 => Some(non_null[0].clone()),
@@ -996,7 +1119,7 @@ impl PhpType {
         match self {
             PhpType::Union(members) => members
                 .iter()
-                .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
+                .filter(|m| !m.is_null())
                 .all(|m| m.is_scalar()),
             PhpType::Nullable(inner) => inner.is_scalar(),
             other => other.is_scalar(),
@@ -1016,7 +1139,7 @@ impl PhpType {
         match self {
             PhpType::Union(members) => members
                 .iter()
-                .filter(|m| !matches!(m, PhpType::Named(s) if s == "null"))
+                .filter(|m| !m.is_null())
                 .all(|m| m.is_primitive_scalar()),
             PhpType::Nullable(inner) => inner.is_primitive_scalar(),
             other => other.is_primitive_scalar(),
@@ -2653,7 +2776,7 @@ fn strip_variance_annotations_from_type(s: &str) -> std::borrow::Cow<'_, str> {
 ///
 /// This is a superset of [`is_scalar_name`] that also includes PHPDoc-only
 /// pseudo-types and special names that `resolve_type_string` skips.
-fn is_keyword_type(name: &str) -> bool {
+pub(crate) fn is_keyword_type(name: &str) -> bool {
     if is_scalar_name(name) {
         return true;
     }
@@ -2701,7 +2824,7 @@ fn is_keyword_type(name: &str) -> bool {
 
 /// Whether a type name refers to a scalar / built-in type.
 /// Narrow primitive scalar check matching built-in PHP types.
-fn is_primitive_scalar_name(name: &str) -> bool {
+pub(crate) fn is_primitive_scalar_name(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "int"
@@ -4451,6 +4574,34 @@ mod tests {
     }
 
     #[test]
+    fn base_name_strips_leading_backslash() {
+        assert_eq!(
+            PhpType::Named("\\App\\Models\\User".to_owned()).base_name(),
+            Some("App\\Models\\User")
+        );
+    }
+
+    #[test]
+    fn base_name_generic_strips_leading_backslash() {
+        assert_eq!(
+            PhpType::Generic(
+                "\\Collection".to_owned(),
+                vec![PhpType::Named("User".to_owned())]
+            )
+            .base_name(),
+            Some("Collection")
+        );
+    }
+
+    #[test]
+    fn base_name_nullable_strips_leading_backslash() {
+        assert_eq!(
+            PhpType::Nullable(Box::new(PhpType::Named("\\User".to_owned()))).base_name(),
+            Some("User")
+        );
+    }
+
+    #[test]
     fn base_name_generic_class() {
         assert_eq!(
             PhpType::parse("Collection<int, User>").base_name(),
@@ -5600,6 +5751,323 @@ mod tests {
                 matches!(d, PhpType::Intersection(_)),
                 "Expected Intersection, got {d:?}"
             );
+        }
+    }
+
+    // ── Predicate tests ─────────────────────────────────────────────────
+
+    mod predicate_tests {
+        use super::*;
+
+        // ── is_bool ─────────────────────────────────────────────────
+
+        #[test]
+        fn is_bool_true_for_bool() {
+            assert!(PhpType::bool().is_bool());
+        }
+
+        #[test]
+        fn is_bool_true_for_boolean() {
+            assert!(PhpType::Named("boolean".into()).is_bool());
+        }
+
+        #[test]
+        fn is_bool_case_insensitive() {
+            assert!(PhpType::Named("Bool".into()).is_bool());
+            assert!(PhpType::Named("BOOLEAN".into()).is_bool());
+        }
+
+        #[test]
+        fn is_bool_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::bool())).is_bool());
+        }
+
+        #[test]
+        fn is_bool_false_for_int() {
+            assert!(!PhpType::int().is_bool());
+        }
+
+        #[test]
+        fn is_bool_false_for_true() {
+            assert!(!PhpType::true_().is_bool());
+        }
+
+        // ── is_true ────────────────────────────────────────────────
+
+        #[test]
+        fn is_true_true_for_true() {
+            assert!(PhpType::true_().is_true());
+        }
+
+        #[test]
+        fn is_true_case_insensitive() {
+            assert!(PhpType::Named("True".into()).is_true());
+            assert!(PhpType::Named("TRUE".into()).is_true());
+        }
+
+        #[test]
+        fn is_true_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::true_())).is_true());
+        }
+
+        #[test]
+        fn is_true_false_for_false() {
+            assert!(!PhpType::false_().is_true());
+        }
+
+        #[test]
+        fn is_true_false_for_bool() {
+            assert!(!PhpType::bool().is_true());
+        }
+
+        // ── is_false ───────────────────────────────────────────────
+
+        #[test]
+        fn is_false_true_for_false() {
+            assert!(PhpType::false_().is_false());
+        }
+
+        #[test]
+        fn is_false_case_insensitive() {
+            assert!(PhpType::Named("False".into()).is_false());
+            assert!(PhpType::Named("FALSE".into()).is_false());
+        }
+
+        #[test]
+        fn is_false_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::false_())).is_false());
+        }
+
+        #[test]
+        fn is_false_false_for_true() {
+            assert!(!PhpType::true_().is_false());
+        }
+
+        #[test]
+        fn is_false_false_for_bool() {
+            assert!(!PhpType::bool().is_false());
+        }
+
+        // ── is_int ─────────────────────────────────────────────────
+
+        #[test]
+        fn is_int_true_for_int() {
+            assert!(PhpType::int().is_int());
+        }
+
+        #[test]
+        fn is_int_true_for_integer() {
+            assert!(PhpType::Named("integer".into()).is_int());
+        }
+
+        #[test]
+        fn is_int_case_insensitive() {
+            assert!(PhpType::Named("Int".into()).is_int());
+            assert!(PhpType::Named("INTEGER".into()).is_int());
+        }
+
+        #[test]
+        fn is_int_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::int())).is_int());
+        }
+
+        #[test]
+        fn is_int_false_for_float() {
+            assert!(!PhpType::float().is_int());
+        }
+
+        // ── is_string_type ─────────────────────────────────────────
+
+        #[test]
+        fn is_string_type_true_for_string() {
+            assert!(PhpType::string().is_string_type());
+        }
+
+        #[test]
+        fn is_string_type_case_insensitive() {
+            assert!(PhpType::Named("String".into()).is_string_type());
+            assert!(PhpType::Named("STRING".into()).is_string_type());
+        }
+
+        #[test]
+        fn is_string_type_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::string())).is_string_type());
+        }
+
+        #[test]
+        fn is_string_type_false_for_int() {
+            assert!(!PhpType::int().is_string_type());
+        }
+
+        #[test]
+        fn is_string_type_false_for_class_string() {
+            assert!(!PhpType::ClassString(None).is_string_type());
+        }
+
+        // ── is_float ───────────────────────────────────────────────
+
+        #[test]
+        fn is_float_true_for_float() {
+            assert!(PhpType::float().is_float());
+        }
+
+        #[test]
+        fn is_float_true_for_double() {
+            assert!(PhpType::Named("double".into()).is_float());
+        }
+
+        #[test]
+        fn is_float_case_insensitive() {
+            assert!(PhpType::Named("Float".into()).is_float());
+            assert!(PhpType::Named("DOUBLE".into()).is_float());
+        }
+
+        #[test]
+        fn is_float_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::float())).is_float());
+        }
+
+        #[test]
+        fn is_float_false_for_int() {
+            assert!(!PhpType::int().is_float());
+        }
+
+        // ── is_object ──────────────────────────────────────────────
+
+        #[test]
+        fn is_object_true_for_object() {
+            assert!(PhpType::object().is_object());
+        }
+
+        #[test]
+        fn is_object_case_insensitive() {
+            assert!(PhpType::Named("Object".into()).is_object());
+            assert!(PhpType::Named("OBJECT".into()).is_object());
+        }
+
+        #[test]
+        fn is_object_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::object())).is_object());
+        }
+
+        #[test]
+        fn is_object_false_for_class() {
+            assert!(!PhpType::Named("User".into()).is_object());
+        }
+
+        #[test]
+        fn is_object_false_for_object_shape() {
+            assert!(!PhpType::ObjectShape(vec![]).is_object());
+        }
+
+        // ── is_callable ────────────────────────────────────────────
+
+        #[test]
+        fn is_callable_true_for_callable() {
+            assert!(PhpType::callable().is_callable());
+        }
+
+        #[test]
+        fn is_callable_case_insensitive() {
+            assert!(PhpType::Named("Callable".into()).is_callable());
+            assert!(PhpType::Named("CALLABLE".into()).is_callable());
+        }
+
+        #[test]
+        fn is_callable_true_for_closure() {
+            assert!(PhpType::Named("Closure".into()).is_callable());
+            assert!(PhpType::Named("closure".into()).is_callable());
+        }
+
+        #[test]
+        fn is_callable_true_for_callable_variant() {
+            let t = PhpType::Callable {
+                kind: "callable".into(),
+                params: vec![],
+                return_type: None,
+            };
+            assert!(t.is_callable());
+        }
+
+        #[test]
+        fn is_callable_true_for_closure_variant() {
+            let t = PhpType::Callable {
+                kind: "Closure".into(),
+                params: vec![],
+                return_type: Some(Box::new(PhpType::void())),
+            };
+            assert!(t.is_callable());
+        }
+
+        #[test]
+        fn is_callable_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::callable())).is_callable());
+            assert!(PhpType::Nullable(Box::new(PhpType::Named("Closure".into()))).is_callable());
+        }
+
+        #[test]
+        fn is_callable_false_for_string() {
+            assert!(!PhpType::string().is_callable());
+        }
+
+        // ── is_self_like ───────────────────────────────────────────
+
+        #[test]
+        fn is_self_like_true_for_self() {
+            assert!(PhpType::self_().is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_true_for_static() {
+            assert!(PhpType::static_().is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_true_for_this() {
+            assert!(PhpType::Named("$this".into()).is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_true_for_parent() {
+            assert!(PhpType::parent_().is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_case_insensitive() {
+            assert!(PhpType::Named("Self".into()).is_self_like());
+            assert!(PhpType::Named("STATIC".into()).is_self_like());
+            assert!(PhpType::Named("Parent".into()).is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_nullable() {
+            assert!(PhpType::Nullable(Box::new(PhpType::static_())).is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_false_for_class() {
+            assert!(!PhpType::Named("User".into()).is_self_like());
+        }
+
+        #[test]
+        fn is_self_like_false_for_int() {
+            assert!(!PhpType::int().is_self_like());
+        }
+
+        // ── is_bool/is_true/is_false for non-matching types ────────
+
+        #[test]
+        fn predicates_false_for_union() {
+            let u = PhpType::Union(vec![PhpType::int(), PhpType::string()]);
+            assert!(!u.is_bool());
+            assert!(!u.is_true());
+            assert!(!u.is_false());
+            assert!(!u.is_int());
+            assert!(!u.is_string_type());
+            assert!(!u.is_float());
+            assert!(!u.is_object());
+            assert!(!u.is_callable());
+            assert!(!u.is_self_like());
         }
     }
 }

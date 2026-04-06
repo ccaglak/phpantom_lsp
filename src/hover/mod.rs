@@ -302,7 +302,7 @@ pub(crate) fn find_declaring_class(
 // Re-export `pub(crate)` items so external callers keep using `crate::hover::`.
 pub(crate) use formatting::{
     extract_description_from_info, extract_docblock_description, extract_var_description_from_info,
-    hover_for_function, shorten_php_type, shorten_type_string,
+    hover_for_function, shorten_php_type,
 };
 
 /// Result of searching for a member on a [`ClassInfo`] for hover purposes.
@@ -939,8 +939,8 @@ impl Backend {
             // When the type is a template parameter, show its variance
             // and bound (e.g. "**template-covariant** `TNode` of `AstNode`")
             // above the code block so the user sees the constraint.
-            let type_str = resolved_type.to_string();
-            let template_line = self.find_template_info_for_type(&type_str, uri, cursor_offset);
+            let template_line =
+                self.find_template_info_for_type(&resolved_type, uri, cursor_offset);
 
             let hover_body = build_variable_hover_body(
                 &var_name,
@@ -968,10 +968,8 @@ impl Backend {
             return Some(make_hover(format!("```php\n<?php\n{}\n```", var_name)));
         }
 
-        let type_str = ResolvedType::types_joined(&resolved).to_string();
-
-        let parsed = PhpType::parse(&type_str);
-        let hover_body = build_variable_hover_body(&var_name, &parsed, &class_loader, None);
+        let joined = ResolvedType::types_joined(&resolved);
+        let hover_body = build_variable_hover_body(&var_name, &joined, &class_loader, None);
         Some(make_hover(hover_body))
     }
 
@@ -1006,15 +1004,15 @@ impl Backend {
     /// `Some("**template-covariant** \`TNode\` of \`AstNode\`")`.
     fn find_template_info_for_type(
         &self,
-        type_str: &str,
+        ty: &PhpType,
         uri: &str,
         cursor_offset: u32,
     ) -> Option<String> {
-        // Only bare names (no `\`, `<`, `|`) can be template params.
-        let name = type_str.trim();
-        if !is_bare_identifier(name) {
-            return None;
-        }
+        // Only bare named types can be template params.
+        let name = match ty {
+            PhpType::Named(n) if is_bare_identifier(n) => n.as_str(),
+            _ => return None,
+        };
 
         let maps = self.symbol_maps.read();
         let map = maps.get(uri)?;
@@ -1109,24 +1107,20 @@ impl Backend {
         // parameter on the method or owning class, show the template's
         // variance and bound so the user understands the constraint.
         // Method-level templates take priority over class-level ones.
-        let mut seen_templates: Vec<String> = Vec::new();
-        if let Some(ref ret) = method.return_type {
-            let ret_str = ret.to_string();
-            if let Some(tpl_line) = find_template_info_in_method_or_class(&ret_str, method, owner) {
-                seen_templates.push(ret_str);
-                lines.push(tpl_line);
-            }
+        let mut seen_templates: Vec<PhpType> = Vec::new();
+        if let Some(ref ret) = method.return_type
+            && let Some(tpl_line) = find_template_info_in_method_or_class(ret, method, owner)
+        {
+            seen_templates.push(ret.clone());
+            lines.push(tpl_line);
         }
         for param in &method.parameters {
-            if let Some(ref hint) = param.type_hint {
-                let hint_str = hint.to_string();
-                if !seen_templates.iter().any(|s| s == &hint_str)
-                    && let Some(tpl_line) =
-                        find_template_info_in_method_or_class(&hint_str, method, owner)
-                {
-                    seen_templates.push(hint_str);
-                    lines.push(tpl_line);
-                }
+            if let Some(ref hint) = param.type_hint
+                && !seen_templates.iter().any(|s| s == hint)
+                && let Some(tpl_line) = find_template_info_in_method_or_class(hint, method, owner)
+            {
+                seen_templates.push(hint.clone());
+                lines.push(tpl_line);
             }
         }
 
@@ -1215,11 +1209,10 @@ impl Backend {
         // class, show the template's variance and bound so the user
         // understands the constraint (e.g. "**template-covariant**
         // `TNode` of `AstNode`").
-        if let Some(ref type_hint) = property.type_hint {
-            let type_hint_str = type_hint.to_string();
-            if let Some(tpl_line) = find_template_info_in_class(&type_hint_str, owner) {
-                lines.push(tpl_line);
-            }
+        if let Some(ref type_hint) = property.type_hint
+            && let Some(tpl_line) = find_template_info_in_class(type_hint, owner)
+        {
+            lines.push(tpl_line);
         }
 
         // Origin indicator (override / implements / virtual).
@@ -1534,25 +1527,25 @@ fn resolve_type_namespace_structured(
 /// `"**template** \`T\` of \`Model\`"`, or `None` when the type is
 /// not a template param in either scope.
 fn find_template_info_in_method_or_class(
-    type_str: &str,
+    ty: &PhpType,
     method: &MethodInfo,
     owner: &ClassInfo,
 ) -> Option<String> {
-    if let Some(line) = find_template_info_in_method(type_str, method) {
+    if let Some(line) = find_template_info_in_method(ty, method) {
         return Some(line);
     }
-    find_template_info_in_class(type_str, owner)
+    find_template_info_in_class(ty, owner)
 }
 
 /// Check whether `type_str` is a `@template` parameter declared on
 /// the method's own docblock.  Returns a formatted info line like
 /// `"**template** \`T\` of \`Model\`"`, or `None` when the type is
 /// not a method-level template param.
-fn find_template_info_in_method(type_str: &str, method: &MethodInfo) -> Option<String> {
-    let name = type_str.trim();
-    if !is_bare_identifier(name) {
-        return None;
-    }
+fn find_template_info_in_method(ty: &PhpType, method: &MethodInfo) -> Option<String> {
+    let name = match ty {
+        PhpType::Named(n) => n.as_str(),
+        _ => return None,
+    };
 
     // Method-level template_params stores just the names.
     if !method.template_params.iter().any(|p| p == name) {
@@ -1573,11 +1566,11 @@ fn find_template_info_in_method(type_str: &str, method: &MethodInfo) -> Option<S
 /// `owner`'s class docblock.  Returns a formatted info line like
 /// `"**template-covariant** \`TNode\` of \`AstNode\`"`, or `None`
 /// when the type is not a template param on the class.
-fn find_template_info_in_class(type_str: &str, owner: &ClassInfo) -> Option<String> {
-    let name = type_str.trim();
-    if !is_bare_identifier(name) {
-        return None;
-    }
+fn find_template_info_in_class(ty: &PhpType, owner: &ClassInfo) -> Option<String> {
+    let name = match ty {
+        PhpType::Named(n) => n.as_str(),
+        _ => return None,
+    };
 
     let docblock = owner.class_docblock.as_deref()?;
     let tpl = extract_template_params_full(docblock)

@@ -498,7 +498,7 @@ pub fn find_var_raw_type_in_source(
     content: &str,
     before_offset: usize,
     var_name: &str,
-) -> Option<String> {
+) -> Option<PhpType> {
     let search_area = content.get(..before_offset)?;
 
     // Track brace depth so that annotations inside other function/method
@@ -579,7 +579,7 @@ pub fn find_var_raw_type_in_source(
             if let Some(name) = remainder.split_whitespace().next()
                 && name == var_name
             {
-                return Some(type_token.to_string());
+                return Some(PhpType::parse(type_token));
             }
         }
     }
@@ -956,7 +956,7 @@ pub fn find_iterable_raw_type_in_source(
     content: &str,
     before_offset: usize,
     var_name: &str,
-) -> Option<String> {
+) -> Option<PhpType> {
     let search_area = content.get(..before_offset)?;
 
     // Track brace depth so that annotations inside class/function bodies
@@ -1051,7 +1051,7 @@ pub fn find_iterable_raw_type_in_source(
                     if let Some(name) = remainder.split_whitespace().next()
                         && name == var_name
                     {
-                        return Some(type_token.to_string());
+                        return Some(PhpType::parse(type_token));
                     }
                 }
             }
@@ -1095,7 +1095,7 @@ pub fn find_iterable_raw_type_in_source(
                             .next()
                             .is_some_and(|t| t.starts_with('$'));
                         if !has_var_name {
-                            return Some(type_token.to_string());
+                            return Some(PhpType::parse(type_token));
                         }
                     }
                 }
@@ -1315,34 +1315,7 @@ fn has_parameterisation(ty: &PhpType) -> bool {
 /// - Shapes, callables with signatures, slices (`Foo[]`)
 /// - Class names, unions, intersections, etc.
 fn is_bare_primitive_scalar(ty: &PhpType) -> bool {
-    matches!(ty, PhpType::Named(s) if is_bare_primitive_name(s))
-}
-
-/// Whether a type name is one of the basic PHP primitive / built-in names.
-///
-/// This is intentionally narrower than `PhpType::is_scalar()` — it
-/// excludes `mixed`, `object`, `self`, `static`, `parent`, `$this`,
-/// and all PHPDoc pseudo-types like `class-string`, `non-empty-string`.
-fn is_bare_primitive_name(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "int"
-            | "integer"
-            | "float"
-            | "double"
-            | "string"
-            | "bool"
-            | "boolean"
-            | "void"
-            | "never"
-            | "null"
-            | "false"
-            | "true"
-            | "array"
-            | "callable"
-            | "iterable"
-            | "resource"
-    )
+    matches!(ty, PhpType::Named(s) if crate::php_type::is_primitive_scalar_name(s))
 }
 
 /// Check whether a docblock type is a compatible refinement of a native
@@ -2063,7 +2036,10 @@ mod tests {
         );
         let cursor = src.find("$item->").unwrap();
         let result = find_var_raw_type_in_source(src, cursor, "$item");
-        assert_eq!(result, Some("Pen".to_string()));
+        assert_eq!(
+            result.as_ref().map(|t| t.to_string()),
+            Some("Pen".to_string())
+        );
     }
 
     #[test]
@@ -2082,7 +2058,10 @@ mod tests {
         );
         let cursor = src.find("$item->").unwrap();
         let result = find_var_raw_type_in_source(src, cursor, "$item");
-        assert_eq!(result, Some("Pen".to_string()));
+        assert_eq!(
+            result.as_ref().map(|t| t.to_string()),
+            Some("Pen".to_string())
+        );
     }
 
     // ── find_iterable_raw_type_in_source — scope isolation ──────────
@@ -2134,7 +2113,10 @@ mod tests {
         );
         let cursor = src.find("// cursor").unwrap();
         let result = find_iterable_raw_type_in_source(src, cursor, "$items");
-        assert_eq!(result, Some("list<Pen>".to_string()));
+        assert_eq!(
+            result.as_ref().map(|t| t.to_string()),
+            Some("list<Pen>".to_string())
+        );
     }
 
     #[test]
@@ -2153,6 +2135,9 @@ mod tests {
         );
         let cursor = src.find("// cursor").unwrap();
         let result = find_iterable_raw_type_in_source(src, cursor, "$items");
-        assert_eq!(result, Some("list<Pen>".to_string()));
+        assert_eq!(
+            result.as_ref().map(|t| t.to_string()),
+            Some("list<Pen>".to_string())
+        );
     }
 }

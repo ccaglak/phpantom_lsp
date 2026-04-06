@@ -349,7 +349,7 @@ pub(crate) fn resolve_class_with_inheritance(
                 && class_loader(&model_fqn).is_some()
             {
                 for param in &parent.template_params {
-                    level_subs.insert(param.clone(), PhpType::parse(&model_fqn));
+                    level_subs.insert(param.clone(), PhpType::Named(model_fqn.clone()));
                 }
             }
         }
@@ -574,7 +574,7 @@ fn merge_traits_into(
             let factory_fqn = model_to_factory_fqn(&model_fqn);
             if class_loader(&factory_fqn).is_some() {
                 for param in &trait_info.template_params {
-                    trait_subs.insert(param.clone(), PhpType::parse(&factory_fqn));
+                    trait_subs.insert(param.clone(), PhpType::Named(factory_fqn.clone()));
                 }
             }
         }

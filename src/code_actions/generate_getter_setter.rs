@@ -31,6 +31,7 @@ use super::detect_indent_from_members;
 use crate::Backend;
 use crate::docblock::{extract_var_type, get_docblock_text_for_node};
 use crate::parser::extract_hint_type;
+use crate::php_type::PhpType;
 use crate::util::offset_to_position;
 
 // ── Data types ──────────────────────────────────────────────────────────────
@@ -410,19 +411,7 @@ fn setter_method_name(prop_name: &str) -> String {
 /// Handles bare `bool`, `boolean`, and nullable `?bool` / `?boolean`.
 fn is_bool_type(type_hint: Option<&str>) -> bool {
     match type_hint {
-        Some(t) => {
-            let parsed = crate::php_type::PhpType::parse(t.trim());
-            match &parsed {
-                crate::php_type::PhpType::Named(s) => {
-                    s.eq_ignore_ascii_case("bool") || s.eq_ignore_ascii_case("boolean")
-                }
-                crate::php_type::PhpType::Nullable(inner) => matches!(
-                    inner.as_ref(),
-                    crate::php_type::PhpType::Named(s) if s.eq_ignore_ascii_case("bool") || s.eq_ignore_ascii_case("boolean")
-                ),
-                _ => false,
-            }
-        }
+        Some(t) => PhpType::parse(t.trim()).is_bool(),
         None => false,
     }
 }

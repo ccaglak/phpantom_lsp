@@ -98,7 +98,7 @@ pub(crate) fn resolve_variable_type(
         docblock::find_var_raw_type_in_source(content, cursor_offset as usize, var_name)
         && !is_cursor_in_self_assignment_rhs(content, cursor_offset as usize, var_name)
     {
-        return Some(PhpType::parse(&var_type));
+        return Some(var_type);
     }
 
     // 2–4. AST-based: parameter, foreach, catch
@@ -176,30 +176,27 @@ pub(crate) fn resolve_variable_type(
     );
     if !resolved.is_empty() {
         let joined = ResolvedType::types_joined(&resolved);
-        let joined_str = joined.to_string();
-        if !joined_str.is_empty() {
-            // When the AST-based result (step 2–4) carries richer type
-            // information than the unified pipeline (e.g. the docblock
-            // says `Generator<int, Pencil>` but the pipeline only
-            // resolved the bare class name `Generator`), prefer the
-            // AST result.  The AST path preserves the full `@param` /
-            // `@var` type string including generic parameters, while
-            // the unified pipeline resolves to ClassInfo objects that
-            // may lose that detail.
-            if let Some(ref ast) = ast_result {
-                let ast_str = ast.to_string();
-                if ast_str.len() > joined_str.len() && ast_str.starts_with(&joined_str) {
-                    // Don't prefer the AST result when the only difference
-                    // is a trailing `|null` — the unified pipeline may have
-                    // stripped it via guard clause narrowing.
-                    let suffix = &ast_str[joined_str.len()..];
-                    if suffix != "|null" {
-                        return ast_result;
-                    }
-                }
+        // When the AST-based result (step 2–4) carries richer type
+        // information than the unified pipeline (e.g. the docblock
+        // says `Generator<int, Pencil>` but the pipeline only
+        // resolved the bare class name `Generator`), prefer the
+        // AST result.  Skip when the only difference is a trailing
+        // `|null` — the unified pipeline may have stripped it via
+        // guard clause narrowing.
+        if let Some(ref ast) = ast_result
+            && !ast.equivalent(&joined)
+            && ast.has_type_structure()
+        {
+            // Check that the extra detail is not just `|null`.
+            // If the AST type without null is equivalent to the
+            // joined type, the only difference is a trailing null
+            // component — prefer the narrowed `joined` result.
+            let only_null_diff = ast.non_null_type().is_some_and(|nn| nn.equivalent(&joined));
+            if !only_null_diff {
+                return ast_result;
             }
-            return Some(joined);
         }
+        return Some(joined);
     }
 
     // Fall back to the AST-based parameter/foreach/catch type.
@@ -429,11 +426,11 @@ fn find_type_in_params(
                     // the raw docblock text as well.
                     find_method_docblock(content, method_start_offset)
                         .and_then(|doc| docblock::extract_param_raw_type(&doc, &pname))
+                        .and_then(|s| docblock::sanitise_and_parse_docblock_type(&s))
                 });
 
-        let doc_parsed = docblock_type.as_ref().map(|s| PhpType::parse(s));
         let effective =
-            docblock::resolve_effective_type_typed(native_parsed.as_ref(), doc_parsed.as_ref());
+            docblock::resolve_effective_type_typed(native_parsed.as_ref(), docblock_type.as_ref());
 
         if effective.is_some() {
             return effective;
@@ -662,37 +659,33 @@ fn find_type_in_foreach(
         }
     }
 
-    // Get the iterable expression's raw type from docblock annotations
+    // Get the iterable expression's type from docblock annotations
     let foreach_offset = foreach.foreach.span().start.offset as usize;
-    let raw_type = extract_foreach_expression_raw_type(foreach, content, foreach_offset);
+    let iterable_type = extract_foreach_expression_type(foreach, content, foreach_offset);
 
-    if let Some(ref rt) = raw_type {
+    if let Some(ref it) = iterable_type {
         if is_value_var {
             // Extract value type: `list<User>` → `User`,
             // `Generator<int, Pencil>` → `Pencil`,
             // `User[]` → `User`
-            let parsed = crate::php_type::PhpType::parse(rt);
-            if let Some(element_type) = parsed.extract_value_type(true) {
+            if let Some(element_type) = it.extract_value_type(true) {
                 return Some(element_type.clone());
             }
-        } else if is_key_var {
-            let parsed = crate::php_type::PhpType::parse(rt);
-            if let Some(key_type) = parsed.extract_key_type(true) {
-                return Some(key_type.clone());
-            }
+        } else if is_key_var && let Some(key_type) = it.extract_key_type(true) {
+            return Some(key_type.clone());
         }
     }
 
     None
 }
 
-/// Extract the raw iterable type string from the foreach expression's
-/// surrounding docblock annotations.
-fn extract_foreach_expression_raw_type(
+/// Extract the iterable type from the foreach expression's surrounding
+/// docblock annotations, returning the already-parsed `PhpType` directly.
+fn extract_foreach_expression_type(
     foreach: &Foreach<'_>,
     content: &str,
     foreach_offset: usize,
-) -> Option<String> {
+) -> Option<PhpType> {
     let expr_span = foreach.expression.span();
     let expr_start = expr_span.start.offset as usize;
     let expr_end = expr_span.end.offset as usize;
@@ -996,9 +989,8 @@ fn resolve_expression_to_classes(
         if let Some(raw_type) =
             docblock::find_var_raw_type_in_source(content, cursor_offset as usize, expr_text)
         {
-            let parsed_raw = PhpType::parse(&raw_type);
             return crate::completion::type_resolution::type_hint_to_classes_typed(
-                &parsed_raw,
+                &raw_type,
                 &current_class.name,
                 all_classes,
                 class_loader,
@@ -1355,11 +1347,9 @@ fn find_type_in_closure_call(
                 .find(|(_, p)| *p.variable.name == *var_name);
 
             if let Some((param_idx, param)) = param_hit {
-                // Get the explicit type hint.
-                let explicit_type = param
-                    .hint
-                    .as_ref()
-                    .map(|h| extract_hint_type(h).to_string());
+                // Get the explicit type hint as a PhpType directly
+                // (no stringify-then-reparse roundtrip).
+                let explicit_type = param.hint.as_ref().map(|h| extract_hint_type(h));
 
                 // If there's an explicit type, check whether the
                 // inferred callable parameter type is more specific.
@@ -1405,20 +1395,17 @@ fn find_type_in_closure_call(
 
 /// Try to infer callable parameter types from the enclosing call
 /// expression and check whether the inferred type is a subclass of
-/// `explicit_type`.  Returns the inferred type string when it is more
+/// `explicit_type`.  Returns the inferred type when it is more
 /// specific, or `None` otherwise.
 fn try_infer_more_specific_type_from_call(
     call: &Call<'_>,
     arg_idx: usize,
     param_idx: usize,
-    explicit_type: &str,
+    explicit_type: &PhpType,
     closure_ctx: &HoverClosureCtx<'_>,
 ) -> Option<PhpType> {
     let inferred_types = infer_callable_param_types_for_call(call, arg_idx, closure_ctx)?;
     let inferred = inferred_types.get(param_idx)?;
-    if inferred.is_empty() {
-        return None;
-    }
 
     // Resolve both the explicit and inferred types to ClassInfo to
     // check the inheritance relationship.
@@ -1428,9 +1415,8 @@ fn try_infer_more_specific_type_from_call(
         .map(|c| c.name.as_str())
         .unwrap_or(&dummy.name);
 
-    let parsed_explicit = PhpType::parse(explicit_type);
     let explicit_classes = crate::completion::type_resolution::type_hint_to_classes_typed(
-        &parsed_explicit,
+        explicit_type,
         current_name,
         closure_ctx.all_classes,
         closure_ctx.class_loader,
@@ -1439,9 +1425,8 @@ fn try_infer_more_specific_type_from_call(
         return None;
     }
 
-    let parsed_inferred = PhpType::parse(inferred);
     let inferred_classes = crate::completion::type_resolution::type_hint_to_classes_typed(
-        &parsed_inferred,
+        inferred,
         current_name,
         closure_ctx.all_classes,
         closure_ctx.class_loader,
@@ -1467,7 +1452,7 @@ fn try_infer_more_specific_type_from_call(
             .all(|(a, b)| a.name == b.name);
 
     if all_subtypes && !is_same {
-        Some(PhpType::parse(inferred))
+        Some(inferred.clone())
     } else {
         None
     }
@@ -1479,7 +1464,7 @@ fn infer_callable_param_types_for_call(
     call: &Call<'_>,
     arg_idx: usize,
     closure_ctx: &HoverClosureCtx<'_>,
-) -> Option<Vec<String>> {
+) -> Option<Vec<PhpType>> {
     match call {
         Call::Method(mc) => {
             if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
@@ -1581,7 +1566,13 @@ fn infer_callable_param_types_for_call(
                 if let Some(ref c) = cls {
                     let resolved =
                         crate::virtual_members::resolve_class_fully(c, closure_ctx.class_loader);
-                    find_callable_params_on_method(&resolved, &method_name, arg_idx)
+                    let receiver_fqn = c.fqn();
+                    find_callable_params_on_method(&resolved, &method_name, arg_idx).map(|params| {
+                        params
+                            .into_iter()
+                            .map(|ty| ty.replace_self(&receiver_fqn))
+                            .collect()
+                    })
                 } else {
                     None
                 }
@@ -1609,7 +1600,7 @@ fn find_callable_params_on_receiver_classes(
     method_name: &str,
     arg_idx: usize,
     closure_ctx: &HoverClosureCtx<'_>,
-) -> Option<Vec<String>> {
+) -> Option<Vec<PhpType>> {
     for cls in classes {
         let resolved = crate::virtual_members::resolve_class_fully(cls, closure_ctx.class_loader);
         if let Some(params) = find_callable_params_on_method(&resolved, method_name, arg_idx) {
@@ -1617,11 +1608,7 @@ fn find_callable_params_on_receiver_classes(
             let receiver_fqn = cls.fqn();
             let result = params
                 .into_iter()
-                .map(|ty| {
-                    crate::php_type::PhpType::parse(&ty)
-                        .replace_self(&receiver_fqn)
-                        .to_string()
-                })
+                .map(|ty| ty.replace_self(&receiver_fqn))
                 .collect();
             return Some(result);
         }
@@ -1634,7 +1621,7 @@ fn find_callable_params_on_method(
     class: &ClassInfo,
     method_name: &str,
     arg_idx: usize,
-) -> Option<Vec<String>> {
+) -> Option<Vec<PhpType>> {
     let method = class.methods.iter().find(|m| m.name == method_name)?;
     let param = method.parameters.get(arg_idx)?;
     let hint = param.type_hint.as_ref()?;
@@ -1645,7 +1632,7 @@ fn find_callable_params_on_method(
         Some(
             callable_params
                 .iter()
-                .map(|cp| cp.type_hint.to_string())
+                .map(|cp| cp.type_hint.clone())
                 .collect(),
         )
     }

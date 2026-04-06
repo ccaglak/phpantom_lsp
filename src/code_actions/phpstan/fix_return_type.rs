@@ -42,6 +42,7 @@ use crate::code_actions::phpstan::add_iterable_type::{
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::completion::resolver::Loaders;
 use crate::completion::variable::resolution::resolve_variable_types;
+use crate::docblock::type_strings::split_type_token;
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, FunctionLoader, ResolvedType};
 use crate::util::{find_brace_match_line, find_semicolon_balanced, ranges_overlap};
@@ -55,10 +56,10 @@ use crate::util::{find_brace_match_line, find_semicolon_balanced, ranges_overlap
 /// When the two are identical, no docblock is needed.
 pub(crate) struct InferredReturnType {
     /// Valid native PHP type hint (e.g. `array`, `int`, `Foo`).
-    pub(crate) native: String,
+    pub(crate) native: PhpType,
     /// Full effective type including generics/shapes (e.g. `list<string>`).
     /// `None` when the native type already captures the full type.
-    pub(crate) effective: Option<String>,
+    pub(crate) effective: Option<PhpType>,
 }
 
 // ── PHPStan identifiers ─────────────────────────────────────────────────────
@@ -169,7 +170,7 @@ impl Backend {
                     // just a habit.  The "Remove return statement" fix above
                     // handles it.
                     if let Some(actual_type) = extract_actual_type(&diag.message)
-                        && actual_type != "null"
+                        && !PhpType::parse(actual_type).is_null()
                     {
                         // Verify the change-type fix is applicable (the
                         // function has a return type that can be replaced).
@@ -397,7 +398,7 @@ pub(crate) fn infer_return_type(
         .unwrap_or_default();
 
     // Scan return statements and resolve their types.
-    let mut return_types: Vec<String> = Vec::new();
+    let mut return_types: Vec<PhpType> = Vec::new();
     let mut has_bare_return = false;
     let mut has_return_with_value = false;
 
@@ -467,55 +468,61 @@ pub(crate) fn infer_return_type(
                 );
                 let type_str = ResolvedType::types_joined(&results).to_string();
                 if !type_str.is_empty() {
-                    return_types.push(type_str);
+                    return_types.push(PhpType::parse(&type_str));
                     continue;
                 }
             }
 
             // For other expressions, fall back to `mixed`.
-            return_types.push("mixed".to_string());
+            return_types.push(PhpType::mixed());
         }
     }
 
     if !has_return_with_value && !has_bare_return {
         return Some(InferredReturnType {
-            native: "void".to_string(),
+            native: PhpType::void(),
             effective: None,
         });
     }
 
     if return_types.is_empty() && has_bare_return {
         return Some(InferredReturnType {
-            native: "void".to_string(),
+            native: PhpType::void(),
             effective: None,
         });
     }
 
     // Deduplicate types.
-    return_types.sort();
-    return_types.dedup();
+    let mut type_strings: Vec<String> = return_types.iter().map(|t| t.to_string()).collect();
+    type_strings.sort();
+    type_strings.dedup();
+    let mut deduped: Vec<PhpType> = type_strings
+        .into_iter()
+        .map(|s| PhpType::parse(&s))
+        .collect();
 
     if has_bare_return {
-        return_types.push("null".to_string());
-        return_types.sort();
-        return_types.dedup();
+        let has_null = deduped.iter().any(|t| t.is_null());
+        if !has_null {
+            deduped.push(PhpType::null());
+        }
     }
 
-    let effective = if return_types.len() == 1 {
-        return_types.into_iter().next().unwrap()
-    } else if return_types.len() <= 3 {
-        return_types.join("|")
+    let effective = if deduped.len() == 1 {
+        deduped.into_iter().next().unwrap()
+    } else if deduped.len() <= 3 {
+        PhpType::Union(deduped)
     } else {
         return None;
     };
 
     // Convert effective type → native PHP type hint.
-    let parsed = PhpType::parse(&effective);
-    let native = parsed
+    let native = effective
         .to_native_hint()
-        .unwrap_or_else(|| "mixed".to_string());
+        .map(|s| PhpType::parse(&s))
+        .unwrap_or_else(PhpType::mixed);
 
-    let needs_docblock = native != effective;
+    let needs_docblock = native.to_string() != effective.to_string();
     Some(InferredReturnType {
         native,
         effective: if needs_docblock {
@@ -562,7 +569,7 @@ pub(crate) fn enrichment_return_type(
     // Return the effective type if it's richer than the native hint,
     // otherwise return the native type (which may still be useful for
     // callers that want any inferred type, e.g. `void`).
-    Some(inferred.effective.unwrap_or(inferred.native))
+    Some(inferred.effective.unwrap_or(inferred.native).to_string())
 }
 
 impl Backend {
@@ -625,11 +632,13 @@ impl Backend {
 
                 let edits = if should_use_own_inference(&our, &current) {
                     let inferred = our?;
+                    let native_str = inferred.native.to_string();
+                    let effective_str = inferred.effective.as_ref().map(|e| e.to_string());
                     build_update_return_type_edits_split(
                         content,
                         diag_line,
-                        &inferred.native,
-                        inferred.effective.as_deref(),
+                        &native_str,
+                        effective_str.as_deref(),
                     )?
                 } else {
                     // Trust the PHPStan tip.
@@ -659,6 +668,9 @@ impl Backend {
                 let inferred =
                     self.infer_return_type_for_function(&data.uri, content, diag_line)?;
 
+                let native_str = inferred.native.to_string();
+                let effective_str = inferred.effective.as_ref().map(|e| e.to_string());
+
                 let lines: Vec<&str> = content.lines().collect();
                 let brace_line = find_open_brace_from_declaration(&lines, diag_line)?;
                 let (paren_line, paren_col) = find_close_paren_before_brace(&lines, brace_line)?;
@@ -671,12 +683,12 @@ impl Backend {
                         start: Position::new(paren_line as u32, (paren_col + 1) as u32),
                         end: Position::new(paren_line as u32, (paren_col + 1) as u32),
                     },
-                    new_text: format!(": {}", inferred.native),
+                    new_text: format!(": {}", native_str),
                 });
 
                 // When the effective type is richer than the native hint,
                 // add a `@return` docblock tag.
-                if let Some(ref eff) = inferred.effective {
+                if let Some(ref eff) = effective_str {
                     let func_line = find_func_keyword_line(&lines, paren_line).unwrap_or(diag_line);
                     let docblock_info = find_function_docblock(&lines, func_line);
 
@@ -912,7 +924,7 @@ fn build_change_return_type_edits_to(
     let func_line = find_func_keyword_line(&lines, paren_line)?;
 
     // ── Step 5: Remove @return from docblock when target is void ────
-    if target_type == "void"
+    if PhpType::parse(target_type).is_void()
         && let Some(return_tag_edit) = find_and_remove_return_tag(&lines, func_line)
     {
         edits.push(return_tag_edit);
@@ -989,8 +1001,8 @@ fn read_current_return_type(content: &str, diag_line: usize) -> CurrentReturnTyp
         if trimmed.is_empty() {
             return None;
         }
-        let end = find_phpdoc_type_end(trimmed);
-        Some(trimmed[..end].to_string())
+        let (type_token, _remainder) = split_type_token(trimmed);
+        Some(type_token.to_string())
     });
 
     CurrentReturnType { native, docblock }
@@ -1014,7 +1026,11 @@ fn should_use_own_inference(our: &Option<InferredReturnType>, current: &CurrentR
 
     // The effective type our inference would write (prefers the rich
     // docblock type, falls back to the native hint).
-    let our_effective = inferred.effective.as_deref().unwrap_or(&inferred.native);
+    let our_effective_str = inferred
+        .effective
+        .as_ref()
+        .map(|e| e.to_string())
+        .unwrap_or_else(|| inferred.native.to_string());
 
     // The effective type currently declared (prefers the @return tag,
     // falls back to the native hint).
@@ -1024,7 +1040,7 @@ fn should_use_own_inference(our: &Option<InferredReturnType>, current: &CurrentR
         .or(current.native.as_deref())
         .unwrap_or("");
 
-    our_effective != current_effective
+    our_effective_str != current_effective
 }
 
 /// Build edits using pre-split native and effective types from our
@@ -1034,7 +1050,7 @@ fn should_use_own_inference(our: &Option<InferredReturnType>, current: &CurrentR
 /// when we trust our own inference rather than the PHPStan tip.  The
 /// difference is that the caller provides the native/effective split
 /// directly (e.g. native=`array`, effective=`list<int>`) instead of
-/// a single type string that gets split via `strip_generic_params`.
+/// a single type string that gets split via `PhpType::to_native_hint`.
 fn build_update_return_type_edits_split(
     content: &str,
     diag_line: usize,
@@ -1078,8 +1094,8 @@ fn build_update_return_type_edits_split(
                     .find(|c: char| !c.is_whitespace())
                     .unwrap_or(after_return.len());
                 let type_text = &after_return[type_start..];
-                let type_end = find_phpdoc_type_end(type_text);
-                let description = type_text[type_end..].to_string();
+                let (_, remainder) = split_type_token(type_text);
+                let description = remainder.to_string();
 
                 let new_line = format!(
                     "{}@return {}{}",
@@ -1177,35 +1193,6 @@ fn build_update_return_type_edits_split(
     Some(edits)
 }
 
-/// Extract the base (native PHP) type from a PHPStan type string by
-/// stripping any generic parameters.  For example, `array<int, string>`
-/// becomes `array`, while `int|string` is returned unchanged.
-fn strip_generic_params(ty: &str) -> &str {
-    match ty.find('<') {
-        Some(pos) => &ty[..pos],
-        None => ty,
-    }
-}
-
-/// Find the end of a PHPDoc type token, respecting angle brackets.
-///
-/// Starting from the beginning of `text`, returns the byte offset
-/// where the type ends.  Types may contain `<` / `>` (generics) and
-/// `,` (multiple type params); the boundary is the first whitespace
-/// character that is not inside angle brackets.
-fn find_phpdoc_type_end(text: &str) -> usize {
-    let mut depth: usize = 0;
-    for (i, c) in text.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            c if c.is_whitespace() && depth == 0 => return i,
-            _ => {}
-        }
-    }
-    text.len()
-}
-
 /// Build a list of `TextEdit`s that update both the native return type
 /// hint and the `@return` docblock tag for a `return.type` diagnostic.
 ///
@@ -1229,8 +1216,11 @@ fn build_update_return_type_edits(
 
     let mut edits = Vec::new();
 
-    let base_type = strip_generic_params(actual_type);
-    let has_generics = base_type.len() < actual_type.len();
+    let parsed_actual = PhpType::parse(actual_type);
+    let base_type = parsed_actual
+        .to_native_hint()
+        .unwrap_or_else(|| actual_type.to_string());
+    let has_generics = base_type != actual_type;
 
     // ── Step 1: Update native type hint ─────────────────────────────
     let brace_line = find_function_open_brace_line(&lines, diag_line)?;
@@ -1239,7 +1229,7 @@ fn build_update_return_type_edits(
     // Only change the native type if the base type differs from the
     // current native type.
     if let Some(type_edit) =
-        find_return_type_edit(&lines, paren_line, paren_col, brace_line, base_type)
+        find_return_type_edit(&lines, paren_line, paren_col, brace_line, &base_type)
     {
         edits.push(type_edit);
     }
@@ -1258,8 +1248,8 @@ fn build_update_return_type_edits(
                     .find(|c: char| !c.is_whitespace())
                     .unwrap_or(after_return.len());
                 let type_text = &after_return[type_start..];
-                let type_end = find_phpdoc_type_end(type_text);
-                let description = type_text[type_end..].to_string();
+                let (_, remainder) = split_type_token(type_text);
+                let description = remainder.to_string();
 
                 let new_line = format!(
                     "{}@return {}{}",
@@ -1404,40 +1394,19 @@ fn extract_return_type_actual(message: &str) -> Option<&str> {
 /// Infer a PHP type from a literal return expression (cheap, no
 /// resolution needed).
 ///
+/// Delegates to the shared `crate::util::infer_type_from_literal()`
+/// for basic scalar/null/string/empty-array literals, then handles
+/// extended cases (array literals with elements, `new ClassName()`).
+///
 /// Returns `None` for anything that isn't a simple literal — the
 /// caller should fall back to the full type resolver for those.
-fn infer_type_from_literal(expr: &str) -> Option<String> {
-    // Integer literal.
-    if expr.parse::<i64>().is_ok() {
-        return Some("int".to_string());
+fn infer_type_from_literal(expr: &str) -> Option<PhpType> {
+    // Try the shared utility for basic literals.
+    if let Some(t) = crate::util::infer_type_from_literal(expr) {
+        return Some(t);
     }
 
-    // Float literal.
-    if expr.contains('.') && expr.parse::<f64>().is_ok() {
-        return Some("float".to_string());
-    }
-
-    // Boolean literals.
-    if expr == "true" || expr == "false" {
-        return Some("bool".to_string());
-    }
-
-    // Null.
-    if expr == "null" {
-        return Some("null".to_string());
-    }
-
-    // String literals.
-    if (expr.starts_with('\'') && expr.ends_with('\''))
-        || (expr.starts_with('"') && expr.ends_with('"'))
-    {
-        return Some("string".to_string());
-    }
-
-    // Array literal.
-    if expr == "[]" {
-        return Some("array".to_string());
-    }
+    // Array literal with elements.
     if expr.starts_with('[') && expr.ends_with(']') {
         return infer_array_literal_type(&expr[1..expr.len() - 1]);
     }
@@ -1453,7 +1422,7 @@ fn infer_type_from_literal(expr: &str) -> Option<String> {
             .unwrap_or("")
             .trim();
         if !class_name.is_empty() {
-            return Some(class_name.to_string());
+            return Some(PhpType::Named(class_name.to_string()));
         }
     }
 
@@ -1467,20 +1436,20 @@ fn infer_type_from_literal(expr: &str) -> Option<String> {
 /// (e.g. `['a', 'b']` → `list<string>`, `[1, 2, 3]` → `list<int>`).
 /// Key-value pairs with string keys produce `array<string, V>`.
 /// Falls back to `array` when elements are mixed or too complex.
-fn infer_array_literal_type(inner: &str) -> Option<String> {
+fn infer_array_literal_type(inner: &str) -> Option<PhpType> {
     let inner = inner.trim();
     if inner.is_empty() {
-        return Some("array".to_string());
+        return Some(PhpType::array());
     }
 
     // Split on commas at the top level (not inside nested brackets,
     // parens, or strings).
     let elements = split_array_elements(inner);
     if elements.is_empty() {
-        return Some("array".to_string());
+        return Some(PhpType::array());
     }
 
-    let mut value_types: Vec<String> = Vec::new();
+    let mut value_types: Vec<PhpType> = Vec::new();
     let mut has_string_keys = false;
     let mut has_int_keys = false;
 
@@ -1503,43 +1472,53 @@ fn infer_array_literal_type(inner: &str) -> Option<String> {
                 has_int_keys = true;
             } else {
                 // Complex key expression — bail.
-                return Some("array".to_string());
+                return Some(PhpType::array());
             }
 
             match infer_type_from_literal(value) {
                 Some(t) => value_types.push(t),
-                None => return Some("array".to_string()),
+                None => return Some(PhpType::array()),
             }
         } else {
             // Sequential element (no key).
             match infer_type_from_literal(elem) {
                 Some(t) => value_types.push(t),
-                None => return Some("array".to_string()),
+                None => return Some(PhpType::array()),
             }
         }
     }
 
     if value_types.is_empty() {
-        return Some("array".to_string());
+        return Some(PhpType::array());
     }
 
     // Deduplicate value types.
-    value_types.sort();
-    value_types.dedup();
+    let mut type_strings: Vec<String> = value_types.iter().map(|t| t.to_string()).collect();
+    type_strings.sort();
+    type_strings.dedup();
+    let deduped: Vec<PhpType> = type_strings
+        .into_iter()
+        .map(|s| PhpType::parse(&s))
+        .collect();
 
-    let value_union = if value_types.len() <= 3 {
-        value_types.join("|")
+    let value_union_type = if deduped.len() > 3 {
+        PhpType::mixed()
+    } else if deduped.len() == 1 {
+        deduped.into_iter().next().unwrap()
     } else {
-        "mixed".to_string()
+        PhpType::Union(deduped)
     };
 
     if has_string_keys && !has_int_keys {
-        Some(format!("array<string, {}>", value_union))
+        Some(PhpType::Generic(
+            "array".to_owned(),
+            vec![PhpType::string(), value_union_type],
+        ))
     } else if has_string_keys {
         // Mixed key types — just use array with value type.
-        Some(format!("array<{}>", value_union))
+        Some(PhpType::Generic("array".to_owned(), vec![value_union_type]))
     } else {
-        Some(format!("list<{}>", value_union))
+        Some(PhpType::Generic("list".to_owned(), vec![value_union_type]))
     }
 }
 
@@ -2347,46 +2326,64 @@ mod tests {
 
     #[test]
     fn literal_int() {
-        assert_eq!(infer_type_from_literal("42"), Some("int".to_string()));
-        assert_eq!(infer_type_from_literal("-1"), Some("int".to_string()));
+        assert_eq!(
+            infer_type_from_literal("42").map(|t| t.to_string()),
+            Some("int".to_string())
+        );
+        assert_eq!(
+            infer_type_from_literal("-1").map(|t| t.to_string()),
+            Some("int".to_string())
+        );
     }
 
     #[test]
     fn literal_float() {
-        assert_eq!(infer_type_from_literal("1.5"), Some("float".to_string()));
+        assert_eq!(
+            infer_type_from_literal("1.5").map(|t| t.to_string()),
+            Some("float".to_string())
+        );
     }
 
     #[test]
     fn literal_bool() {
-        assert_eq!(infer_type_from_literal("true"), Some("bool".to_string()));
-        assert_eq!(infer_type_from_literal("false"), Some("bool".to_string()));
+        assert_eq!(
+            infer_type_from_literal("true").map(|t| t.to_string()),
+            Some("bool".to_string())
+        );
+        assert_eq!(
+            infer_type_from_literal("false").map(|t| t.to_string()),
+            Some("bool".to_string())
+        );
     }
 
     #[test]
     fn literal_string() {
         assert_eq!(
-            infer_type_from_literal("'hello'"),
+            infer_type_from_literal("'hello'").map(|t| t.to_string()),
             Some("string".to_string())
         );
         assert_eq!(
-            infer_type_from_literal("\"world\""),
+            infer_type_from_literal("\"world\"").map(|t| t.to_string()),
             Some("string".to_string())
         );
     }
 
     #[test]
     fn literal_array_empty() {
-        assert_eq!(infer_type_from_literal("[]"), Some("array".to_string()));
+        assert_eq!(
+            infer_type_from_literal("[]").map(|t| t.to_string()),
+            Some("array".to_string())
+        );
     }
 
     #[test]
     fn literal_array_of_strings() {
         assert_eq!(
-            infer_type_from_literal("['string']"),
+            infer_type_from_literal("['string']").map(|t| t.to_string()),
             Some("list<string>".to_string())
         );
         assert_eq!(
-            infer_type_from_literal("['a', 'b', 'c']"),
+            infer_type_from_literal("['a', 'b', 'c']").map(|t| t.to_string()),
             Some("list<string>".to_string())
         );
     }
@@ -2394,7 +2391,7 @@ mod tests {
     #[test]
     fn literal_array_of_ints() {
         assert_eq!(
-            infer_type_from_literal("[1, 2, 3]"),
+            infer_type_from_literal("[1, 2, 3]").map(|t| t.to_string()),
             Some("list<int>".to_string())
         );
     }
@@ -2402,7 +2399,7 @@ mod tests {
     #[test]
     fn literal_array_mixed_scalars() {
         assert_eq!(
-            infer_type_from_literal("['a', 1]"),
+            infer_type_from_literal("['a', 1]").map(|t| t.to_string()),
             Some("list<int|string>".to_string())
         );
     }
@@ -2410,11 +2407,11 @@ mod tests {
     #[test]
     fn literal_array_with_string_keys() {
         assert_eq!(
-            infer_type_from_literal("['key' => 'value']"),
+            infer_type_from_literal("['key' => 'value']").map(|t| t.to_string()),
             Some("array<string, string>".to_string())
         );
         assert_eq!(
-            infer_type_from_literal("['name' => 'Alice', 'age' => 42]"),
+            infer_type_from_literal("['name' => 'Alice', 'age' => 42]").map(|t| t.to_string()),
             Some("array<string, int|string>".to_string())
         );
     }
@@ -2422,7 +2419,7 @@ mod tests {
     #[test]
     fn literal_array_nested() {
         assert_eq!(
-            infer_type_from_literal("[['a'], ['b']]"),
+            infer_type_from_literal("[['a'], ['b']]").map(|t| t.to_string()),
             Some("list<list<string>>".to_string())
         );
     }
@@ -2430,7 +2427,7 @@ mod tests {
     #[test]
     fn literal_array_with_variable_falls_back() {
         assert_eq!(
-            infer_type_from_literal("[$var, 'a']"),
+            infer_type_from_literal("[$var, 'a']").map(|t| t.to_string()),
             Some("array".to_string())
         );
     }
@@ -2438,7 +2435,7 @@ mod tests {
     #[test]
     fn literal_array_legacy_syntax() {
         assert_eq!(
-            infer_type_from_literal("array('a', 'b')"),
+            infer_type_from_literal("array('a', 'b')").map(|t| t.to_string()),
             Some("list<string>".to_string())
         );
     }
@@ -2446,7 +2443,7 @@ mod tests {
     #[test]
     fn literal_array_new_objects() {
         assert_eq!(
-            infer_type_from_literal("[new Foo(), new Foo()]"),
+            infer_type_from_literal("[new Foo(), new Foo()]").map(|t| t.to_string()),
             Some("list<Foo>".to_string())
         );
     }
@@ -2454,7 +2451,7 @@ mod tests {
     #[test]
     fn literal_array_trailing_comma() {
         assert_eq!(
-            infer_type_from_literal("['a', 'b',]"),
+            infer_type_from_literal("['a', 'b',]").map(|t| t.to_string()),
             Some("list<string>".to_string())
         );
     }
@@ -2462,14 +2459,17 @@ mod tests {
     #[test]
     fn literal_new_class() {
         assert_eq!(
-            infer_type_from_literal("new Foo()"),
+            infer_type_from_literal("new Foo()").map(|t| t.to_string()),
             Some("Foo".to_string())
         );
     }
 
     #[test]
     fn literal_null() {
-        assert_eq!(infer_type_from_literal("null"), Some("null".to_string()));
+        assert_eq!(
+            infer_type_from_literal("null").map(|t| t.to_string()),
+            Some("null".to_string())
+        );
     }
 
     #[test]
@@ -2664,59 +2664,80 @@ mod tests {
         assert!(is_fix_return_type_stale(after, 2, "return.void"));
     }
 
-    // ── strip_generic_params ───────────────────────────────────────
+    // ── PhpType::to_native_hint (replaces strip_generic_params) ────
 
     #[test]
     fn strip_generic_simple_type() {
-        assert_eq!(strip_generic_params("int"), "int");
+        let parsed = PhpType::parse("int");
+        assert_eq!(
+            parsed.to_native_hint().unwrap_or_else(|| "int".to_string()),
+            "int"
+        );
     }
 
     #[test]
     fn strip_generic_array_with_params() {
-        assert_eq!(strip_generic_params("array<int, string>"), "array");
+        let parsed = PhpType::parse("array<int, string>");
+        assert_eq!(
+            parsed
+                .to_native_hint()
+                .unwrap_or_else(|| "array<int, string>".to_string()),
+            "array"
+        );
     }
 
     #[test]
     fn strip_generic_nested() {
+        let parsed = PhpType::parse("array<int, array<string, bool>>");
         assert_eq!(
-            strip_generic_params("array<int, array<string, bool>>"),
+            parsed
+                .to_native_hint()
+                .unwrap_or_else(|| "array<int, array<string, bool>>".to_string()),
             "array"
         );
     }
 
     #[test]
     fn strip_generic_union_no_generics() {
-        assert_eq!(strip_generic_params("int|string"), "int|string");
+        let parsed = PhpType::parse("int|string");
+        assert_eq!(
+            parsed
+                .to_native_hint()
+                .unwrap_or_else(|| "int|string".to_string()),
+            "int|string"
+        );
     }
 
-    // ── find_phpdoc_type_end ───────────────────────────────────────
+    // ── split_type_token (replaces find_phpdoc_type_end) ───────────
 
     #[test]
     fn phpdoc_type_end_simple() {
-        assert_eq!(find_phpdoc_type_end("int The value"), 3);
+        let (tok, _) = split_type_token("int The value");
+        assert_eq!(tok, "int");
     }
 
     #[test]
     fn phpdoc_type_end_generic() {
-        assert_eq!(find_phpdoc_type_end("array<int, string> The value"), 18);
+        let (tok, _) = split_type_token("array<int, string> The value");
+        assert_eq!(tok, "array<int, string>");
     }
 
     #[test]
     fn phpdoc_type_end_nested_generic() {
-        assert_eq!(
-            find_phpdoc_type_end("array<int, array<string, bool>> desc"),
-            31
-        );
+        let (tok, _) = split_type_token("array<int, array<string, bool>> desc");
+        assert_eq!(tok, "array<int, array<string, bool>>");
     }
 
     #[test]
     fn phpdoc_type_end_no_description() {
-        assert_eq!(find_phpdoc_type_end("int"), 3);
+        let (tok, _) = split_type_token("int");
+        assert_eq!(tok, "int");
     }
 
     #[test]
     fn phpdoc_type_end_generic_no_description() {
-        assert_eq!(find_phpdoc_type_end("array<int, string>"), 18);
+        let (tok, _) = split_type_token("array<int, string>");
+        assert_eq!(tok, "array<int, string>");
     }
 
     // ── build_update_return_type_edits ─────────────────────────────

@@ -1461,8 +1461,14 @@ fn build_return_type(info: &ExtractionInfo) -> String {
             // derive it from the trailing_return_type if available,
             // otherwise leave untyped.
             let t = clean_type_for_signature(&info.trailing_return_type);
-            if !t.is_empty() && !t.starts_with('?') && t != "null" && t != "mixed" {
-                return format!("?{}", t);
+            if !t.is_empty() {
+                let parsed = PhpType::parse(&t);
+                if !parsed.is_null()
+                    && !parsed.is_mixed()
+                    && !matches!(parsed, PhpType::Nullable(_))
+                {
+                    return PhpType::Nullable(Box::new(parsed)).to_string();
+                }
             }
             // Can't determine a useful nullable type.
             String::new()
@@ -1473,8 +1479,14 @@ fn build_return_type(info: &ExtractionInfo) -> String {
                 let type_hint = &info.returns[0].1;
                 if !type_hint.is_empty() {
                     let t = clean_type_for_signature(type_hint);
-                    if !t.is_empty() && !t.starts_with('?') && t != "null" && t != "mixed" {
-                        return format!("?{}", t);
+                    if !t.is_empty() {
+                        let parsed = PhpType::parse(&t);
+                        if !parsed.is_null()
+                            && !parsed.is_mixed()
+                            && !matches!(parsed, PhpType::Nullable(_))
+                        {
+                            return PhpType::Nullable(Box::new(parsed)).to_string();
+                        }
                     }
                     // Already nullable or mixed — use as-is.
                     if !t.is_empty() {

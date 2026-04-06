@@ -626,9 +626,7 @@ fn check_needs_update(
         && let Some(doc_ret) = &info.doc_return
     {
         // Remove `@return void` if the signature also has `: void`.
-        let sig_lower = sig_ret.to_lowercase();
-        let doc_lower = doc_ret.type_str.to_lowercase();
-        if sig_lower == "void" && doc_lower == "void" {
+        if PhpType::parse(sig_ret).is_void() && PhpType::parse(&doc_ret.type_str).is_void() {
             return true;
         }
         if is_type_contradiction(&doc_ret.type_str, sig_ret) {
@@ -638,7 +636,7 @@ fn check_needs_update(
 
     // Check if the @return tag needs body-based enrichment.
     if let Some(sig_ret) = &info.sig_return
-        && sig_ret.to_lowercase() != "void"
+        && !PhpType::parse(sig_ret).is_void()
     {
         let doc_already_rich = info
             .doc_return
@@ -653,8 +651,8 @@ fn check_needs_update(
                 function_loader,
             )
         {
-            let enriched_lower = enriched.to_lowercase();
-            if enriched_lower != "void" && enriched_lower != "mixed" && enriched != *sig_ret {
+            let enriched_parsed = PhpType::parse(&enriched);
+            if !enriched_parsed.is_void() && !enriched_parsed.is_mixed() && enriched != *sig_ret {
                 let differs_from_doc = info
                     .doc_return
                     .as_ref()
@@ -955,7 +953,7 @@ fn build_updated_docblock(
 
     // Body-based @return enrichment.
     if let Some(sig_ret) = &info.sig_return
-        && sig_ret.to_lowercase() != "void"
+        && !PhpType::parse(sig_ret).is_void()
     {
         let has_rich_return = lines.iter().any(|l| {
             if let DocLine::Return(text) = l {
@@ -974,8 +972,8 @@ fn build_updated_docblock(
                 function_loader,
             )
         {
-            let enriched_lower = enriched.to_lowercase();
-            if enriched_lower != "void" && enriched_lower != "mixed" && enriched != *sig_ret {
+            let enriched_parsed = PhpType::parse(&enriched);
+            if !enriched_parsed.is_void() && !enriched_parsed.is_mixed() && enriched != *sig_ret {
                 let differs_from_doc = info
                     .doc_return
                     .as_ref()
@@ -1238,8 +1236,8 @@ fn find_throws_insert_position(lines: &[DocLine]) -> usize {
 fn should_remove_return(info: &FunctionWithDocblock) -> bool {
     if let Some(sig_ret) = &info.sig_return
         && let Some(doc_ret) = &info.doc_return
-        && sig_ret.to_lowercase() == "void"
-        && doc_ret.type_str.to_lowercase() == "void"
+        && PhpType::parse(sig_ret).is_void()
+        && PhpType::parse(&doc_ret.type_str).is_void()
         && doc_ret.description.is_empty()
     {
         return true;

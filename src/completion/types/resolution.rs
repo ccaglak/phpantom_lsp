@@ -11,7 +11,7 @@
 ///   matching `ClassInfo` values (handles unions, intersections, generics,
 ///   `self`/`static`/`$this`, nullable types, object shapes, and type
 ///   alias expansion).
-/// - [`resolve_type_alias`]: fully expands a type alias defined
+/// - [`resolve_type_alias_typed`]: fully expands a type alias defined
 ///   via `@phpstan-type` / `@psalm-type` / `@phpstan-import-type`.
 /// - [`resolve_property_types`]: resolves a property's type hint
 ///   on a class to all candidate `ClassInfo` values.
@@ -208,8 +208,12 @@ fn resolve_named_type(
     depth: u8,
 ) -> Vec<ClassInfo> {
     // ── Type alias resolution ──────────────────────────────────────
-    if let Some(alias_type) = resolve_type_alias(name, owning_class_name, all_classes, class_loader)
-    {
+    if let Some(alias_type) = resolve_type_alias_typed(
+        &PhpType::Named(name.to_string()),
+        owning_class_name,
+        all_classes,
+        class_loader,
+    ) {
         return type_hint_to_classes_typed_depth(
             &alias_type,
             owning_class_name,
@@ -399,20 +403,19 @@ fn resolve_named_type(
 ///
 /// Pass an empty `owning_class_name` to search all classes without
 /// priority (used by the array-key completion path).
-pub(crate) fn resolve_type_alias(
-    hint: &str,
+pub(crate) fn resolve_type_alias_typed(
+    ty: &PhpType,
     owning_class_name: &str,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<PhpType> {
-    let mut current = hint.to_string();
-    let mut current_parsed = PhpType::parse(&current);
+    let mut current = ty.clone();
     let mut last_resolved: Option<PhpType> = None;
 
     for _ in 0..10 {
         // Only bare identifiers can be type aliases.  Skip anything that
         // looks like a complex type expression to avoid false matches.
-        if !matches!(current_parsed, PhpType::Named(_)) {
+        if !matches!(current, PhpType::Named(_)) {
             break;
         }
 
@@ -421,8 +424,7 @@ pub(crate) fn resolve_type_alias(
 
         match expanded {
             Some(php_type) => {
-                current = php_type.to_string();
-                current_parsed = php_type.clone();
+                current = php_type.clone();
                 last_resolved = Some(php_type);
             }
             None => break,
@@ -434,16 +436,21 @@ pub(crate) fn resolve_type_alias(
 
 /// Single-level alias lookup (no chaining).
 fn resolve_type_alias_once(
-    hint: &str,
+    hint: &PhpType,
     owning_class_name: &str,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<PhpType> {
+    let name = match hint {
+        PhpType::Named(n) => n.as_str(),
+        _ => return None,
+    };
+
     // Find the owning class to check its type_aliases.
     let owning_class = all_classes.iter().find(|c| c.name == owning_class_name);
 
     if let Some(cls) = owning_class
-        && let Some(def) = cls.type_aliases.get(hint)
+        && let Some(def) = cls.type_aliases.get(name)
     {
         return expand_type_alias_def(def, all_classes, class_loader);
     }
@@ -458,7 +465,7 @@ fn resolve_type_alias_once(
         if cls.name == owning_class_name {
             continue; // Already checked above.
         }
-        if let Some(def) = cls.type_aliases.get(hint) {
+        if let Some(def) = cls.type_aliases.get(name) {
             return expand_type_alias_def(def, all_classes, class_loader);
         }
     }

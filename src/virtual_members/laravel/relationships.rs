@@ -204,21 +204,20 @@ pub(super) fn build_property_type(
     kind: RelationshipKind,
     related_type: Option<&str>,
     custom_collection: Option<&str>,
-) -> Option<String> {
+) -> Option<PhpType> {
     match kind {
-        RelationshipKind::Singular => related_type.map(|t| t.to_string()),
+        RelationshipKind::Singular => related_type.map(|t| PhpType::Named(t.to_string())),
         RelationshipKind::Collection => {
             let inner = related_type.unwrap_or("Illuminate\\Database\\Eloquent\\Model");
             let collection_class = custom_collection.unwrap_or(ELOQUENT_COLLECTION_FQN);
-            Some(
-                PhpType::Generic(
-                    collection_class.to_string(),
-                    vec![PhpType::Named(inner.to_string())],
-                )
-                .to_string(),
-            )
+            Some(PhpType::Generic(
+                collection_class.to_string(),
+                vec![PhpType::Named(inner.to_string())],
+            ))
         }
-        RelationshipKind::MorphTo => Some("Illuminate\\Database\\Eloquent\\Model".to_string()),
+        RelationshipKind::MorphTo => Some(PhpType::Named(
+            "Illuminate\\Database\\Eloquent\\Model".to_string(),
+        )),
     }
 }
 
@@ -261,7 +260,7 @@ pub(crate) fn count_property_to_relationship_method(
 /// `hasManyThrough`, and `hasOneThrough`.
 ///
 /// Returns `None` if no recognisable pattern is found.
-pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
+pub fn infer_relationship_from_body(body_text: &str) -> Option<PhpType> {
     for &(method_name, fqn) in RELATIONSHIP_METHOD_FQN_MAP {
         // Look for `$this->methodName(` in the body text.
         let needle = format!("$this->{method_name}(");
@@ -278,7 +277,7 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
         // `resolve_name` will strip the leading `\` back to canonical
         // form during the resolution pass.
         if method_name == "morphTo" {
-            return Some(PhpType::Named(format!("\\{fqn}")).to_string());
+            return Some(PhpType::Named(format!("\\{fqn}")));
         }
 
         // Extract the first argument from the call.  We look for
@@ -287,15 +286,16 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
         let after_paren = &body_text[args_start..];
 
         if let Some(class_arg) = extract_class_argument(after_paren) {
-            return Some(
-                PhpType::Generic(format!("\\{fqn}"), vec![PhpType::Named(class_arg)]).to_string(),
-            );
+            return Some(PhpType::Generic(
+                format!("\\{fqn}"),
+                vec![PhpType::Named(class_arg)],
+            ));
         }
 
         // No `::class` argument found — return the bare relationship
         // name without generics.  The provider will handle it the same
         // way it handles annotated relationships without generics.
-        return Some(PhpType::Named(format!("\\{fqn}")).to_string());
+        return Some(PhpType::Named(format!("\\{fqn}")));
     }
 
     None
@@ -380,8 +380,8 @@ pub(crate) fn resolve_relation_chain(
         // Get the return type and extract the related model type.
         // Body-inferred relationship types are already stored in
         // `return_type` by the parser, so no fallback is needed.
-        let return_type_str = method.return_type_str()?;
-        let related_type = extract_related_type_for_chain(&return_type_str, &current_class)?;
+        let return_type = method.return_type.as_ref()?;
+        let related_type = extract_related_type_for_chain(return_type, &current_class)?;
 
         // Resolve the related type to a full class, trying the model's
         // namespace first (e.g. short name "Article" → "App\Models\Article").
@@ -404,12 +404,11 @@ fn resolve_class_with_inheritance(
 /// Extract the related type from a relationship return type string,
 /// resolving `$this` to the declaring class.
 fn extract_related_type_for_chain(
-    return_type: &str,
+    return_type: &PhpType,
     declaring_class: &ClassInfo,
 ) -> Option<String> {
-    let parsed = PhpType::parse(return_type);
-    classify_relationship_typed(&parsed)?;
-    let related = extract_related_type_typed(&parsed)?;
+    classify_relationship_typed(return_type)?;
+    let related = extract_related_type_typed(return_type)?;
 
     // `$this` in generic args means the declaring class itself.
     if related == "$this" || related == "static" {

@@ -51,7 +51,7 @@ use crate::completion::resolver::FunctionLoaderFn;
 use crate::completion::source::comment_position::position_to_byte_offset;
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
 use crate::completion::use_edit::{analyze_use_block, build_use_edit};
-use crate::php_type::PhpType;
+use crate::php_type::{PhpType, is_keyword_type};
 use crate::types::{ClassInfo, FunctionLoader};
 
 /// Detect whether the cursor is immediately after a `/**` trigger and,
@@ -919,15 +919,6 @@ fn extract_property_type(decl: &str) -> Option<String> {
 
 // ─── Type Enrichment Helpers ────────────────────────────────────────────────
 
-/// PHP scalar / built-in types that never have template parameters.
-const NON_CLASS_TYPES: &[&str] = &[
-    "int", "float", "string", "bool", "true", "false", "null", "void", "never", "mixed", "object",
-    "iterable", "resource", "self", "static", "parent",
-];
-
-/// Types that need a callable-signature placeholder in PHPDoc.
-const CALLABLE_TYPES: &[&str] = &["callable", "Closure"];
-
 /// Check whether a `PhpType` is a bare callable/Closure keyword (no signature).
 fn is_callable_keyword(pt: &PhpType) -> bool {
     matches!(pt, PhpType::Named(s) if {
@@ -1064,7 +1055,7 @@ pub(crate) fn enrichment_plain(
     };
 
     if is_bare_array(pt) {
-        return Some("array<mixed>".to_string());
+        return Some(PhpType::Generic("array".into(), vec![PhpType::mixed()]).to_string());
     }
 
     if is_callable_keyword(pt) {
@@ -1088,7 +1079,7 @@ pub(crate) fn enrichment_plain(
                         let name = callable_display_name(member);
                         format!("({}(): mixed)", name)
                     } else if is_bare_array(member) {
-                        "array<mixed>".to_string()
+                        PhpType::Generic("array".into(), vec![PhpType::mixed()]).to_string()
                     } else {
                         member.to_string()
                     }
@@ -1263,7 +1254,7 @@ fn build_function_snippet(
     let is_void = sym
         .return_type
         .as_ref()
-        .is_some_and(|r| r.eq_ignore_ascii_case("void"));
+        .is_some_and(|r| PhpType::parse(r).is_void());
     let return_tag = if is_void || is_constructor {
         None
     } else {
@@ -1277,8 +1268,10 @@ fn build_function_snippet(
             function_loader,
         );
         let inferred = body_inferred.filter(|t| {
-            let lower = t.to_lowercase();
-            lower != "void" && lower != "mixed" && Some(t.as_str()) != sym.return_type.as_deref()
+            let parsed = PhpType::parse(t);
+            !parsed.is_void()
+                && !parsed.is_mixed()
+                && Some(t.as_str()) != sym.return_type.as_deref()
         });
         // Fall back to signature-based enrichment when body inference
         // doesn't produce anything useful.
@@ -1375,7 +1368,7 @@ fn build_function_plain(
     let is_void = sym
         .return_type
         .as_ref()
-        .is_some_and(|r| r.eq_ignore_ascii_case("void"));
+        .is_some_and(|r| PhpType::parse(r).is_void());
     let return_tag = if is_void || is_constructor {
         None
     } else {
@@ -1391,8 +1384,10 @@ fn build_function_plain(
         // Filter out types that don't need a @return tag (void, scalars
         // that match the native hint exactly).
         let inferred = body_inferred.filter(|t| {
-            let lower = t.to_lowercase();
-            lower != "void" && lower != "mixed" && Some(t.as_str()) != sym.return_type.as_deref()
+            let parsed = PhpType::parse(t);
+            !parsed.is_void()
+                && !parsed.is_mixed()
+                && Some(t.as_str()) != sym.return_type.as_deref()
         });
         // Fall back to signature-based enrichment when body inference
         // doesn't produce anything useful.
@@ -1710,7 +1705,7 @@ fn property_var_type_snippet(
         Some(th) => {
             let clean = th.trim_start_matches('\\');
             // Callable types get a signature placeholder.
-            if CALLABLE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(clean)) {
+            if PhpType::parse(th).is_callable() {
                 let s = format!("(${{{}:{}()}})", *tab_stop, clean);
                 *tab_stop += 1;
                 return s;
@@ -1719,9 +1714,7 @@ fn property_var_type_snippet(
             if !matches!(
                 parsed,
                 PhpType::Union(_) | PhpType::Intersection(_) | PhpType::Nullable(_)
-            ) && !NON_CLASS_TYPES
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(clean))
+            ) && !is_keyword_type(clean)
                 && let Some(cls) = class_loader(clean)
                 && !cls.template_params.is_empty()
             {
@@ -1747,16 +1740,14 @@ fn property_var_type_plain(
         Some(th) if th == "array" => "array".to_string(),
         Some(th) => {
             let clean = th.trim_start_matches('\\');
-            if CALLABLE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(clean)) {
+            if PhpType::parse(th).is_callable() {
                 return format!("({}())", clean);
             }
             let parsed = PhpType::parse(th);
             if !matches!(
                 parsed,
                 PhpType::Union(_) | PhpType::Intersection(_) | PhpType::Nullable(_)
-            ) && !NON_CLASS_TYPES
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(clean))
+            ) && !is_keyword_type(clean)
                 && let Some(cls) = class_loader(clean)
                 && !cls.template_params.is_empty()
             {

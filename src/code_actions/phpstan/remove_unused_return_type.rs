@@ -93,7 +93,7 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<String> 
                 return None;
             }
 
-            Some(format_type_list(&remaining, "|"))
+            Some(format_type_list(&remaining, "|").to_string())
         }
         PhpType::Intersection(members) => {
             let remaining: Vec<&PhpType> = members
@@ -109,7 +109,7 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<String> 
                 return None;
             }
 
-            Some(format_type_list(&remaining, "&"))
+            Some(format_type_list(&remaining, "&").to_string())
         }
         PhpType::Nullable(inner) => {
             // `?T` is equivalent to `T|null`.
@@ -136,15 +136,21 @@ fn types_match(a: &PhpType, b: &PhpType) -> bool {
     a.equivalent(b)
 }
 
-/// Format a list of `PhpType` values joined by a separator.
+/// Build a `PhpType` from a list of type references.
 ///
-/// When only one member remains, returns it without the separator.
-fn format_type_list(types: &[&PhpType], sep: &str) -> String {
-    types
-        .iter()
-        .map(|t| format!("{}", t))
-        .collect::<Vec<_>>()
-        .join(sep)
+/// When only one member remains, returns it directly.  Otherwise
+/// constructs a `PhpType::Union` (for `"|"`) or `PhpType::Intersection`
+/// (for `"&"`).
+fn format_type_list(types: &[&PhpType], sep: &str) -> PhpType {
+    let cloned: Vec<PhpType> = types.iter().map(|t| (*t).clone()).collect();
+    if cloned.len() == 1 {
+        return cloned.into_iter().next().unwrap();
+    }
+    if sep == "&" {
+        PhpType::Intersection(cloned)
+    } else {
+        PhpType::Union(cloned)
+    }
 }
 
 // ── Helpers to find and edit native return types ────────────────────────────

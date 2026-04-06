@@ -24,21 +24,22 @@ use crate::completion::resolver::VarResolutionCtx;
 pub(in crate::completion) fn infer_array_literal_raw_type<'b>(
     elements: impl Iterator<Item = &'b ArrayElement<'b>>,
     ctx: &VarResolutionCtx<'_>,
-) -> Option<String> {
-    let mut types: Vec<String> = Vec::new();
+) -> Option<PhpType> {
+    let mut types: Vec<PhpType> = Vec::new();
     let mut has_string_keys = false;
-    let mut shape_parts: Vec<String> = Vec::new();
+    let mut shape_entries: Vec<crate::php_type::ShapeEntry> = Vec::new();
 
     for elem in elements {
         match elem {
             ArrayElement::KeyValue(kv) => {
                 has_string_keys = true;
-                // Extract key text.
                 let key_text = extract_array_key_text(kv.key);
-                // Resolve value type.
-                let value_type =
-                    infer_element_type(kv.value, ctx).unwrap_or_else(|| "mixed".to_string());
-                shape_parts.push(format!("{}: {}", key_text, value_type));
+                let value_type = infer_element_type(kv.value, ctx).unwrap_or_else(PhpType::mixed);
+                shape_entries.push(crate::php_type::ShapeEntry {
+                    key: Some(key_text),
+                    value_type,
+                    optional: false,
+                });
             }
             ArrayElement::Value(v) => {
                 if let Some(t) = infer_element_type(v.value, ctx)
@@ -50,7 +51,7 @@ pub(in crate::completion) fn infer_array_literal_raw_type<'b>(
             ArrayElement::Variadic(v) => {
                 // Spread: `...$other` — try to resolve iterable element type.
                 if let Some(raw) = super::foreach_resolution::resolve_expression_type(v.value, ctx)
-                    && let Some(elem) = raw.extract_value_type(true).map(|t| t.to_string())
+                    && let Some(elem) = raw.extract_value_type(true).cloned()
                     && !types.contains(&elem)
                 {
                     types.push(elem);
@@ -60,16 +61,20 @@ pub(in crate::completion) fn infer_array_literal_raw_type<'b>(
         }
     }
 
-    if has_string_keys && !shape_parts.is_empty() {
-        return Some(format!("array{{{}}}", shape_parts.join(", ")));
+    if has_string_keys && !shape_entries.is_empty() {
+        return Some(PhpType::ArrayShape(shape_entries));
     }
 
     if types.is_empty() {
         return None;
     }
 
-    let union = types.join("|");
-    Some(format!("list<{}>", union))
+    let elem_type = if types.len() == 1 {
+        types.into_iter().next().unwrap()
+    } else {
+        PhpType::Union(types)
+    };
+    Some(PhpType::Generic("list".into(), vec![elem_type]))
 }
 
 /// Extract a string representation of an array key expression.
@@ -89,29 +94,32 @@ fn extract_array_key_text<'b>(key: &'b Expression<'b>) -> String {
 }
 
 /// Infer the type of a single array element value expression.
-fn infer_element_type<'b>(value: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>) -> Option<String> {
+fn infer_element_type<'b>(
+    value: &'b Expression<'b>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<PhpType> {
     match value {
         // ── Scalar literals ──
-        Expression::Literal(Literal::String(_)) => Some("string".to_string()),
-        Expression::Literal(Literal::Integer(_)) => Some("int".to_string()),
-        Expression::Literal(Literal::Float(_)) => Some("float".to_string()),
-        Expression::Literal(Literal::True(_) | Literal::False(_)) => Some("bool".to_string()),
-        Expression::Literal(Literal::Null(_)) => Some("null".to_string()),
+        Expression::Literal(Literal::String(_)) => Some(PhpType::string()),
+        Expression::Literal(Literal::Integer(_)) => Some(PhpType::int()),
+        Expression::Literal(Literal::Float(_)) => Some(PhpType::float()),
+        Expression::Literal(Literal::True(_) | Literal::False(_)) => Some(PhpType::bool()),
+        Expression::Literal(Literal::Null(_)) => Some(PhpType::null()),
         // ── Nested array literals ──
         Expression::Array(arr) => infer_array_literal_raw_type(arr.elements.iter(), ctx)
-            .or_else(|| Some("array".to_string())),
+            .or_else(|| Some(PhpType::array())),
         Expression::LegacyArray(arr) => infer_array_literal_raw_type(arr.elements.iter(), ctx)
-            .or_else(|| Some("array".to_string())),
+            .or_else(|| Some(PhpType::array())),
         // ── Object instantiation ──
         Expression::Instantiation(inst) => match inst.class {
-            Expression::Identifier(ident) => Some(ident.value().to_string()),
-            Expression::Self_(_) => Some(ctx.current_class.name.clone()),
-            Expression::Static(_) => Some(ctx.current_class.name.clone()),
+            Expression::Identifier(ident) => Some(PhpType::Named(ident.value().to_string())),
+            Expression::Self_(_) => Some(PhpType::Named(ctx.current_class.name.clone())),
+            Expression::Static(_) => Some(PhpType::Named(ctx.current_class.name.clone())),
             _ => None,
         },
         Expression::Call(_) => {
             // Resolve call return type via the unified pipeline.
-            super::foreach_resolution::resolve_expression_type(value, ctx).map(|pt| pt.to_string())
+            super::foreach_resolution::resolve_expression_type(value, ctx)
         }
         Expression::Variable(Variable::Direct(dv)) => {
             let var_text = dv.name.to_string();
@@ -141,7 +149,6 @@ fn infer_element_type<'b>(value: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
                 ctx.class_loader,
                 crate::completion::resolver::Loaders::with_function(ctx.function_loader()),
             )
-            .map(|t| t.to_string())
         }
         // ── Parenthesized ──
         Expression::Parenthesized(p) => infer_element_type(p.expression, ctx),
@@ -149,9 +156,7 @@ fn infer_element_type<'b>(value: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
         // Delegate to the unified pipeline which resolves property
         // type hints and method return types through the class
         // hierarchy.
-        _ => {
-            super::foreach_resolution::resolve_expression_type(value, ctx).map(|pt| pt.to_string())
-        }
+        _ => super::foreach_resolution::resolve_expression_type(value, ctx),
     }
 }
 

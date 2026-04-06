@@ -31,6 +31,7 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::code_actions::CodeActionData;
 use crate::code_actions::make_code_action_data;
+use crate::php_type::PhpType;
 use crate::util::ranges_overlap;
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -80,8 +81,8 @@ fn extract_iterable_return_type(message: &str) -> Option<&str> {
 ///
 /// Uses PHPStan's generic syntax: `array<string>`, `iterable<User>`,
 /// `Traversable<mixed>`, etc.
-fn build_return_type(iterable_type: &str, element_type: &str) -> String {
-    format!("{}<{}>", iterable_type, element_type)
+fn build_return_type(iterable_type: &str, element_type: &str) -> PhpType {
+    PhpType::Generic(iterable_type.to_owned(), vec![PhpType::parse(element_type)])
 }
 
 // ── Docblock helpers ────────────────────────────────────────────────────────
@@ -380,7 +381,7 @@ impl Backend {
             .infer_iterable_element_type(&data.uri, content, func_line, iterable_type)
             .unwrap_or_else(|| "mixed".to_string());
 
-        let return_type = build_return_type(iterable_type, &element_type);
+        let return_type = build_return_type(iterable_type, &element_type).to_string();
 
         let lines: Vec<&str> = content.lines().collect();
         if func_line >= lines.len() {
@@ -540,23 +541,32 @@ impl Backend {
 
         // Prefer the effective type (richer, e.g. `list<string>`),
         // falling back to the native type.
-        let type_str = inferred.effective.as_deref().unwrap_or(&inferred.native);
+        let parsed = inferred
+            .effective
+            .as_ref()
+            .unwrap_or(&inferred.native)
+            .clone();
+        let type_str = parsed.to_string();
 
         // If the inferred type is just `array`, `mixed`, or the bare
         // iterable type, we can't determine element types.
-        let lower = type_str.to_lowercase();
-        if lower == "array" || lower == "mixed" || lower == iterable_type.to_lowercase() {
+        if matches!(&parsed, PhpType::Named(n) if n.eq_ignore_ascii_case("array"))
+            || parsed.is_mixed()
+            || type_str.eq_ignore_ascii_case(iterable_type)
+        {
             return None;
         }
 
         // Try to extract the generic parameter(s) from the inferred type.
         // e.g. `list<string>` → `string`, `array<int, User>` → `int, User`
-        if let Some(open) = type_str.find('<') {
-            if let Some(close) = type_str.rfind('>') {
-                let inner = type_str[open + 1..close].trim();
-                if !inner.is_empty() && inner != "mixed" {
-                    return Some(inner.to_string());
-                }
+        if let PhpType::Generic(_, args) = &parsed {
+            let inner = args
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !inner.is_empty() && !PhpType::parse(&inner).is_mixed() {
+                return Some(inner);
             }
             return None;
         }
@@ -565,7 +575,7 @@ impl Backend {
         // `string` when the function returns `['a', 'b']` and the
         // resolver collapsed it).  This shouldn't normally happen for
         // an iterable return, but use it as the element type.
-        if !lower.is_empty() && lower != "void" && lower != "null" {
+        if !parsed.is_void() && !parsed.is_null() {
             return Some(type_str.to_string());
         }
 
@@ -727,18 +737,24 @@ mod tests {
 
     #[test]
     fn builds_array_with_element_type() {
-        assert_eq!(build_return_type("array", "string"), "array<string>");
+        assert_eq!(
+            build_return_type("array", "string").to_string(),
+            "array<string>"
+        );
     }
 
     #[test]
     fn builds_iterable_mixed() {
-        assert_eq!(build_return_type("iterable", "mixed"), "iterable<mixed>");
+        assert_eq!(
+            build_return_type("iterable", "mixed").to_string(),
+            "iterable<mixed>"
+        );
     }
 
     #[test]
     fn builds_traversable_with_element() {
         assert_eq!(
-            build_return_type("Traversable", "User"),
+            build_return_type("Traversable", "User").to_string(),
             "Traversable<User>"
         );
     }
@@ -746,7 +762,7 @@ mod tests {
     #[test]
     fn builds_array_with_key_value() {
         assert_eq!(
-            build_return_type("array", "int, string"),
+            build_return_type("array", "int, string").to_string(),
             "array<int, string>"
         );
     }
