@@ -457,3 +457,178 @@ name individually.
   requires manual resolution).
 - Already-imported names are excluded.
 
+---
+
+### A37. Simplify with `?->` (nullsafe operator)
+
+**Impact: Low-Medium · Effort: Medium**
+
+Replace null-checked method/property chains with PHP 8.0's nullsafe
+operator:
+
+```php
+// Before
+if ($user !== null) {
+    $name = $user->getName();
+}
+
+$city = null;
+if ($user !== null) {
+    $city = $user->getAddress()->getCity();
+}
+
+// After
+$name = $user?->getName();
+
+$city = $user?->getAddress()?->getCity();
+```
+
+#### When the conversion is safe
+
+- The if-body contains exactly one statement: an assignment or a
+  standalone expression statement using the checked variable.
+- The null check is `$var !== null`, `$var !== null`, `!is_null($var)`,
+  or `isset($var)` (for a single variable, not array access).
+- There is no `else` / `elseif` branch. An else branch means the
+  developer wants to handle the null case explicitly, which `?->`
+  cannot express.
+- The variable is used only with `->` access in the body (not passed
+  to a function, not reassigned, not used in a binary expression).
+- For chained access (`$a->b()->c()`), every intermediate `->` must
+  also be converted to `?->` because the nullsafe operator
+  short-circuits the entire chain.
+- If the body assigns to a variable (`$x = $var->foo()`), the
+  resulting `$x = $var?->foo()` produces `null` when `$var` is null,
+  which matches the pre-existing state (the assignment was skipped
+  entirely, so `$x` was either unset or previously null).
+
+#### Implementation
+
+- Walk the AST for `Statement::If` nodes where the condition is a
+  null check on a single variable.
+- Verify the body meets the safety criteria above.
+- Replace the entire if-block with the body statement, substituting
+  every `->` on the checked variable's access chain with `?->`.
+- When the if-block only contains a standalone expression (no
+  assignment), emit just the expression with `?->`.
+
+**Code action kind:** `refactor.rewrite`.
+**Guard:** `php_version >= 8.0`.
+
+---
+
+### A38. Convert if/elseif chain to switch
+
+**Impact: Low-Medium · Effort: Medium**
+
+Convert an if/elseif chain that compares the same variable or
+expression against different values into a `switch` statement:
+
+```php
+// Before
+if ($status === 'active') {
+    doActive();
+} elseif ($status === 'inactive') {
+    doInactive();
+} elseif ($status === 'pending') {
+    doPending();
+} else {
+    doDefault();
+}
+
+// After
+switch ($status) {
+    case 'active':
+        doActive();
+        break;
+    case 'inactive':
+        doInactive();
+        break;
+    case 'pending':
+        doPending();
+        break;
+    default:
+        doDefault();
+        break;
+}
+```
+
+#### When the conversion is safe
+
+- Every condition in the chain compares the same subject expression
+  against a constant value using `===` or `==` (all arms must use the
+  same comparison operator).
+- The subject expression is a simple expression (variable, property
+  access, method call) that should not have side effects when evaluated
+  once in the switch head instead of repeatedly in each condition.
+- With `===`, the conversion is semantically exact only for scalar
+  values. Switch uses loose comparison internally, so strict-equality
+  chains are converted with a comment noting the semantic difference,
+  or the action is only offered for `==` chains.
+
+#### Implementation
+
+- Walk the AST for `Statement::If` nodes that have at least one
+  `elseif` branch.
+- Extract the subject from the first condition's comparison. Verify
+  all subsequent conditions compare the same subject (by source text
+  or AST structure equality).
+- Build a `switch` statement: each condition value becomes a `case`,
+  the if/elseif body becomes the case body with `break;` appended
+  (unless the body ends with `return`, `throw`, or `continue`).
+- If the chain has a trailing `else`, convert it to `default:`.
+- Replace the entire if/elseif/else block with the switch.
+
+**Code action kind:** `refactor.rewrite`.
+
+---
+
+### A39. Convert to string interpolation
+
+**Impact: Low-Medium · Effort: Low**
+
+Replace simple string concatenation with double-quoted string
+interpolation:
+
+```php
+// Before
+$greeting = 'Hello ' . $name . ', welcome!';
+$msg = "Total: " . $order->getTotal();
+
+// After
+$greeting = "Hello {$name}, welcome!";
+$msg = "Total: {$order->getTotal()}";
+```
+
+#### When the conversion is safe
+
+- The concatenation contains at least one variable or simple
+  expression (`$var`, `$var->prop`, `$arr['key']`) and at least one
+  string literal.
+- No interpolated part contains characters that would need escaping
+  in a double-quoted string (`$`, `"`, `\`) beyond what is already
+  escaped, unless the tool handles the escaping.
+- Existing single-quoted string literals in the concatenation are
+  re-quoted as double-quoted, with `$` and `"` characters escaped.
+- Method calls like `$obj->method()` require curly-brace syntax
+  (`{$obj->method()}`), which is valid in PHP.
+- Integer, float, and boolean literals are left as concatenation
+  (they don't benefit from interpolation and `true`/`false` would
+  print as `1`/empty string).
+- The concatenation must be a top-level expression or RHS of an
+  assignment, not nested inside a function call argument where
+  readability is subjective.
+
+#### Implementation
+
+- Walk the AST for `Expression::Concat` (binary `.` operator) nodes.
+- Collect the flattened chain of concat operands (recursively unwrap
+  nested concats).
+- If the chain is all literals or all variables (no mix), skip.
+- Build a double-quoted string: literal parts are inserted verbatim
+  (with `$` and `"` escaped), variable/expression parts are wrapped
+  in `{...}`.
+- Replace the entire concat expression with the interpolated string.
+
+**Code action kind:** `refactor.rewrite`.
+
