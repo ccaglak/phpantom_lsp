@@ -1828,6 +1828,72 @@ class Consumer {
 }
 
 #[test]
+fn no_diagnostic_for_self_return_type_in_cross_file_chain() {
+    // Regression test: when a cross-file class has a method returning
+    // `HasMany<self, $this>` (or any generic with `self`), the `self`
+    // keyword must resolve to the *declaring* class, not get looked up
+    // via the consuming file's use-map.  Previously, `self` was resolved
+    // using `class_info.name` (the short name "TariffCode") which the
+    // consuming file's class_loader could not find because it doesn't
+    // import TariffCode.  The fix passes the FQN as owning_class_name
+    // and uses find_class_by_name in resolve_named_type.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[
+            (
+                "src/TariffCode.php",
+                r#"<?php
+namespace App;
+
+class TariffCode {
+    public string $code = '';
+
+    /** @return self[] */
+    public function children(): array { return []; }
+}
+"#,
+            ),
+            (
+                "src/OrderProduct.php",
+                r#"<?php
+namespace App;
+
+class OrderProduct {
+    public function __construct(
+        public readonly ?TariffCode $tariffCode = null,
+    ) {}
+}
+"#,
+            ),
+        ],
+    );
+
+    // Consumer file does NOT import App\TariffCode.  The chain
+    // $tariffCode->children()[0]->code must still resolve because
+    // children() returns `self[]` where `self` = App\TariffCode.
+    let uri = "file:///test.php";
+    let text = r#"<?php
+use App\OrderProduct;
+
+class Consumer {
+    public function run(OrderProduct $op): void {
+        $tariffCode = $op->tariffCode;
+        if ($tariffCode) {
+            $first = $tariffCode->children()[0];
+            $first->code;
+        }
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("code")),
+        "No diagnostic expected for 'code' on self-referencing return type resolved cross-file, got: {:?}",
+        diags
+    );
+}
+
+#[test]
 fn no_diagnostic_for_static_method_return_array_access() {
     let backend = create_test_backend();
     let uri = "file:///test.php";

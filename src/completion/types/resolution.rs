@@ -44,7 +44,8 @@ pub(crate) fn resolve_property_types(
             Some(h) => h,
             None => return vec![],
         };
-    type_hint_to_classes_typed(&type_hint, &class_info.name, all_classes, class_loader)
+    let owner_fqn = class_info.fqn();
+    type_hint_to_classes_typed(&type_hint, &owner_fqn, all_classes, class_loader)
 }
 
 /// Map a parsed [`PhpType`] to all matching `ClassInfo` values.
@@ -231,9 +232,7 @@ fn resolve_named_type(
                 depth,
             );
         }
-        return all_classes
-            .iter()
-            .find(|c| c.name == owning_class_name)
+        return find_class_by_name(all_classes, owning_class_name)
             .map(|c| ClassInfo::clone(c))
             .or_else(|| class_loader(owning_class_name).map(Arc::unwrap_or_clone))
             .into_iter()
@@ -242,15 +241,11 @@ fn resolve_named_type(
 
     // ── parent ─────────────────────────────────────────────────────
     if name == "parent" {
-        let parent_name = all_classes
-            .iter()
-            .find(|c| c.name == owning_class_name)
+        let parent_name = find_class_by_name(all_classes, owning_class_name)
             .and_then(|c| c.parent_class.clone())
             .or_else(|| class_loader(owning_class_name).and_then(|c| c.parent_class.clone()));
         if let Some(parent) = parent_name {
-            return all_classes
-                .iter()
-                .find(|c| c.name == parent)
+            return find_class_by_name(all_classes, &parent)
                 .map(|c| ClassInfo::clone(c))
                 .or_else(|| class_loader(&parent).map(Arc::unwrap_or_clone))
                 .into_iter()
@@ -280,8 +275,6 @@ fn resolve_named_type(
     } else {
         generic_args
     };
-
-    let short = short_name(name);
 
     // ── Class lookup ───────────────────────────────────────────────
     let found = find_class_by_name(all_classes, name)
@@ -359,8 +352,9 @@ fn resolve_named_type(
         }
         None => {
             // ── Template parameter bound fallback ──────────────────
+            let short = short_name(name);
             let loaded;
-            let owning = match all_classes.iter().find(|c| c.name == owning_class_name) {
+            let owning = match find_class_by_name(all_classes, owning_class_name) {
                 Some(c) => Some(c.as_ref()),
                 None => {
                     loaded = class_loader(owning_class_name);

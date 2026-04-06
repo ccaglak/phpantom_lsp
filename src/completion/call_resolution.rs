@@ -794,7 +794,7 @@ impl Backend {
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes_typed(
                             &effective,
-                            &class_info.name,
+                            &class_info.fqn(),
                             all_classes,
                             class_loader,
                         )
@@ -819,7 +819,7 @@ impl Backend {
                     let classes: Vec<Arc<ClassInfo>> =
                         super::type_resolution::type_hint_to_classes_typed(
                             &substituted,
-                            &class_info.name,
+                            &class_info.fqn(),
                             all_classes,
                             class_loader,
                         )
@@ -849,7 +849,7 @@ impl Backend {
                 }
                 return super::type_resolution::type_hint_to_classes_typed(
                     ret,
-                    &class_info.name,
+                    &class_info.fqn(),
                     all_classes,
                     class_loader,
                 )
