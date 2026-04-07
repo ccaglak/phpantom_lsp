@@ -221,7 +221,7 @@ fn extract_class_docblock<'a>(
         .collect();
     let template_param_defaults: HashMap<String, PhpType> = params_full
         .into_iter()
-        .filter_map(|(name, _, _, default)| default.map(|d| (name, PhpType::parse(&d))))
+        .filter_map(|(name, _, _, default)| default.map(|d| (name, d)))
         .collect();
 
     let mixin_data = docblock::extract_mixin_tags_from_info(&info);
@@ -293,17 +293,17 @@ fn extract_custom_collection(
     use_generics: &[(String, Vec<PhpType>)],
     methods: &[MethodInfo],
     content: &str,
-) -> Option<String> {
+) -> Option<PhpType> {
     // 1. Try the #[CollectedBy] attribute first.
     if let Some(name) = extract_collected_by_attribute(attribute_lists, content) {
-        return Some(name);
+        return Some(PhpType::Named(name));
     }
 
     // 2. Fall back to @use HasCollection<X>.
     for (trait_name, args) in use_generics {
         let short = trait_name.rsplit('\\').next().unwrap_or(trait_name);
         if short == "HasCollection" && !args.is_empty() {
-            return Some(args[0].to_string());
+            return Some(args[0].clone());
         }
     }
 
@@ -322,7 +322,7 @@ fn extract_custom_collection(
 /// Returns `None` if no `newCollection` method exists, if it has no
 /// return type, or if the return type is the standard Eloquent
 /// Collection.
-fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Option<String> {
+fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Option<PhpType> {
     let method = methods.iter().find(|m| m.name == "newCollection")?;
     let return_type = method.return_type.as_ref()?;
 
@@ -340,16 +340,7 @@ fn extract_custom_collection_from_new_collection(methods: &[MethodInfo]) -> Opti
         return None;
     }
 
-    // For Named types, use the full string representation which preserves
-    // the leading `\` for FQNs so that `resolve_name` can distinguish
-    // FQN from short names.
-    // For Generic types (e.g. `TaskCollection<int, static>`), use just
-    // the base name since the generic parameters aren't needed for
-    // collection class resolution.
-    match return_type {
-        PhpType::Named(_) => Some(return_type.to_string()),
-        _ => Some(base.to_string()),
-    }
+    Some(return_type.clone())
 }
 
 /// Extract Eloquent cast definitions from a class's members.
@@ -524,7 +515,7 @@ fn extract_string_literal(text: &str) -> Option<String> {
 fn extract_attributes_definitions<'a>(
     members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
     content: &str,
-) -> Vec<(String, String)> {
+) -> Vec<(String, PhpType)> {
     for member in members {
         if let ClassLikeMember::Property(Property::Plain(plain)) = member {
             for item in plain.items.iter() {
@@ -555,7 +546,7 @@ fn extract_attributes_definitions<'a>(
 /// float, or string).
 ///
 /// Returns a list of `(column_name, php_type)` pairs.
-fn parse_attributes_array(text: &str) -> Vec<(String, String)> {
+fn parse_attributes_array(text: &str) -> Vec<(String, PhpType)> {
     let mut results = Vec::new();
     let trimmed = text.trim();
 
@@ -586,7 +577,7 @@ fn parse_attributes_array(text: &str) -> Vec<(String, String)> {
         }
 
         if let Some(php_type) = crate::util::infer_type_from_literal(value_part) {
-            results.push((key, php_type.to_string()));
+            results.push((key, php_type));
         }
     }
 

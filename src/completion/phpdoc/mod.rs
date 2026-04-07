@@ -470,11 +470,11 @@ const PHPSTAN_PROPERTY_TAGS: &[TagDef] = &[];
 /// and `@return` tags with concrete type information.
 pub struct SmartContext<'a> {
     /// Pre-resolved type for an inline variable assignment (e.g.
-    /// `"list<int>"` when the next line is `$items = [1, 2, 3];`).
+    /// `list<int>` when the next line is `$items = [1, 2, 3];`).
     ///
     /// `None` when the type could not be inferred or the context is not
     /// an inline variable assignment.
-    pub inferred_inline_var_type: Option<&'a str>,
+    pub inferred_inline_var_type: Option<PhpType>,
 
     /// Callback that resolves a class name to its [`ClassInfo`], used
     /// to look up `@template` parameters for type enrichment.
@@ -840,22 +840,21 @@ pub fn build_phpdoc_completions(
             // quickly type the narrowing type.  When the type can be
             // inferred from the assignment, pre-fill it.
             if def.tag == "@var" && matches!(context, DocblockContext::Inline) {
-                if let Some(ty) = smart.inferred_inline_var_type {
+                if let Some(ref parsed_ty) = smart.inferred_inline_var_type {
                     // Build both a display label (plain) and insert text
                     // (snippet with tab stops on template parameters).
-                    let parsed_ty = PhpType::parse(ty);
                     let label_type = smart
                         .class_loader
-                        .and_then(|cl| generation::enrichment_plain(Some(&parsed_ty), cl))
-                        .unwrap_or_else(|| ty.to_string());
+                        .and_then(|cl| generation::enrichment_plain(Some(parsed_ty), cl))
+                        .unwrap_or_else(|| parsed_ty.to_string());
 
                     let mut tab_stop = 1u32;
                     let snippet_type = smart
                         .class_loader
                         .and_then(|cl| {
-                            generation::enrichment_snippet(Some(&parsed_ty), &mut tab_stop, cl)
+                            generation::enrichment_snippet(Some(parsed_ty), &mut tab_stop, cl)
                         })
-                        .unwrap_or_else(|| format!("${{1:{}}}", ty));
+                        .unwrap_or_else(|| format!("${{1:{}}}", parsed_ty));
 
                     items.push(CompletionItem {
                         label: format!("@var {}", label_type),

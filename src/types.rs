@@ -646,6 +646,36 @@ impl MethodInfo {
             throws: Vec::new(),
         }
     }
+
+    /// Like [`virtual_method`], but accepts the return type as a
+    /// `PhpType` directly, avoiding the `PhpType → String → PhpType`
+    /// round-trip when the caller already holds a `PhpType`.
+    pub fn virtual_method_typed(name: &str, return_type: Option<&PhpType>) -> Self {
+        Self {
+            name: name.to_string(),
+            name_offset: 0,
+            parameters: Vec::new(),
+            return_type: return_type.cloned(),
+            native_return_type: None,
+            description: None,
+            return_description: None,
+            links: Vec::new(),
+            see_refs: Vec::new(),
+            is_static: false,
+            visibility: Visibility::Public,
+            conditional_return: None,
+            deprecation_message: None,
+            deprecated_replacement: None,
+            template_params: Vec::new(),
+            template_param_bounds: HashMap::new(),
+            template_bindings: Vec::new(),
+            has_scope_attribute: false,
+            is_abstract: false,
+            is_virtual: true,
+            type_assertions: Vec::new(),
+            throws: Vec::new(),
+        }
+    }
 }
 
 /// Stores extracted property information from a parsed PHP class.
@@ -1246,7 +1276,7 @@ pub mod attribute_target {
 /// Grouped into a sub-struct to keep the core `ClassInfo` focused on
 /// PHP semantics. All fields default to empty/`None`, so non-Laravel
 /// classes carry no overhead beyond a single struct value.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LaravelMetadata {
     /// Custom collection class for Eloquent models.
     ///
@@ -1262,7 +1292,7 @@ pub struct LaravelMetadata {
     /// `\Illuminate\Database\Eloquent\Collection` with this class in
     /// relationship property types and Builder-forwarded return types
     /// (e.g. `get()`, `all()`).
-    pub custom_collection: Option<String>,
+    pub custom_collection: Option<PhpType>,
     /// Eloquent cast definitions extracted from the `$casts` property
     /// initializer or the `casts()` method body.
     ///
@@ -1289,7 +1319,7 @@ pub struct LaravelMetadata {
     /// `("is_active", "bool")`, `("login_count", "int")`).
     /// The `LaravelModelProvider` uses these as a fallback when no
     /// `$casts` entry exists for the same column.
-    pub attributes_definitions: Vec<(String, String)>,
+    pub attributes_definitions: Vec<(String, PhpType)>,
     /// Column names extracted from `$fillable`, `$guarded`, `$hidden`,
     /// and `$appends` property arrays.
     ///
@@ -2712,7 +2742,7 @@ mod tests {
             name: "User".to_string(),
             ..Default::default()
         };
-        a.laravel_mut().custom_collection = Some("UserCollection".to_string());
+        a.laravel_mut().custom_collection = Some(PhpType::Named("UserCollection".to_string()));
 
         let b = ClassInfo {
             name: "User".to_string(),

@@ -178,11 +178,11 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
 
         // Strip trailing punctuation that could leak from descriptions,
         // preserving the full type string including nullability.
-        let return_type = return_type_raw.map(|s| s.trim_end_matches(['.', ',']).to_string());
-        let return_type = match return_type {
-            Some(ref s) if s.is_empty() => None,
-            other => other,
-        };
+        // Parse directly to PhpType, avoiding an intermediate String.
+        let return_type: Option<PhpType> = return_type_raw
+            .map(|s| s.trim_end_matches(['.', ',']))
+            .filter(|s| !s.is_empty())
+            .map(PhpType::parse);
 
         // Parse parameters from the content between `(` and `)`.
         let params_str = if let Some(close_paren) = after_paren.rfind(')') {
@@ -201,7 +201,7 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
             name: method_name.to_string(),
             name_offset: 0,
             parameters,
-            return_type: return_type.as_deref().map(PhpType::parse),
+            return_type,
             native_return_type: None,
             description: None,
             return_description: None,

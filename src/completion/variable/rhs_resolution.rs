@@ -191,7 +191,7 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
             // succeeds even inside a namespace block (unqualified
             // class names are prefixed with the current namespace
             // and do NOT fall back to the global scope in PHP).
-            let closure_ty = PhpType::parse("Closure");
+            let closure_ty = PhpType::closure();
             ResolvedType::from_classes_with_hint(
                 crate::completion::type_resolution::type_hint_to_classes_typed(
                     &closure_ty,
@@ -432,7 +432,7 @@ fn resolve_rhs_instantiation(
         _ => None,
     };
     if let Some(name) = class_name {
-        let parsed_name = PhpType::parse(name);
+        let parsed_name = PhpType::Named(name.to_string());
         let classes = crate::completion::type_resolution::type_hint_to_classes_typed(
             &parsed_name,
             &ctx.current_class.name,
@@ -460,7 +460,11 @@ fn resolve_rhs_instantiation(
                         let type_args: Vec<PhpType> = cls
                             .template_params
                             .iter()
-                            .map(|p| subs.get(p).cloned().unwrap_or_else(|| PhpType::parse(p)))
+                            .map(|p| {
+                                subs.get(p)
+                                    .cloned()
+                                    .unwrap_or_else(|| PhpType::Named(p.to_string()))
+                            })
                             .collect();
                         let resolved =
                             crate::virtual_members::resolve_class_fully(cls, ctx.class_loader);
@@ -1167,42 +1171,9 @@ fn resolve_arg_variable_raw_type(
 /// For single-param forms:
 /// - `array<User>` at position 0 → `"User"`
 fn extract_array_type_at_position(ty: &PhpType, position: usize) -> Option<PhpType> {
-    match ty {
-        // `T[]` shorthand → key is int (position 0), value is T (position 1).
-        PhpType::Array(inner) => match position {
-            0 => Some(PhpType::int()),
-            1 => Some(inner.as_ref().clone()),
-            _ => None,
-        },
-
-        // Generic types: `array<K, V>`, `array<V>`, `list<T>`, `iterable<K, V>`, etc.
-        PhpType::Generic(name, args) => {
-            let lower = name.to_ascii_lowercase();
-            match lower.as_str() {
-                "list" | "non-empty-list" => match position {
-                    0 => Some(PhpType::int()),
-                    1 => args.first().cloned(),
-                    _ => None,
-                },
-                "array" | "non-empty-array" | "iterable" | "associative-array" => {
-                    if args.len() == 2 {
-                        // `array<K, V>` — position maps directly.
-                        args.get(position).cloned()
-                    } else if args.len() == 1 {
-                        // `array<V>` — position 0 = int (key), position 1 = V.
-                        match position {
-                            0 => Some(PhpType::int()),
-                            1 => args.first().cloned(),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            }
-        }
-
+    match position {
+        0 => ty.extract_key_type(false).cloned(),
+        1 => ty.extract_value_type(false).cloned(),
         _ => None,
     }
 }
@@ -2008,8 +1979,7 @@ fn resolve_rhs_property_access(
             _ => None,
         };
         if let Some(class_name) = class_name {
-            let class_parsed = PhpType::parse(&class_name);
-            let resolved_name = class_parsed.base_name().unwrap_or(&class_name);
+            let resolved_name = class_name.strip_prefix('\\').unwrap_or(&class_name);
             let resolved_typed = PhpType::Named(resolved_name.to_string());
             let target_classes = crate::completion::type_resolution::type_hint_to_classes_typed(
                 &resolved_typed,

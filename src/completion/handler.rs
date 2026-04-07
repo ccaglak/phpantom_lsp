@@ -429,13 +429,12 @@ impl Backend {
                     &class_loader,
                     Some(&function_loader as &dyn Fn(&str) -> Option<crate::types::FunctionInfo>),
                 )
-                .map(|t| t.to_string())
             } else {
                 None
             };
 
         let smart = crate::completion::phpdoc::SmartContext {
-            inferred_inline_var_type: inferred_var_type.as_deref(),
+            inferred_inline_var_type: inferred_var_type,
             class_loader: Some(&class_loader),
             function_loader: Some(&function_loader),
         };

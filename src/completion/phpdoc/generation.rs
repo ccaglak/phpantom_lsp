@@ -1042,51 +1042,60 @@ pub(crate) fn enrichment_snippet(
     None
 }
 
-/// Plain-text version of `enrichment_snippet` (no tab stops).
+/// Structured version of [`enrichment_plain`] returning a [`PhpType`]
+/// instead of a display string.
 ///
-/// Also used by tag completion (`build_phpdoc_completions`) to enrich
-/// `@param`, `@return`, and `@var` type hints with template parameters.
-pub(crate) fn enrichment_plain(
+/// Use this when the enriched type needs to be compared structurally
+/// (via [`PhpType::equivalent`]) rather than by string equality. The
+/// plain-text callers that only need a display string should keep using
+/// [`enrichment_plain`].
+pub(crate) fn enrichment_plain_typed(
     type_hint: Option<&PhpType>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-) -> Option<String> {
+) -> Option<PhpType> {
     let pt = match type_hint {
-        None => return Some(PhpType::mixed().to_string()),
+        None => return Some(PhpType::mixed()),
         Some(t) => t,
     };
 
     if is_bare_array(pt) {
-        return Some(PhpType::generic_array_val(PhpType::mixed()).to_string());
+        return Some(PhpType::generic_array_val(PhpType::mixed()));
     }
 
     if is_callable_keyword(pt) {
-        let name = callable_display_name(pt);
-        return Some(format!("({}(): mixed)", name));
+        let kind = callable_display_name(pt).to_string();
+        return Some(PhpType::Callable {
+            kind,
+            params: vec![],
+            return_type: Some(Box::new(PhpType::mixed())),
+        });
     }
 
     // Union types — enrich individual callable / array parts.
-    // Use union_members to correctly handle generic nesting
-    // (e.g. `Collection<int|string, User>|null` must not be split on the inner `|`).
     let members = pt.union_members();
     if members.len() > 1 {
         let needs = members
             .iter()
             .any(|member| is_bare_array(member) || is_callable_keyword(member));
         if needs {
-            let enriched_parts: Vec<String> = members
+            let enriched: Vec<PhpType> = members
                 .iter()
                 .map(|member| {
                     if is_callable_keyword(member) {
-                        let name = callable_display_name(member);
-                        format!("({}(): mixed)", name)
+                        let kind = callable_display_name(member).to_string();
+                        PhpType::Callable {
+                            kind,
+                            params: vec![],
+                            return_type: Some(Box::new(PhpType::mixed())),
+                        }
                     } else if is_bare_array(member) {
-                        PhpType::generic_array_val(PhpType::mixed()).to_string()
+                        PhpType::generic_array_val(PhpType::mixed())
                     } else {
-                        member.to_string()
+                        (*member).clone()
                     }
                 })
                 .collect();
-            return Some(enriched_parts.join("|"));
+            return Some(PhpType::Union(enriched));
         }
         return None;
     }
@@ -1105,11 +1114,50 @@ pub(crate) fn enrichment_plain(
         && let Some(cls) = class_loader(name)
         && !cls.template_params.is_empty()
     {
-        let parts: Vec<&str> = cls.template_params.iter().map(|s| s.as_str()).collect();
-        return Some(format!("{}<{}>", name, parts.join(", ")));
+        let args: Vec<PhpType> = cls
+            .template_params
+            .iter()
+            .map(|s| PhpType::Named(s.clone()))
+            .collect();
+        return Some(PhpType::Generic(name.to_string(), args));
     }
 
     None
+}
+
+/// Plain-text version of `enrichment_snippet` (no tab stops).
+///
+/// Also used by tag completion (`build_phpdoc_completions`) to enrich
+/// `@param`, `@return`, and `@var` type hints with template parameters.
+///
+/// Callable types are wrapped in parentheses for PHPDoc notation:
+/// `(Closure(): mixed)`, `(callable(): mixed)`.
+pub(crate) fn enrichment_plain(
+    type_hint: Option<&PhpType>,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> Option<String> {
+    let typed = enrichment_plain_typed(type_hint, class_loader)?;
+
+    // Callable types need parentheses in PHPDoc notation, which
+    // PhpType::Display does not add.
+    Some(enrichment_type_to_plain(&typed))
+}
+
+/// Format an enriched `PhpType` as a plain-text PHPDoc type string.
+///
+/// Callable types are wrapped in parentheses (`(Closure(): mixed)`)
+/// to match PHPDoc inline callable notation. Union members are
+/// formatted individually and joined with `|`.
+fn enrichment_type_to_plain(ty: &PhpType) -> String {
+    match ty {
+        PhpType::Callable { .. } => format!("({})", ty),
+        PhpType::Union(members) => members
+            .iter()
+            .map(enrichment_type_to_plain)
+            .collect::<Vec<_>>()
+            .join("|"),
+        _ => ty.to_string(),
+    }
 }
 
 // ─── Snippet / Plain Builder ────────────────────────────────────────────────

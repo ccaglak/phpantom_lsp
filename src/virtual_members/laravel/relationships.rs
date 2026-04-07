@@ -402,7 +402,7 @@ fn extract_related_type_for_chain(
         }
     }
 
-    extract_related_type_typed(return_type).map(|t| t.to_string())
+    extract_related_type_typed(return_type).and_then(|t| t.base_name().map(|s| s.to_string()))
 }
 
 /// Resolve a short or FQN related type to a loadable FQN.

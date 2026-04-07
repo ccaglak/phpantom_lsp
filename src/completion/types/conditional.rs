@@ -705,11 +705,9 @@ fn try_resolve_with_template_default(
     } else if condition.is_bool() {
         default_value.is_true() || default_value.is_false()
     } else if condition.is_string_type() {
-        matches!(default_value, PhpType::Literal(s) if
-            (s.starts_with('\'') && s.ends_with('\''))
-            || (s.starts_with('"') && s.ends_with('"')))
+        default_value.is_string_literal()
     } else if condition.is_int() {
-        matches!(default_value, PhpType::Literal(s) if s.parse::<i64>().is_ok())
+        default_value.is_int_literal()
     } else if let PhpType::Literal(s) = condition {
         let expected = crate::util::unquote_php_string(s).unwrap_or(s);
         match default_value {

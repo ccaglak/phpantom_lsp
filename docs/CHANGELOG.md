@@ -39,9 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Generate PHPDoc infers `@return` from the function body.** Typing `/**` above a function that returns `array` now produces a specific element type (e.g. `@return list<string>`) instead of `@return array<mixed>`.
 - **Faster startup.** Stub loading during initialization is significantly faster.
 - **More accurate generics resolution.** Type substitution and resolution for complex nested generic types is more correct, particularly for unions, intersections, array shapes, and deeply nested generic arguments.
+- **More accurate type predicates.** `NULL`, `Null`, and case variants of `null` are now handled consistently throughout type checking, matching PHP's case-insensitive treatment of type keywords.
 
 ### Fixed
 
+- **Case-insensitive `self`, `static`, and `parent` resolution.** `SELF::method()`, `Static::create()`, `PARENT::foo()`, and other non-lowercase spellings now resolve correctly. Previously only the exact lowercase forms were recognized.
+- **Property type resolution in call arguments.** When a method argument is `$this->prop` and the property has a generic, nullable, or union type, the full type structure is now preserved. Previously only the base class name was extracted, discarding generics and union components.
+- **Update docblock enrichment comparison.** The "Update docblock" code action now uses structural type comparison instead of string equality when deciding whether a `@param` type needs enrichment. Types that are semantically equivalent but formatted differently (e.g. `\App\User` vs `App\User`) no longer trigger spurious updates.
+- **`@phpstan-assert` and `@psalm-assert` tags with generic types.** Assertions like `@phpstan-assert Collection<int, User> $param` now parse the full generic type instead of truncating at the first space inside angle brackets.
+- **`parent::method()` resolution in inline arguments.** Passing `parent::method()` as an argument to a function now resolves the return type correctly, matching the existing handling for `self::` and `static::`.
+- **Laravel Eloquent Builder and Collection type resolution.** Generic and nullable types on Eloquent models (e.g. `Collection<int, User>`, `?User`) now resolve correctly when used for Builder scope injection, custom collection swapping, and relationship chain inference. Previously these types were stringified with their generic parameters or nullable prefix, causing lookups to fail silently.
 - **Docblock generation no longer panics on lines with multibyte characters.** Files containing non-ASCII characters (e.g. accented letters) could cause the `/**` docblock trigger to crash or produce misaligned edits due to a mismatch between UTF-16 column offsets and byte offsets.
 - **Conditional return types showing `mixed` in hover.** When a method with a conditional return type (e.g. `@phpstan-return ($type is class-string<T> ? T : mixed)`) resolved to a concrete class, hover still displayed the method's declared return type (`mixed`) instead of the resolved class. Affects methods like Symfony's `SerializerInterface::deserialize()`.
 - **Method-level `@throws` types now resolve short names to FQN.** Exception types in `@throws` tags on class methods are now fully qualified using the file's `use` imports, matching the behaviour already in place for standalone functions. Cross-file throws propagation and the "Update docblock" code action produce correct results when the exception class is imported via a `use` statement.
@@ -99,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Deprecated class in `implements` renders with strikethrough.** Deprecated classes referenced in `implements` clauses are correctly tagged.
 - **Interleaved array access and property chains no longer produce false positives.** Expressions like `$results[$i]->activities[$id]->extras` where array subscript and property access alternate were incorrectly parsed, causing the intermediate property chain to be dropped. This led to "Property not found on class" false positives when the element type was resolved but the subsequent property lookup was skipped.
 - **FQN `\assert()` now narrows types.** Writing `\assert($var instanceof Foo)` with a leading backslash was not recognized as an instanceof narrowing, causing false-positive "property not found" diagnostics after the assertion.
+- **Generic template substitution producing invalid types.** When a template parameter was the base of a generic type (e.g. `T<int>` where `T` maps to `Collection<string>`), the substitution produced malformed types like `Collection<string><int>`. The replacement's base name is now used correctly, yielding `Collection<int>`.
 
 ## [0.6.0] - 2026-03-26
 

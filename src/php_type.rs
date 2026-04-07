@@ -198,6 +198,11 @@ impl PhpType {
         PhpType::Named("callable".to_owned())
     }
 
+    /// `\Closure` type (fully-qualified).
+    pub fn closure() -> PhpType {
+        PhpType::Named("Closure".to_string())
+    }
+
     /// `iterable` type.
     pub fn iterable() -> PhpType {
         PhpType::Named("iterable".to_owned())
@@ -227,6 +232,21 @@ impl PhpType {
     /// a fully-filtered-out union member.
     pub fn empty_sentinel() -> PhpType {
         PhpType::Named("__empty".to_owned())
+    }
+
+    /// Convenience constructor for the "no type information" sentinel.
+    ///
+    /// Uses `Raw(String::new())` under the hood.  Prefer this over a bare
+    /// `PhpType::Raw(String::new())` so the intent ("absence of type") is
+    /// distinguishable from "unparseable input" at a glance.
+    pub fn untyped() -> PhpType {
+        PhpType::Raw(String::new())
+    }
+
+    /// Returns `true` when this value represents the "no type" sentinel
+    /// produced by [`PhpType::untyped()`].
+    pub fn is_untyped(&self) -> bool {
+        matches!(self, PhpType::Raw(s) if s.is_empty())
     }
 
     /// `list<T>` generic type.
@@ -600,7 +620,7 @@ impl PhpType {
     ///
     /// Returns `true` when this type is exactly `null`.
     pub fn is_null(&self) -> bool {
-        matches!(self, PhpType::Named(s) if s == "null")
+        matches!(self, PhpType::Named(s) if s.eq_ignore_ascii_case("null"))
     }
 
     /// Whether this type is `bool` or `boolean` (case-insensitive).
@@ -667,6 +687,87 @@ impl PhpType {
             PhpType::Nullable(inner) => inner.is_float(),
             _ => false,
         }
+    }
+
+    /// Whether this type is a literal string value (e.g. `'hello'`, `"world"`).
+    pub fn is_string_literal(&self) -> bool {
+        matches!(self, PhpType::Literal(s) if
+            (s.starts_with('\'') && s.ends_with('\''))
+            || (s.starts_with('"') && s.ends_with('"')))
+    }
+
+    /// Whether this type is a literal integer value (e.g. `42`, `-1`).
+    pub fn is_int_literal(&self) -> bool {
+        matches!(self, PhpType::Literal(s) if s.parse::<i64>().is_ok())
+    }
+
+    /// Whether this type is `string` or any PHPDoc string refinement (case-insensitive).
+    ///
+    /// Returns `true` for `string`, `non-empty-string`, `numeric-string`,
+    /// `literal-string`, `truthy-string`, `callable-string`, `class-string`,
+    /// `interface-string`, `lowercase-string`, `non-falsy-string`,
+    /// `ClassString(…)`, `InterfaceString(…)`, and string literals.
+    pub fn is_string_subtype(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "string"
+                    | "non-empty-string"
+                    | "numeric-string"
+                    | "literal-string"
+                    | "truthy-string"
+                    | "callable-string"
+                    | "class-string"
+                    | "interface-string"
+                    | "lowercase-string"
+                    | "non-falsy-string"
+            ),
+            PhpType::ClassString(_) | PhpType::InterfaceString(_) => true,
+            PhpType::Literal(s) => s.starts_with('\'') || s.starts_with('"'),
+            PhpType::Nullable(inner) => inner.is_string_subtype(),
+            PhpType::Generic(name, _) => matches!(
+                name.to_ascii_lowercase().as_str(),
+                "class-string" | "interface-string"
+            ),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `int` or any PHPDoc integer refinement (case-insensitive).
+    ///
+    /// Returns `true` for `int`, `integer`, `positive-int`, `negative-int`,
+    /// `non-negative-int`, `non-positive-int`, `non-zero-int`, `IntRange(…)`,
+    /// and integer literals.
+    pub fn is_int_subtype(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "int"
+                    | "integer"
+                    | "positive-int"
+                    | "negative-int"
+                    | "non-negative-int"
+                    | "non-positive-int"
+                    | "non-zero-int"
+            ),
+            PhpType::IntRange(_, _) => true,
+            PhpType::Literal(s) => {
+                // Integer literals: optional leading minus, then digits only.
+                let trimmed = s.strip_prefix('-').unwrap_or(s);
+                !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit())
+            }
+            PhpType::Nullable(inner) => inner.is_int_subtype(),
+            _ => false,
+        }
+    }
+
+    /// Whether this type is `float` or `double` (case-insensitive).
+    ///
+    /// This is currently identical to [`is_float`], but exists for
+    /// symmetry with [`is_string_subtype`] and [`is_int_subtype`] and
+    /// may be extended with float refinement types in the future.
+    pub fn is_float_subtype(&self) -> bool {
+        self.is_float()
     }
 
     /// Whether this type is `object` (case-insensitive).
@@ -768,6 +869,31 @@ impl PhpType {
         matches!(self, PhpType::Named(n) if n.eq_ignore_ascii_case(name))
     }
 
+    /// Returns `true` when this type is always coerced to `int` when
+    /// used as an array key (int subtypes, float, bool, null).
+    pub fn is_int_coercible_key(&self) -> bool {
+        match self {
+            PhpType::Named(s) => matches!(
+                s.to_ascii_lowercase().as_str(),
+                "int"
+                    | "integer"
+                    | "float"
+                    | "double"
+                    | "bool"
+                    | "boolean"
+                    | "true"
+                    | "false"
+                    | "null"
+                    | "positive-int"
+                    | "negative-int"
+                    | "non-negative-int"
+                    | "non-positive-int"
+                    | "non-zero-int"
+            ),
+            _ => false,
+        }
+    }
+
     /// Whether this type is a top-level `self`, `static`, or `$this`
     /// reference (case-insensitive) — the subset of self-like keywords
     /// that resolve to the *declaring* class, excluding `parent`.
@@ -779,14 +905,7 @@ impl PhpType {
     /// exactly the names that [`replace_self`] would rewrite, without
     /// unwrapping nullable/union layers.
     pub fn is_self_ref(&self) -> bool {
-        matches!(
-            self,
-            PhpType::Named(s)
-                if matches!(
-                    s.to_ascii_lowercase().as_str(),
-                    "self" | "static" | "$this"
-                )
-        )
+        matches!(self, PhpType::Named(s) if is_self_ref_name(s))
     }
 
     /// Whether this type is one of the self-referencing keywords:
@@ -795,18 +914,12 @@ impl PhpType {
     /// Also returns `true` when the type is nullable (e.g. `?static`).
     pub fn is_self_like(&self) -> bool {
         match self {
-            PhpType::Named(s) => matches!(
-                s.to_ascii_lowercase().as_str(),
-                "self" | "static" | "$this" | "parent"
-            ),
+            PhpType::Named(s) => self.is_self_ref() || s.eq_ignore_ascii_case("parent"),
             PhpType::Generic(name, _) => {
                 // e.g. `self<RuleError>`, `static<T>` — check the generic base name directly.
                 // Cannot use `base_name()` here because it filters out self-like
                 // names via `is_scalar_name`.
-                matches!(
-                    name.to_ascii_lowercase().as_str(),
-                    "self" | "static" | "$this" | "parent"
-                )
+                is_self_ref_name(name) || name.eq_ignore_ascii_case("parent")
             }
             PhpType::Nullable(inner) => inner.is_self_like(),
             PhpType::Union(members) => {
@@ -1005,12 +1118,12 @@ impl PhpType {
                     return None; // some members have no native form
                 }
                 // Deduplicate (e.g. `list<string>|array<int>` both → `array`)
-                let mut seen = Vec::new();
                 let mut deduped = Vec::new();
                 for ty in native {
-                    let repr = ty.to_string();
-                    if !seen.contains(&repr) {
-                        seen.push(repr);
+                    if !deduped
+                        .iter()
+                        .any(|existing: &PhpType| existing.equivalent(&ty))
+                    {
                         deduped.push(ty);
                     }
                 }
@@ -1029,12 +1142,12 @@ impl PhpType {
                     return None;
                 }
                 // Deduplicate
-                let mut seen = Vec::new();
                 let mut deduped = Vec::new();
                 for ty in native {
-                    let repr = ty.to_string();
-                    if !seen.contains(&repr) {
-                        seen.push(repr);
+                    if !deduped
+                        .iter()
+                        .any(|existing: &PhpType| existing.equivalent(&ty))
+                    {
                         deduped.push(ty);
                     }
                 }
@@ -1372,6 +1485,18 @@ impl PhpType {
         }
     }
 
+    /// Unwrap one layer of `Nullable`, returning the inner type.
+    ///
+    /// For `Nullable(inner)` returns `inner`, for everything else returns `self`.
+    /// This is a cheap, borrowing alternative to [`non_null_type`] which
+    /// returns an owned `PhpType` and also handles union-with-null.
+    pub fn unwrap_nullable(&self) -> &PhpType {
+        match self {
+            PhpType::Nullable(inner) => inner.as_ref(),
+            _ => self,
+        }
+    }
+
     /// Whether all non-null members of this type are scalar.
     ///
     /// For unions like `string|null`, returns `true`.
@@ -1434,14 +1559,13 @@ impl PhpType {
     /// would replace.
     pub fn contains_self_ref(&self) -> bool {
         match self {
-            PhpType::Named(s) => s == "self" || s == "static" || s == "$this",
+            PhpType::Named(_) => self.is_self_ref(),
             PhpType::Nullable(inner) => inner.contains_self_ref(),
             PhpType::Union(types) | PhpType::Intersection(types) => {
                 types.iter().any(|t| t.contains_self_ref())
             }
             PhpType::Generic(name, args) => {
-                matches!(name.as_str(), "self" | "static" | "$this")
-                    || args.iter().any(|a| a.contains_self_ref())
+                is_self_ref_name(name) || args.iter().any(|a| a.contains_self_ref())
             }
             PhpType::Array(inner) => inner.contains_self_ref(),
             PhpType::ArrayShape(entries) | PhpType::ObjectShape(entries) => {
@@ -1499,9 +1623,7 @@ impl PhpType {
             _ => "",
         };
         match self {
-            PhpType::Named(s) if s == "self" || s == "static" || s == "$this" => {
-                replacement.clone()
-            }
+            PhpType::Named(_) if self.is_self_ref() => replacement.clone(),
 
             PhpType::Named(_) | PhpType::Literal(_) | PhpType::Raw(_) => self.clone(),
 
@@ -1524,9 +1646,10 @@ impl PhpType {
             ),
 
             PhpType::Generic(name, args) => {
-                let resolved_name = match name.as_str() {
-                    "self" | "static" | "$this" => replacement_name.to_string(),
-                    _ => name.clone(),
+                let resolved_name = if is_self_ref_name(name) {
+                    replacement_name.to_string()
+                } else {
+                    name.clone()
                 };
                 PhpType::Generic(
                     resolved_name,
@@ -1715,20 +1838,33 @@ impl PhpType {
 
             PhpType::Generic(name, args) => {
                 // The base name might itself be a template parameter.
-                let resolved_name = if let Some(replacement) = subs.get(name.as_str()) {
-                    // If the replacement is a simple name, use it as the
-                    // generic base. Otherwise, fall back to string form.
+                if let Some(replacement) = subs.get(name.as_str()) {
                     match replacement {
-                        PhpType::Named(n) => n.clone(),
-                        _ => replacement.to_string(),
+                        PhpType::Named(n) => PhpType::Generic(
+                            n.clone(),
+                            args.iter().map(|a| a.substitute(subs)).collect(),
+                        ),
+                        PhpType::Generic(base, _) => {
+                            // Use the replacement's base name but keep the
+                            // original generic args (substituted).  The
+                            // replacement's own args are discarded because
+                            // the source type provides its own parameters.
+                            PhpType::Generic(
+                                base.clone(),
+                                args.iter().map(|a| a.substitute(subs)).collect(),
+                            )
+                        }
+                        // For non-class replacements (union, intersection,
+                        // etc.), the generic wrapper is meaningless — return
+                        // the replacement as-is.
+                        _ => replacement.clone(),
                     }
                 } else {
-                    name.clone()
-                };
-                PhpType::Generic(
-                    resolved_name,
-                    args.iter().map(|a| a.substitute(subs)).collect(),
-                )
+                    PhpType::Generic(
+                        name.clone(),
+                        args.iter().map(|a| a.substitute(subs)).collect(),
+                    )
+                }
             }
 
             PhpType::Array(inner) => PhpType::Array(Box::new(inner.substitute(subs))),
@@ -2017,10 +2153,14 @@ impl PhpType {
             PhpType::Union(members) => members.iter().any(|m| m.is_informative()),
             PhpType::Nullable(inner) => inner.is_informative(),
             PhpType::Intersection(members) => members.iter().any(|m| m.is_informative()),
-            PhpType::Named(n) => !matches!(
-                n.as_str(),
-                "array" | "mixed" | "object" | "void" | "null" | "self" | "static" | "$this"
-            ),
+            PhpType::Named(_) => {
+                !(self.is_bare_array()
+                    || self.is_mixed()
+                    || self.is_object()
+                    || self.is_void()
+                    || self.is_null()
+                    || self.is_self_like())
+            }
             PhpType::Callable { .. } => true,
             PhpType::ClassString(..) | PhpType::InterfaceString(..) => true,
             PhpType::KeyOf(..) | PhpType::ValueOf(..) => true,
@@ -2553,6 +2693,23 @@ impl PhpType {
 }
 
 // ---------------------------------------------------------------------------
+// Self-reference helper (private)
+// ---------------------------------------------------------------------------
+
+/// Whether a bare name string is a self-referencing keyword
+/// (`self`, `static`, or `$this`), case-insensitive.
+///
+/// This is the string-only version of [`PhpType::is_self_ref`],
+/// used for the base name of `Generic` nodes where we have a
+/// `&str` rather than a `&PhpType`.
+fn is_self_ref_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "self" | "static" | "$this"
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Subtype helpers (private)
 // ---------------------------------------------------------------------------
 
@@ -2586,10 +2743,7 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
     }
 
     // `never` is bottom.
-    if matches!(
-        sub_n,
-        "never" | "no-return" | "noreturn" | "never-return" | "never-returns"
-    ) {
+    if sub_n == "never" {
         return true;
     }
 
@@ -2605,10 +2759,10 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
 
     match sup_n {
         // ── bool supertypes ─────────────────────────────────────
-        "bool" | "boolean" => matches!(sub_n, "true" | "false"),
+        "bool" => matches!(sub_n, "true" | "false"),
 
         // ── int supertypes ──────────────────────────────────────
-        "int" | "integer" => matches!(
+        "int" => matches!(
             sub_n,
             "positive-int"
                 | "negative-int"
@@ -2618,10 +2772,9 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
         ),
 
         // ── float supertypes ────────────────────────────────────
-        "float" | "double" => matches!(
+        "float" => matches!(
             sub_n,
             "int"
-                | "integer"
                 | "positive-int"
                 | "negative-int"
                 | "non-positive-int"
@@ -2671,9 +2824,7 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
         "numeric" | "number" => matches!(
             sub_n,
             "int"
-                | "integer"
                 | "float"
-                | "double"
                 | "positive-int"
                 | "negative-int"
                 | "non-positive-int"
@@ -2686,12 +2837,9 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
         "scalar" => matches!(
             sub_n,
             "int"
-                | "integer"
                 | "float"
-                | "double"
                 | "string"
                 | "bool"
-                | "boolean"
                 | "true"
                 | "false"
                 | "positive-int"
@@ -2722,7 +2870,6 @@ fn is_named_subtype(sub: &str, sup: &str) -> bool {
         "array-key" => matches!(
             sub_n,
             "int"
-                | "integer"
                 | "string"
                 | "positive-int"
                 | "negative-int"
@@ -6600,6 +6747,46 @@ mod tests {
         fn is_empty_sentinel_false_for_regular() {
             assert!(!PhpType::parse("string").is_empty_sentinel());
             assert!(!PhpType::parse("").is_empty_sentinel());
+        }
+
+        #[test]
+        fn is_string_literal_single_quoted() {
+            assert!(PhpType::Literal("'hello'".to_owned()).is_string_literal());
+        }
+
+        #[test]
+        fn is_string_literal_double_quoted() {
+            assert!(PhpType::Literal("\"world\"".to_owned()).is_string_literal());
+        }
+
+        #[test]
+        fn is_string_literal_false_for_int() {
+            assert!(!PhpType::Literal("42".to_owned()).is_string_literal());
+        }
+
+        #[test]
+        fn is_string_literal_false_for_named() {
+            assert!(!PhpType::Named("string".to_owned()).is_string_literal());
+        }
+
+        #[test]
+        fn is_int_literal_positive() {
+            assert!(PhpType::Literal("42".to_owned()).is_int_literal());
+        }
+
+        #[test]
+        fn is_int_literal_negative() {
+            assert!(PhpType::Literal("-1".to_owned()).is_int_literal());
+        }
+
+        #[test]
+        fn is_int_literal_false_for_string() {
+            assert!(!PhpType::Literal("'hello'".to_owned()).is_int_literal());
+        }
+
+        #[test]
+        fn is_int_literal_false_for_named() {
+            assert!(!PhpType::Named("int".to_owned()).is_int_literal());
         }
     }
 }

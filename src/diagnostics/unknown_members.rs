@@ -879,10 +879,7 @@ fn display_class_name(class: &ClassInfo) -> String {
     }
 
     // Show the FQN when available for clarity.
-    match &class.file_namespace {
-        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, class.name),
-        _ => class.name.clone(),
-    }
+    class.fqn()
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

@@ -151,13 +151,10 @@ impl Backend {
             // ── Attempt resolution through all phases ───────────────────
 
             // 1. Local classes (same file)
-            if local_classes.iter().any(|c| {
-                c.name == ref_name
-                    || match &file_namespace {
-                        Some(ns) => format!("{}\\{}", ns, c.name) == fqn,
-                        None => c.name == fqn,
-                    }
-            }) {
+            if local_classes
+                .iter()
+                .any(|c| c.name == ref_name || c.fqn() == fqn)
+            {
                 continue;
             }
 

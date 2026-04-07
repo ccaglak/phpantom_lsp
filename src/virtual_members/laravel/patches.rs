@@ -169,30 +169,8 @@ fn is_likely_template_param(ty: &PhpType) -> bool {
         _ => return false,
     };
 
-    // Self-like types are not template params.
-    if matches!(name, "static" | "self" | "$this") {
-        return false;
-    }
-
-    // PHP built-in / keyword types.
-    if matches!(
-        name,
-        "null"
-            | "void"
-            | "never"
-            | "mixed"
-            | "int"
-            | "float"
-            | "string"
-            | "bool"
-            | "true"
-            | "false"
-            | "array"
-            | "object"
-            | "callable"
-            | "iterable"
-            | "resource"
-    ) {
+    // PHP built-in / keyword types (includes self, static, $this, parent).
+    if crate::php_type::is_keyword_type(name) {
         return false;
     }
 

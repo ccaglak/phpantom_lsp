@@ -55,10 +55,7 @@ fn raw_class_has_member(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> bool {
     // Build the FQN the same way the class loader expects.
-    let fqn = match &owner.file_namespace {
-        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, owner.name),
-        _ => owner.name.clone(),
-    };
+    let fqn = owner.fqn();
 
     // Load the raw class.  If the loader returns None (e.g. the class
     // is only known through the current file's AST and not yet indexed),

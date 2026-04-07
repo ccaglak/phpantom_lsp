@@ -591,18 +591,6 @@ pub fn resolve_class_fully_maybe_cached(
     resolve_class_fully_inner(class, class_loader, cache, &[])
 }
 
-/// Compute the fully-qualified name used as the cache key.
-///
-/// Mirrors the FQN construction in `update_ast_inner` and
-/// `parse_and_cache_content`: `namespace\ClassName` when a namespace
-/// is present, or just the short name otherwise.
-fn class_fqn(class: &ClassInfo) -> String {
-    match &class.file_namespace {
-        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, class.name),
-        _ => class.name.clone(),
-    }
-}
-
 /// Shared implementation behind [`resolve_class_fully`] and
 /// [`resolve_class_fully_cached`].
 fn resolve_class_fully_inner(
@@ -611,7 +599,7 @@ fn resolve_class_fully_inner(
     cache: Option<&ResolvedClassCache>,
     generic_args: &[String],
 ) -> Arc<ClassInfo> {
-    let fqn = class_fqn(class);
+    let fqn = class.fqn();
     let cache_key: ResolvedClassCacheKey = (fqn.clone(), generic_args.to_vec());
 
     // ── Cache lookup ────────────────────────────────────────────────
@@ -802,7 +790,7 @@ fn resolve_class_fully_inner(
             // has unsubstituted template parameters.  Only use the cache
             // for interfaces without generic substitutions.
             if iface_subs.is_empty() {
-                let iface_key: ResolvedClassCacheKey = (class_fqn(&iface), Vec::new());
+                let iface_key: ResolvedClassCacheKey = (iface.fqn(), Vec::new());
                 if let Some(c) = cache {
                     let map = c.lock();
                     if let Some(cached) = map.get(&iface_key) {

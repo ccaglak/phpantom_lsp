@@ -64,13 +64,8 @@ impl Backend {
     /// avoiding the redundant `PhpType::parse()` call that the string
     /// overload performs internally.
     pub(crate) fn find_or_load_class_typed(&self, ty: &PhpType) -> Option<Arc<ClassInfo>> {
-        if let Some(base) = ty.base_name() {
-            self.find_or_load_class_inner(base)
-        } else {
-            // Not a class-like type (scalar, union, etc.) — no useful
-            // normalisation possible, try as-is.
-            self.find_or_load_class_inner(&ty.to_string())
-        }
+        let base = ty.base_name()?;
+        self.find_or_load_class_inner(base)
     }
 
     /// Shared implementation used by [`find_or_load_class`].
@@ -389,10 +384,7 @@ impl Backend {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
                 }
-                let fqn = match &cls.file_namespace {
-                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
-                    _ => cls.name.clone(),
-                };
+                let fqn = cls.fqn();
                 fqn_idx.insert(fqn, Arc::clone(cls));
             }
         }
@@ -407,10 +399,7 @@ impl Backend {
                     if cls.name.starts_with("__anonymous@") {
                         continue;
                     }
-                    let fqn = match &cls.file_namespace {
-                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
-                        _ => cls.name.clone(),
-                    };
+                    let fqn = cls.fqn();
                     nf_cache.remove(&fqn);
                 }
             }
@@ -438,10 +427,7 @@ impl Backend {
         if was_already_parsed {
             let mut cache = self.resolved_class_cache.lock();
             for cls in &arc_classes {
-                let fqn = match &cls.file_namespace {
-                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
-                    _ => cls.name.clone(),
-                };
+                let fqn = cls.fqn();
                 crate::virtual_members::evict_fqn(&mut cache, &fqn);
             }
         }

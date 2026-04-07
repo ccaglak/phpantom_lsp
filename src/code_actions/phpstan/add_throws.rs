@@ -34,7 +34,8 @@ use crate::code_actions::make_code_action_data;
 use crate::completion::use_edit::{analyze_use_block, build_use_edit, use_import_conflicts};
 use crate::parser::with_parsed_program;
 use crate::util::{
-    byte_range_to_lsp_range, offset_to_position, ranges_overlap, strip_trailing_modifiers,
+    byte_range_to_lsp_range, offset_to_position, ranges_overlap, short_name as util_short_name,
+    strip_fqn_prefix, strip_trailing_modifiers,
 };
 
 /// The PHPStan identifier we match on.
@@ -238,7 +239,7 @@ pub(crate) fn extract_exception_fqn(message: &str) -> Option<String> {
         return None;
     }
     // Strip leading backslash if present.
-    Some(fqn.trim_start_matches('\\').to_string())
+    Some(strip_fqn_prefix(fqn).to_string())
 }
 
 /// Information about an existing docblock (or the position to create one).
@@ -395,8 +396,7 @@ fn docblock_already_has_throws(info: &DocblockInfo, short_name: &str) -> bool {
     for tag in parsed.tags_by_kind(mago_docblock::document::TagKind::Throws) {
         let rest = tag.description.trim();
         if let Some(type_name) = rest.split_whitespace().next() {
-            let short = type_name.trim_start_matches('\\');
-            let short = short.rsplit('\\').next().unwrap_or(short);
+            let short = util_short_name(type_name);
             if short.eq_ignore_ascii_case(&lower) {
                 return true;
             }

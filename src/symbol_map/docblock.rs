@@ -20,6 +20,7 @@ use mago_type_syntax::ast as type_ast;
 
 use crate::docblock::parser::parse_docblock;
 use crate::docblock::types::split_type_token;
+use crate::php_type::PhpType;
 use crate::types::TemplateVariance;
 
 use super::{SelfStaticParentKind, SymbolKind, SymbolSpan};
@@ -172,7 +173,7 @@ pub(super) fn extract_docblock_symbols(
     docblock: &str,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
-) -> Vec<(String, u32, Option<String>, TemplateVariance)> {
+) -> Vec<(String, u32, Option<PhpType>, TemplateVariance)> {
     // ── Inline `{@see ...}` references ──────────────────────────────
     // These appear in free-text, not as top-level tags, so we scan the
     // raw docblock text for them.
@@ -188,7 +189,7 @@ pub(super) fn extract_docblock_symbols(
         return Vec::new();
     };
 
-    let mut template_params: Vec<(String, u32, Option<String>, TemplateVariance)> = Vec::new();
+    let mut template_params: Vec<(String, u32, Option<PhpType>, TemplateVariance)> = Vec::new();
 
     for tag in &info.tags {
         let desc_file_offset = tag.description_span.start.offset;
@@ -961,7 +962,7 @@ fn extract_template_tag_symbols(
     desc_start_in_docblock: usize,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
-) -> Option<(String, u32, Option<String>)> {
+) -> Option<(String, u32, Option<PhpType>)> {
     let desc = docblock.get(desc_start_in_docblock..)?;
     // Take only the first line of the description (template tags are
     // always single-line).
@@ -1006,7 +1007,7 @@ fn extract_template_tag_symbols(
             base_offset + bound_start_in_docblock as u32,
             spans,
         );
-        Some(type_token.to_string())
+        Some(PhpType::parse(type_token))
     } else {
         None
     };

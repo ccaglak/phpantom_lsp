@@ -80,7 +80,7 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<PhpType>
         PhpType::Union(members) => {
             let remaining: Vec<&PhpType> = members
                 .iter()
-                .filter(|m| !types_match(m, &unused_parsed))
+                .filter(|m| !m.equivalent(&unused_parsed))
                 .collect();
 
             if remaining.len() == members.len() {
@@ -98,7 +98,7 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<PhpType>
         PhpType::Intersection(members) => {
             let remaining: Vec<&PhpType> = members
                 .iter()
-                .filter(|m| !types_match(m, &unused_parsed))
+                .filter(|m| !m.equivalent(&unused_parsed))
                 .collect();
 
             if remaining.len() == members.len() {
@@ -113,10 +113,10 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<PhpType>
         }
         PhpType::Nullable(inner) => {
             // `?T` is equivalent to `T|null`.
-            if types_match(&unused_parsed, &PhpType::null()) {
+            if unused_parsed.equivalent(&PhpType::null()) {
                 // Remove the null → just `T`.
                 Some((**inner).clone())
-            } else if types_match(inner, &unused_parsed) {
+            } else if inner.equivalent(&unused_parsed) {
                 // Remove the inner type → just `null`.
                 Some(PhpType::null())
             } else {
@@ -125,15 +125,6 @@ fn remove_type_from_union(full_type: &str, unused_type: &str) -> Option<PhpType>
         }
         _ => None,
     }
-}
-
-/// Check if two `PhpType` values represent the same type.
-///
-/// Uses string comparison of the display representation as a simple
-/// heuristic.  This handles most cases including generic types and
-/// class names.
-fn types_match(a: &PhpType, b: &PhpType) -> bool {
-    a.equivalent(b)
 }
 
 /// Build a `PhpType` from a list of type references.
@@ -282,13 +273,13 @@ fn find_and_replace_native_return_type(
     })
 }
 
-/// Extract the current native return type string from between `)` and `{`.
+/// Extract the current native return type from between `)` and `{`.
 fn extract_native_return_type(
     lines: &[&str],
     paren_line: usize,
     paren_col: usize,
     brace_line: usize,
-) -> Option<String> {
+) -> Option<PhpType> {
     let between = gather_between_paren_and_brace(lines, paren_line, paren_col, brace_line);
 
     let colon_pos = between.find(':')?;
@@ -305,7 +296,7 @@ fn extract_native_return_type(
         return None;
     }
 
-    Some(type_text[..type_len].to_string())
+    Some(PhpType::parse(&type_text[..type_len]))
 }
 
 /// Find the `@return` tag in a docblock and build a `TextEdit` that
@@ -349,8 +340,8 @@ fn find_and_replace_return_tag_type(
     None
 }
 
-/// Extract the current `@return` type string from a docblock.
-fn extract_return_tag_type(lines: &[&str], doc_start: usize, doc_end: usize) -> Option<String> {
+/// Extract the current `@return` type from a docblock.
+fn extract_return_tag_type(lines: &[&str], doc_start: usize, doc_end: usize) -> Option<PhpType> {
     for line_text in lines.iter().take(doc_end + 1).skip(doc_start) {
         if let Some(at_pos) = line_text.find("@return") {
             let after_return = &line_text[at_pos + "@return".len()..];
@@ -359,7 +350,7 @@ fn extract_return_tag_type(lines: &[&str], doc_start: usize, doc_end: usize) -> 
                 .find(|c: char| c.is_whitespace())
                 .unwrap_or(type_and_rest.len());
             if type_end > 0 {
-                return Some(type_and_rest[..type_end].to_string());
+                return Some(PhpType::parse(&type_and_rest[..type_end]));
             }
         }
     }
@@ -420,7 +411,7 @@ impl Backend {
             let native_type = extract_native_return_type(&lines, paren_line, paren_col, brace_line);
             let has_native_match = native_type
                 .as_ref()
-                .is_some_and(|t| remove_type_from_union(t, unused_type).is_some());
+                .is_some_and(|t| remove_type_from_union(&t.to_string(), unused_type).is_some());
 
             // Check the docblock @return tag.
             let func_line = find_func_keyword_line(&lines, paren_line).unwrap_or(diag_line);
@@ -436,7 +427,7 @@ impl Backend {
             };
             let has_doc_match = doc_return_type
                 .as_ref()
-                .is_some_and(|t| remove_type_from_union(t, unused_type).is_some());
+                .is_some_and(|t| remove_type_from_union(&t.to_string(), unused_type).is_some());
 
             // Only offer the action if we can actually remove the type
             // from at least one location.
@@ -493,7 +484,7 @@ impl Backend {
         // ── Update native return type ───────────────────────────────
         if let Some(native_type) =
             extract_native_return_type(&lines, paren_line, paren_col, brace_line)
-            && let Some(new_type) = remove_type_from_union(&native_type, unused_type)
+            && let Some(new_type) = remove_type_from_union(&native_type.to_string(), unused_type)
         {
             // Convert the new type to a valid native hint.
             let native_hint = new_type
@@ -522,7 +513,7 @@ impl Backend {
                 docblock_info.doc_start_line,
                 docblock_info.doc_end_line,
             )
-            && let Some(new_type) = remove_type_from_union(&doc_type, unused_type)
+            && let Some(new_type) = remove_type_from_union(&doc_type.to_string(), unused_type)
             && let Some(edit) = find_and_replace_return_tag_type(
                 &lines,
                 docblock_info.doc_start_line,
@@ -587,7 +578,7 @@ pub(crate) fn is_remove_unused_return_type_stale(
 
     // Check native return type.
     if let Some(native_type) = extract_native_return_type(&lines, paren_line, paren_col, brace_line)
-        && remove_type_from_union(&native_type, unused_type).is_some()
+        && remove_type_from_union(&native_type.to_string(), unused_type).is_some()
     {
         // The unused type is still present → not stale.
         return false;
@@ -603,7 +594,7 @@ pub(crate) fn is_remove_unused_return_type_stale(
             docblock_info.doc_start_line,
             docblock_info.doc_end_line,
         )
-        && remove_type_from_union(&doc_type, unused_type).is_some()
+        && remove_type_from_union(&doc_type.to_string(), unused_type).is_some()
     {
         return false;
     }
@@ -744,7 +735,7 @@ mod tests {
         let brace_line = find_open_brace_from_declaration(&lines, 1).unwrap();
         let (paren_line, paren_col) = find_close_paren_before_brace(&lines, brace_line).unwrap();
         let result = extract_native_return_type(&lines, paren_line, paren_col, brace_line);
-        assert_eq!(result, Some("string|null".to_string()));
+        assert_eq!(result, Some(PhpType::parse("string|null")));
     }
 
     #[test]
@@ -754,7 +745,7 @@ mod tests {
         let brace_line = find_open_brace_from_declaration(&lines, 1).unwrap();
         let (paren_line, paren_col) = find_close_paren_before_brace(&lines, brace_line).unwrap();
         let result = extract_native_return_type(&lines, paren_line, paren_col, brace_line);
-        assert_eq!(result, Some("?string".to_string()));
+        assert_eq!(result, Some(PhpType::parse("?string")));
     }
 
     // ── @return tag extraction ─────────────────────────────────────
@@ -770,7 +761,7 @@ mod tests {
         ];
         assert_eq!(
             extract_return_tag_type(&lines, 1, 3),
-            Some("string|null".to_string())
+            Some(PhpType::parse("string|null"))
         );
     }
 
@@ -779,7 +770,7 @@ mod tests {
         let lines = vec!["<?php", "/**", " * @return int|bool", " */"];
         assert_eq!(
             extract_return_tag_type(&lines, 1, 3),
-            Some("int|bool".to_string())
+            Some(PhpType::parse("int|bool"))
         );
     }
 

@@ -341,10 +341,7 @@ pub(crate) fn resolve_class_with_inheritance(
             && !parent.template_params.is_empty()
             && is_factory_class(parent_name)
         {
-            let factory_fqn = match &current.file_namespace {
-                Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, current.name),
-                _ => current.name.clone(),
-            };
+            let factory_fqn = current.fqn();
             if let Some(model_fqn) = factory_to_model_fqn(&factory_fqn)
                 && class_loader(&model_fqn).is_some()
             {
@@ -567,10 +564,7 @@ fn merge_traits_into(
             && is_has_factory_trait(trait_name)
             && extends_eloquent_model(merged, class_loader)
         {
-            let model_fqn = match &merged.file_namespace {
-                Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, merged.name),
-                _ => merged.name.clone(),
-            };
+            let model_fqn = merged.fqn();
             let factory_fqn = model_to_factory_fqn(&model_fqn);
             if class_loader(&factory_fqn).is_some() {
                 for param in &trait_info.template_params {

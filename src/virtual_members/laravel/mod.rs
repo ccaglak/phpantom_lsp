@@ -161,17 +161,21 @@ pub(crate) fn try_swap_custom_collection(
     }
 
     // The last generic arg is typically the model type.
-    let model_arg = generic_args.last().unwrap().to_string();
-    let model_class = find_class_in(all_classes, &model_arg)
+    let model_name = match generic_args.last().unwrap().base_name() {
+        Some(name) => name.to_string(),
+        None => return cls,
+    };
+    let model_class = find_class_in(all_classes, &model_name)
         .cloned()
-        .or_else(|| class_loader(&model_arg).map(Arc::unwrap_or_clone));
+        .or_else(|| class_loader(&model_name).map(Arc::unwrap_or_clone));
 
     if let Some(ref mc) = model_class
-        && let Some(coll_name) = mc.laravel().and_then(|l| l.custom_collection.as_ref())
+        && let Some(coll_type) = mc.laravel().and_then(|l| l.custom_collection.as_ref())
     {
-        find_class_in(all_classes, coll_name)
+        let coll_name = coll_type.to_string();
+        find_class_in(all_classes, &coll_name)
             .cloned()
-            .or_else(|| class_loader(coll_name).map(Arc::unwrap_or_clone))
+            .or_else(|| class_loader(&coll_name).map(Arc::unwrap_or_clone))
             .unwrap_or(cls)
     } else {
         cls
@@ -209,9 +213,12 @@ pub(crate) fn try_inject_builder_scopes(
     }
 
     // The first (or only) generic arg is the model type.
-    let model_arg = generic_args.first().unwrap().to_string();
+    let model_name = match generic_args.first().unwrap().base_name() {
+        Some(name) => name,
+        None => return,
+    };
 
-    inject_scopes_and_model_methods(result, &model_arg, class_loader);
+    inject_scopes_and_model_methods(result, model_name, class_loader);
 }
 
 /// Inject scope methods and model virtual methods onto a class that has
@@ -340,10 +347,7 @@ fn find_builder_mixin_model(
         // Verify it's actually the Eloquent Builder (not some other
         // class named Builder).  If we can't load it, trust the FQN.
         if let Some(ref mixin_cls) = class_loader(mixin_name) {
-            let fqn = match mixin_cls.file_namespace.as_deref() {
-                Some(ns) => format!("{ns}\\{}", mixin_cls.name),
-                None => mixin_cls.name.clone(),
-            };
+            let fqn = mixin_cls.fqn();
             if fqn != ELOQUENT_BUILDER_FQN && mixin_cls.name != ELOQUENT_BUILDER_FQN {
                 continue;
             }
@@ -362,11 +366,10 @@ fn find_builder_mixin_model(
             && let Some(first_arg) = args.first()
         {
             let resolved = first_arg.substitute(active_subs);
-            let model_name = resolved.to_string();
-            // Only inject if we resolved to a concrete type
-            // (not still a template parameter name).
-            if !model_name.is_empty() && !root_cls.template_params.contains(&model_name) {
-                return Some(model_name);
+            if let Some(name) = resolved.base_name()
+                && !root_cls.template_params.iter().any(|p| p == name)
+            {
+                return Some(name.to_string());
             }
         }
     }
@@ -510,13 +513,9 @@ fn inject_model_virtual_methods(
 /// 3. The FQN constructed from `file_namespace + name` (PSR-4 loaded classes
 ///    where `name` is the short name only).
 fn is_eloquent_builder_fqn(base_fqn: &str, cls: &ClassInfo) -> bool {
-    let fqn_from_ns = cls
-        .file_namespace
-        .as_ref()
-        .map(|ns| format!("{ns}\\{}", cls.name));
     base_fqn == ELOQUENT_BUILDER_FQN
         || cls.name == ELOQUENT_BUILDER_FQN
-        || fqn_from_ns.as_deref() == Some(ELOQUENT_BUILDER_FQN)
+        || cls.fqn() == ELOQUENT_BUILDER_FQN
 }
 
 /// Find a class in a slice by name (short or FQN).
@@ -603,11 +602,11 @@ impl VirtualMemberProvider for LaravelModelProvider {
             // ── Attribute default properties (fallback) ─────────────
             // Only add properties for columns not already covered by $casts
             // or $dates.
-            for (column, php_type_str) in &laravel.attributes_definitions {
+            for (column, php_type) in &laravel.attributes_definitions {
                 if !seen_props.insert(column.clone()) {
                     continue;
                 }
-                properties.push(PropertyInfo::virtual_property(column, Some(php_type_str)));
+                properties.push(PropertyInfo::virtual_property_typed(column, Some(php_type)));
             }
 
             // ── Column name properties (last-resort fallback) ───────
@@ -712,7 +711,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                         related_class
                             .laravel
                             .as_ref()
-                            .and_then(|l| l.custom_collection.clone())
+                            .and_then(|l| l.custom_collection.as_ref().map(|c| c.to_string()))
                     })
             } else {
                 None

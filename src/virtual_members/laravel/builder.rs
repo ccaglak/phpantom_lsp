@@ -177,7 +177,8 @@ pub(super) fn build_builder_forwarded_methods(
         if let Some(coll) = class.laravel().and_then(|l| l.custom_collection.as_ref())
             && let Some(ref mut ret) = forwarded.return_type
         {
-            *ret = replace_eloquent_collection_typed(ret, coll);
+            let coll_name = coll.to_string();
+            *ret = replace_eloquent_collection_typed(ret, &coll_name);
         }
 
         methods.push(forwarded);

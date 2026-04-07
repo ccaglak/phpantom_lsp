@@ -650,12 +650,14 @@ pub(crate) fn resolve_target_classes_expr(
             // etc., but "self"/"static"/"parent" are keywords, not
             // class names, so find_class_by_name / class_loader won't
             // find them.
-            let owner_classes: Vec<Arc<ClassInfo>> = match class.as_str() {
-                "self" | "static" => current_class
-                    .map(|cc| Arc::new(cc.clone()))
-                    .into_iter()
-                    .collect(),
-                "parent" => {
+            let lower_class = class.to_ascii_lowercase();
+            let owner_classes: Vec<Arc<ClassInfo>> =
+                if lower_class == "self" || lower_class == "static" {
+                    current_class
+                        .map(|cc| Arc::new(cc.clone()))
+                        .into_iter()
+                        .collect()
+                } else if lower_class == "parent" {
                     if let Some(cc) = current_class
                         && let Some(ref parent_name) = cc.parent_class
                     {
@@ -667,15 +669,13 @@ pub(crate) fn resolve_target_classes_expr(
                     } else {
                         vec![]
                     }
-                }
-                _ => {
+                } else {
                     if let Some(cls) = find_class_by_name(all_classes, class) {
                         vec![Arc::clone(cls)]
                     } else {
                         class_loader(class).into_iter().collect()
                     }
-                }
-            };
+                };
 
             // When the member is a static property (starts with `$`),
             // resolve to the property's declared type instead of the
@@ -1122,11 +1122,10 @@ pub(crate) fn resolve_subject_outcome(
         }
 
         // stdClass / object — synthetic resolution.
-        if resolved.iter().any(|rt| {
-            matches!(&rt.type_string,
-                PhpType::Named(s) if s.eq_ignore_ascii_case("stdclass"))
-                || rt.type_string.is_object()
-        }) {
+        if resolved
+            .iter()
+            .any(|rt| rt.type_string.is_named_ci("stdclass") || rt.type_string.is_object())
+        {
             let synthetic = Arc::new(ClassInfo {
                 name: "stdClass".to_string(),
                 ..ClassInfo::default()
@@ -1429,9 +1428,9 @@ pub(in crate::completion) fn resolve_static_owner_class(
     class: &str,
     rctx: &ResolutionCtx<'_>,
 ) -> Option<Arc<ClassInfo>> {
-    if class == "self" || class == "static" {
+    if class.eq_ignore_ascii_case("self") || class.eq_ignore_ascii_case("static") {
         rctx.current_class.map(|cc| Arc::new(cc.clone()))
-    } else if class == "parent" {
+    } else if class.eq_ignore_ascii_case("parent") {
         rctx.current_class
             .and_then(|cc| cc.parent_class.as_ref())
             .and_then(|p| (rctx.class_loader)(p))

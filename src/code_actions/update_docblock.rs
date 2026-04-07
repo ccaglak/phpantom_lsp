@@ -25,7 +25,7 @@ use tower_lsp::lsp_types::*;
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::Backend;
 use crate::code_actions::phpstan::fix_return_type::enrichment_return_type;
-use crate::completion::phpdoc::generation::enrichment_plain;
+use crate::completion::phpdoc::generation::{enrichment_plain, enrichment_plain_typed};
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
 use crate::docblock::is_compatible_refinement_typed;
 use crate::docblock::parser::{DocblockInfo, parse_docblock_for_tags};
@@ -33,7 +33,7 @@ use crate::docblock::type_strings::split_type_token;
 use crate::parser::extract_hint_type;
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, FunctionLoader};
-use crate::util::offset_to_position;
+use crate::util::{offset_to_position, short_name};
 
 // ── Data types ──────────────────────────────────────────────────────────────
 
@@ -608,8 +608,9 @@ fn check_needs_update(
             if doc_param.type_parsed.has_type_structure() {
                 continue;
             }
-            if let Some(enriched) = enrichment_plain(sig_param.type_hint.as_ref(), class_loader)
-                && enriched != doc_param.type_str_raw
+            if let Some(enriched) =
+                enrichment_plain_typed(sig_param.type_hint.as_ref(), class_loader)
+                && !enriched.equivalent(&doc_param.type_parsed)
             {
                 return true;
             }
@@ -671,20 +672,10 @@ fn check_needs_update(
     let existing_lower: Vec<String> = info
         .doc_throws
         .iter()
-        .map(|t| {
-            t.trim_start_matches('\\')
-                .rsplit('\\')
-                .next()
-                .unwrap_or(t)
-                .to_lowercase()
-        })
+        .map(|t| short_name(t).to_lowercase())
         .collect();
     for exc in &uncaught {
-        let short = exc
-            .trim_start_matches('\\')
-            .rsplit('\\')
-            .next()
-            .unwrap_or(exc);
+        let short = short_name(exc);
         if !existing_lower.contains(&short.to_lowercase()) {
             return true;
         }
@@ -808,10 +799,11 @@ fn build_updated_docblock(
                         // Check if enrichment would upgrade the type (e.g.
                         // bare `Closure` → `(Closure(): mixed)`).
                         if let Some(enriched) =
-                            enrichment_plain(sig.type_hint.as_ref(), class_loader)
+                            enrichment_plain_typed(sig.type_hint.as_ref(), class_loader)
                         {
-                            if enriched != existing.type_str_raw {
-                                enriched
+                            if !enriched.equivalent(&existing.type_parsed) {
+                                enrichment_plain(sig.type_hint.as_ref(), class_loader)
+                                    .unwrap_or_else(|| existing.type_str_raw.clone())
                             } else {
                                 existing.type_str_raw.clone()
                             }
@@ -886,22 +878,12 @@ fn build_updated_docblock(
     let existing_throws_lower: Vec<String> = info
         .doc_throws
         .iter()
-        .map(|t| {
-            t.trim_start_matches('\\')
-                .rsplit('\\')
-                .next()
-                .unwrap_or(t)
-                .to_lowercase()
-        })
+        .map(|t| short_name(t).to_lowercase())
         .collect();
 
     let mut new_throws: Vec<String> = Vec::new();
     for exc in &uncaught {
-        let short = exc
-            .trim_start_matches('\\')
-            .rsplit('\\')
-            .next()
-            .unwrap_or(exc);
+        let short = short_name(exc);
         if !existing_throws_lower.contains(&short.to_lowercase()) {
             new_throws.push(short.to_string());
         }

@@ -883,7 +883,7 @@ fn resolve_variable_in_members<'b>(
                             effective_type.unwrap_or_else(|| {
                                 type_for_resolution
                                     .cloned()
-                                    .unwrap_or_else(|| PhpType::Raw(String::new()))
+                                    .unwrap_or_else(PhpType::untyped)
                             }),
                         );
                         break;
@@ -1169,8 +1169,7 @@ fn type_may_contain_template_param(ty: &PhpType) -> bool {
         }
         PhpType::Nullable(inner) => type_may_contain_template_param(inner),
         PhpType::Generic(base, args) => {
-            // Check if the base itself could be a template param, or any arg.
-            type_may_contain_template_param(&PhpType::Named(base.clone()))
+            !crate::php_type::is_keyword_type(base)
                 || args.iter().any(type_may_contain_template_param)
         }
         _ => false,
@@ -2953,7 +2952,7 @@ fn extract_native_type_from_rhs<'b>(
         // functions always produce a Closure.
         Expression::PartialApplication(_)
         | Expression::Closure(_)
-        | Expression::ArrowFunction(_) => Some(PhpType::Named("\\Closure".to_string())),
+        | Expression::ArrowFunction(_) => Some(PhpType::closure()),
         _ => None,
     }
 }
@@ -3442,22 +3441,13 @@ fn infer_array_key_type(index: &Expression<'_>, ctx: &VarResolutionCtx<'_>) -> P
 /// Returns `true` when the [`PhpType`] represents a PHP type that
 /// is always coerced to `int` when used as an array key.
 fn is_int_like_key_typed(ty: &PhpType) -> bool {
-    match ty {
-        PhpType::Named(s) => is_int_like_key(s),
-        _ => false,
-    }
+    ty.is_int_coercible_key()
 }
 
 /// Returns `true` when the [`PhpType`] represents a string-like
 /// array key type.
 fn is_string_like_key(ty: &PhpType) -> bool {
-    match ty {
-        PhpType::Named(s) => {
-            matches!(s.as_str(), "non-empty-string" | "class-string") || ty.is_string_type()
-        }
-        PhpType::ClassString(_) => true,
-        _ => false,
-    }
+    ty.is_string_subtype()
 }
 
 /// Returns `true` when the [`PhpType`] is `array-key` or the
@@ -3474,28 +3464,6 @@ fn is_array_key_type(ty: &PhpType) -> bool {
         }
         _ => false,
     }
-}
-
-/// Returns `true` when the type string represents a PHP type that
-/// is always coerced to `int` when used as an array key.
-fn is_int_like_key(ty: &str) -> bool {
-    matches!(
-        ty.to_ascii_lowercase().as_str(),
-        "int"
-            | "integer"
-            | "float"
-            | "double"
-            | "bool"
-            | "boolean"
-            | "true"
-            | "false"
-            | "null"
-            | "positive-int"
-            | "negative-int"
-            | "non-negative-int"
-            | "non-positive-int"
-            | "non-zero-int"
-    )
 }
 
 // ── Array function type preservation helpers ─────────────────────────

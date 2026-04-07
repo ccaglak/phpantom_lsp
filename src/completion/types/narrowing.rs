@@ -211,8 +211,8 @@ pub(in crate::completion) fn apply_instanceof_inclusion(
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
 ) {
-    let parsed = PhpType::parse(cls_name);
-    apply_instanceof_inclusion_typed(&parsed, exact, ctx, results);
+    let ty = PhpType::Named(cls_name.to_string());
+    apply_instanceof_inclusion_typed(&ty, exact, ctx, results);
 }
 
 /// Like [`apply_instanceof_inclusion`], but accepts a [`PhpType`] directly,
@@ -324,8 +324,8 @@ pub(in crate::completion) fn apply_instanceof_exclusion(
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
 ) {
-    let parsed = PhpType::parse(cls_name);
-    apply_instanceof_exclusion_typed(&parsed, ctx, results);
+    let ty = PhpType::Named(cls_name.to_string());
+    apply_instanceof_exclusion_typed(&ty, ctx, results);
 }
 
 /// Like [`apply_instanceof_exclusion`], but accepts a [`PhpType`] directly.

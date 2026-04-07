@@ -22,6 +22,7 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::code_actions::CodeActionData;
 use crate::code_actions::make_code_action_data;
+use crate::php_type::PhpType;
 use crate::util::{offset_to_position, ranges_overlap, short_name};
 
 /// PHPStan identifiers we match on.
@@ -63,7 +64,8 @@ impl Backend {
                 None => continue,
             };
 
-            let short_name = short_name(&type_name);
+            let type_name_str = type_name.to_string();
+            let short_name = short_name(&type_name_str);
 
             // Find the docblock above the diagnostic line (validation only).
             let diag_line = diag.range.start.line as usize;
@@ -73,7 +75,7 @@ impl Backend {
             };
 
             // Validate that the @throws line can be removed (validation only).
-            if build_remove_throws_edit(content, &docblock, &type_name).is_none() {
+            if build_remove_throws_edit(content, &docblock, &type_name_str).is_none() {
                 continue;
             }
 
@@ -116,9 +118,10 @@ impl Backend {
         let code = extra.get("diagnostic_code")?.as_str()?;
 
         let type_name = extract_throws_type(message, code)?;
+        let type_name_str = type_name.to_string();
 
         let docblock = find_docblock_above_line(content, line)?;
-        let throws_edit = build_remove_throws_edit(content, &docblock, &type_name)?;
+        let throws_edit = build_remove_throws_edit(content, &docblock, &type_name_str)?;
 
         let doc_uri: Url = data.uri.parse().ok()?;
         let mut changes = HashMap::new();
@@ -134,8 +137,8 @@ impl Backend {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Extract the type name from a PHPStan `throws.unusedType` or
-/// `throws.notThrowable` message.
+/// Extract the type from a PHPStan `throws.unusedType` or
+/// `throws.notThrowable` message as a [`PhpType`].
 ///
 /// `throws.unusedType` formats:
 /// - `"Method Ns\Cls::method() has Ns\Ex in PHPDoc @throws tag but it's not thrown."`
@@ -144,28 +147,28 @@ impl Backend {
 ///
 /// `throws.notThrowable` format:
 /// - `"PHPDoc tag @throws with type Ns\Ex is not subtype of Throwable"`
-fn extract_throws_type(message: &str, identifier: &str) -> Option<String> {
+fn extract_throws_type(message: &str, identifier: &str) -> Option<PhpType> {
     let raw = if identifier == UNUSED_TYPE_ID {
         // Pattern: "has <type> in PHPDoc @throws tag"
         let marker = " has ";
         let start = message.find(marker)? + marker.len();
         let rest = &message[start..];
         let end = rest.find(" in PHPDoc @throws tag")?;
-        rest[..end].trim().to_string()
+        rest[..end].trim()
     } else {
         // Pattern: "@throws with type <type> is not subtype of Throwable"
         let marker = "@throws with type ";
         let start = message.find(marker)? + marker.len();
         let rest = &message[start..];
         let end = rest.find(" is not subtype")?;
-        rest[..end].trim().to_string()
+        rest[..end].trim()
     };
 
     if raw.is_empty() {
         return None;
     }
 
-    Some(raw)
+    Some(PhpType::parse(raw))
 }
 
 /// Information about a docblock found above a given line.
@@ -291,9 +294,8 @@ fn build_remove_throws_edit(
             // might use the short name, the FQN, or a leading-backslash
             // variant.  The message from PHPStan can also be FQN.
             if tag_short.eq_ignore_ascii_case(short)
-                || tag_type
-                    .trim_start_matches('\\')
-                    .eq_ignore_ascii_case(type_name.trim_start_matches('\\'))
+                || crate::util::strip_fqn_prefix(tag_type)
+                    .eq_ignore_ascii_case(crate::util::strip_fqn_prefix(type_name))
             {
                 lines_to_remove.push(i);
             }
@@ -393,21 +395,21 @@ mod tests {
     fn extracts_unused_type_from_method_message() {
         let msg = "Method App\\Controllers\\Foo::bar() has Luxplus\\Decimal\\Decimal in PHPDoc @throws tag but it's not thrown.";
         let t = extract_throws_type(msg, UNUSED_TYPE_ID).unwrap();
-        assert_eq!(t, "Luxplus\\Decimal\\Decimal");
+        assert_eq!(t.to_string(), "Luxplus\\Decimal\\Decimal");
     }
 
     #[test]
     fn extracts_unused_type_from_function_message() {
         let msg = "Function doStuff() has App\\Exceptions\\FooException in PHPDoc @throws tag but it's not thrown.";
         let t = extract_throws_type(msg, UNUSED_TYPE_ID).unwrap();
-        assert_eq!(t, "App\\Exceptions\\FooException");
+        assert_eq!(t.to_string(), "App\\Exceptions\\FooException");
     }
 
     #[test]
     fn extracts_unused_type_from_property_hook_message() {
         let msg = "Get hook for property App\\Foo::$bar has App\\Exceptions\\PropException in PHPDoc @throws tag but it's not thrown.";
         let t = extract_throws_type(msg, UNUSED_TYPE_ID).unwrap();
-        assert_eq!(t, "App\\Exceptions\\PropException");
+        assert_eq!(t.to_string(), "App\\Exceptions\\PropException");
     }
 
     #[test]
@@ -415,14 +417,14 @@ mod tests {
         let msg =
             "PHPDoc tag @throws with type App\\Http\\Controllers\\not is not subtype of Throwable";
         let t = extract_throws_type(msg, NOT_THROWABLE_ID).unwrap();
-        assert_eq!(t, "App\\Http\\Controllers\\not");
+        assert_eq!(t.to_string(), "App\\Http\\Controllers\\not");
     }
 
     #[test]
     fn extracts_not_throwable_fqn_type() {
         let msg = "PHPDoc tag @throws with type \\TheSeer\\Tokenizer\\Exception is not subtype of Throwable";
         let t = extract_throws_type(msg, NOT_THROWABLE_ID).unwrap();
-        assert_eq!(t, "\\TheSeer\\Tokenizer\\Exception");
+        assert_eq!(t.to_string(), "\\TheSeer\\Tokenizer\\Exception");
     }
 
     #[test]

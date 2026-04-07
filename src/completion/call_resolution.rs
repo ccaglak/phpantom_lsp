@@ -199,14 +199,16 @@ impl Backend {
     /// Resolve class name keywords (`self`, `static`, `parent`) to actual
     /// class names in the context of the current class.
     fn resolve_class_name_keyword(class_name: &str, current_class: Option<&ClassInfo>) -> String {
-        match class_name {
-            "self" | "static" => current_class
+        if class_name.eq_ignore_ascii_case("self") || class_name.eq_ignore_ascii_case("static") {
+            current_class
                 .map(|c| c.name.clone())
-                .unwrap_or_else(|| class_name.to_string()),
-            "parent" => current_class
+                .unwrap_or_else(|| class_name.to_string())
+        } else if class_name.eq_ignore_ascii_case("parent") {
+            current_class
                 .and_then(|c| c.parent_class.clone())
-                .unwrap_or_else(|| class_name.to_string()),
-            _ => class_name.to_string(),
+                .unwrap_or_else(|| class_name.to_string())
+        } else {
+            class_name.to_string()
         }
     }
 
@@ -1204,16 +1206,10 @@ impl Backend {
             .or_else(|| trimmed.strip_prefix("$this?->"))
             && prop.chars().all(|c| c.is_alphanumeric() || c == '_')
             && let Some(owner) = ctx.current_class
+            && let Some(type_hint) =
+                crate::inheritance::resolve_property_type_hint(owner, prop, ctx.class_loader)
         {
-            let types = super::type_resolution::resolve_property_types(
-                prop,
-                owner,
-                ctx.all_classes,
-                ctx.class_loader,
-            );
-            if let Some(first) = types.first() {
-                return Some(PhpType::Named(first.name.clone()));
-            }
+            return Some(type_hint);
         }
 
         // $var → resolve variable type
@@ -1339,6 +1335,10 @@ impl Backend {
 
                 let owner = if class_part == "self" || class_part == "static" {
                     current_class.cloned()
+                } else if class_part == "parent" {
+                    current_class
+                        .and_then(|c| c.parent_class.as_ref())
+                        .and_then(|p| class_loader(p).map(Arc::unwrap_or_clone))
                 } else {
                     find_class_by_name(all_classes, class_part)
                         .map(|arc| ClassInfo::clone(arc))

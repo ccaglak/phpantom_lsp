@@ -2115,36 +2115,18 @@ fn resolve_enclosing_return_type(content: &str, offset: u32) -> PhpType {
                 return method
                     .return_type_hint
                     .as_ref()
-                    .map(|h| {
-                        let s = h.span().start.offset as usize;
-                        let e = h.span().end.offset as usize;
-                        PhpType::parse(&strip_return_type_colon(content[s..e].trim()))
-                    })
-                    .unwrap_or_else(|| PhpType::parse(""));
+                    .map(|h| crate::parser::extract_hint_type(&h.hint))
+                    .unwrap_or_else(PhpType::untyped);
             }
-            PhpType::parse("")
+            PhpType::untyped()
         }
         CursorContext::InFunction(func, true) => func
             .return_type_hint
             .as_ref()
-            .map(|h| {
-                let s = h.span().start.offset as usize;
-                let e = h.span().end.offset as usize;
-                PhpType::parse(&strip_return_type_colon(content[s..e].trim()))
-            })
-            .unwrap_or_else(|| PhpType::parse("")),
-        _ => PhpType::parse(""),
+            .map(|h| crate::parser::extract_hint_type(&h.hint))
+            .unwrap_or_else(PhpType::untyped),
+        _ => PhpType::untyped(),
     }
-}
-
-/// Strip the leading `: ` from a return type hint span.
-///
-/// The mago AST's `return_type_hint` span includes the colon and
-/// whitespace prefix (e.g. `": string"`).  This helper strips that
-/// prefix to yield just the type name.
-fn strip_return_type_colon(raw: &str) -> String {
-    let stripped = raw.strip_prefix(':').unwrap_or(raw).trim_start();
-    stripped.to_string()
 }
 
 // ─── Main code action collector ─────────────────────────────────────────────
@@ -2246,12 +2228,12 @@ impl Backend {
                     format!("${}", name)
                 };
                 let resolved_type = resolve_var_type(self, &dollar_name, content, offset, uri);
-                let raw_type = resolved_type.clone().unwrap_or_else(|| PhpType::parse(""));
+                let raw_type = resolved_type.clone().unwrap_or_else(PhpType::untyped);
                 // Clean up the type for use in a signature — stays as PhpType.
                 let cleaned = resolved_type
                     .as_ref()
                     .and_then(clean_type_for_signature_typed)
-                    .unwrap_or_else(|| PhpType::parse(""));
+                    .unwrap_or_else(PhpType::untyped);
                 (dollar_name, cleaned, raw_type)
             })
             .collect()
@@ -2317,7 +2299,7 @@ impl Backend {
         {
             resolve_enclosing_return_type(content, start as u32)
         } else {
-            PhpType::parse("")
+            PhpType::untyped()
         };
         let naming_ctx = NamingContext {
             enclosing_name: &enclosing.enclosing_name,
@@ -2365,7 +2347,7 @@ impl Backend {
         ) {
             resolve_enclosing_return_type(content, start as u32)
         } else {
-            PhpType::parse("")
+            PhpType::untyped()
         };
 
         let enclosing_docblock_return: Option<PhpType> = if matches!(
@@ -2486,7 +2468,7 @@ fn build_return_type_hint_for_docblock(
             if !trailing_return_type.is_empty() {
                 trailing_return_type.clone()
             } else {
-                PhpType::parse("")
+                PhpType::untyped()
             }
         }
         ReturnStrategy::NullGuardWithValue(_) => {
@@ -2494,9 +2476,9 @@ fn build_return_type_hint_for_docblock(
                 if let Some(hint) = returns[0].1.to_native_hint_typed() {
                     return hint;
                 }
-                PhpType::parse("")
+                PhpType::untyped()
             } else {
-                PhpType::parse("")
+                PhpType::untyped()
             }
         }
         ReturnStrategy::None | ReturnStrategy::Unsafe => {
@@ -2506,7 +2488,7 @@ fn build_return_type_hint_for_docblock(
                 if let Some(hint) = returns[0].1.to_native_hint_typed() {
                     return hint;
                 }
-                PhpType::parse("")
+                PhpType::untyped()
             } else {
                 PhpType::array()
             }
@@ -2544,7 +2526,7 @@ fn build_raw_return_type_for_docblock(
             if !trailing_return_type.is_empty() {
                 trailing_return_type.clone()
             } else {
-                PhpType::parse("")
+                PhpType::untyped()
             }
         }
         ReturnStrategy::NullGuardWithValue(_) => {
@@ -2552,7 +2534,7 @@ fn build_raw_return_type_for_docblock(
             if returns.len() == 1 && !returns[0].2.is_empty() {
                 returns[0].2.clone()
             } else {
-                PhpType::parse("")
+                PhpType::untyped()
             }
         }
         ReturnStrategy::None | ReturnStrategy::Unsafe => {
@@ -2935,7 +2917,7 @@ mod tests {
 
     #[test]
     fn param_list_untyped() {
-        let params = vec![("$x".to_string(), PhpType::parse(""))];
+        let params = vec![("$x".to_string(), PhpType::untyped())];
         assert_eq!(build_param_list(&params), "$x");
     }
 
@@ -2962,7 +2944,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "void");
@@ -2980,7 +2962,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "int");
@@ -3001,7 +2983,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "array");
@@ -3037,7 +3019,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::VoidGuards,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "bool");
@@ -3055,7 +3037,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "bool");
@@ -3091,7 +3073,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
@@ -3109,7 +3091,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?int");
@@ -3129,7 +3111,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         assert_eq!(build_return_type(&info), "?string");
@@ -3148,7 +3130,7 @@ mod tests {
             enclosing_name: String::new(),
             sibling_method_names: Vec::new(),
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "",
             return_strategy: &ReturnStrategy::None,
@@ -3171,7 +3153,7 @@ mod tests {
             enclosing_name: String::new(),
             sibling_method_names: Vec::new(),
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "",
             return_strategy: &ReturnStrategy::None,
@@ -3194,7 +3176,7 @@ mod tests {
             enclosing_name: "run".to_string(),
             sibling_method_names: vec!["run".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "run",
             return_strategy: &ReturnStrategy::VoidGuards,
@@ -3217,7 +3199,7 @@ mod tests {
             enclosing_name: "run".to_string(),
             sibling_method_names: vec!["run".to_string(), "runGuard".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "run",
             return_strategy: &ReturnStrategy::VoidGuards,
@@ -3240,7 +3222,7 @@ mod tests {
             enclosing_name: "fetch".to_string(),
             sibling_method_names: vec!["fetch".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "fetch",
             return_strategy: &ReturnStrategy::SentinelNull,
@@ -3263,7 +3245,7 @@ mod tests {
             enclosing_name: "build".to_string(),
             sibling_method_names: vec!["build".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "build",
             return_strategy: &ReturnStrategy::TrailingReturn,
@@ -3287,7 +3269,7 @@ mod tests {
             enclosing_name: "process".to_string(),
             sibling_method_names: vec!["process".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "process",
             return_strategy: &ReturnStrategy::None,
@@ -3310,7 +3292,7 @@ mod tests {
             enclosing_name: "run".to_string(),
             sibling_method_names: vec!["run".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "run",
             return_strategy: &ReturnStrategy::None,
@@ -3333,7 +3315,7 @@ mod tests {
             enclosing_name: "foo".to_string(),
             sibling_method_names: Vec::new(),
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "foo",
             return_strategy: &ReturnStrategy::None,
@@ -3358,7 +3340,7 @@ mod tests {
             enclosing_name: "run".to_string(),
             sibling_method_names: vec!["run".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "run",
             return_strategy: &ReturnStrategy::None,
@@ -3410,7 +3392,7 @@ mod tests {
             enclosing_name: "build".to_string(),
             sibling_method_names: vec!["build".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "build",
             return_strategy: &ReturnStrategy::TrailingReturn,
@@ -3434,7 +3416,7 @@ mod tests {
             enclosing_name: "make".to_string(),
             sibling_method_names: vec!["make".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "make",
             return_strategy: &ReturnStrategy::TrailingReturn,
@@ -3457,7 +3439,7 @@ mod tests {
             enclosing_name: "show".to_string(),
             sibling_method_names: vec!["show".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "show",
             return_strategy: &ReturnStrategy::None,
@@ -3480,7 +3462,7 @@ mod tests {
             enclosing_name: "calc".to_string(),
             sibling_method_names: Vec::new(),
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "calc",
             return_strategy: &ReturnStrategy::None,
@@ -3505,7 +3487,7 @@ mod tests {
             enclosing_name: String::new(),
             sibling_method_names: vec!["run".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "",
             return_strategy: &ReturnStrategy::None,
@@ -3551,7 +3533,7 @@ mod tests {
             enclosing_name: "validate".to_string(),
             sibling_method_names: vec!["validate".to_string()],
         };
-        let trailing_rt = PhpType::parse("");
+        let trailing_rt = PhpType::untyped();
         let naming = NamingContext {
             enclosing_name: "validate",
             return_strategy: &ReturnStrategy::UniformGuards("false".to_string()),
@@ -3577,7 +3559,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -3596,7 +3578,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -3609,8 +3591,8 @@ mod tests {
             name: "extracted".to_string(),
             params: vec![],
             returns: vec![
-                ("$a".to_string(), PhpType::parse("")),
-                ("$b".to_string(), PhpType::parse("")),
+                ("$a".to_string(), PhpType::untyped()),
+                ("$b".to_string(), PhpType::untyped()),
             ],
             body: String::new(),
             target: ExtractionTarget::Function,
@@ -3618,7 +3600,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: String::new(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "    ");
@@ -3637,7 +3619,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3656,7 +3638,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3686,7 +3668,7 @@ mod tests {
     fn call_site_void_guards() {
         let info = ExtractionInfo {
             name: "extracted".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: String::new(),
             target: ExtractionTarget::Method,
@@ -3694,7 +3676,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3705,7 +3687,7 @@ mod tests {
     fn call_site_uniform_false_guards() {
         let info = ExtractionInfo {
             name: "extracted".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: String::new(),
             target: ExtractionTarget::Method,
@@ -3713,7 +3695,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3724,7 +3706,7 @@ mod tests {
     fn call_site_sentinel_null() {
         let info = ExtractionInfo {
             name: "extracted".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: String::new(),
             target: ExtractionTarget::Method,
@@ -3732,7 +3714,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::SentinelNull,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3746,7 +3728,7 @@ mod tests {
     fn call_site_null_guard_with_value() {
         let info = ExtractionInfo {
             name: "extracted".to_string(),
-            params: vec![("$obj".to_string(), PhpType::parse(""))],
+            params: vec![("$obj".to_string(), PhpType::untyped())],
             returns: vec![("$sound".to_string(), PhpType::parse("string"))],
             body: String::new(),
             target: ExtractionTarget::Method,
@@ -3754,7 +3736,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3768,7 +3750,7 @@ mod tests {
     fn call_site_void_guard_with_value() {
         let info = ExtractionInfo {
             name: "extracted".to_string(),
-            params: vec![("$obj".to_string(), PhpType::parse(""))],
+            params: vec![("$obj".to_string(), PhpType::untyped())],
             returns: vec![("$sound".to_string(), PhpType::parse("string"))],
             body: String::new(),
             target: ExtractionTarget::Method,
@@ -3776,7 +3758,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_call_site(&info, "        ");
@@ -3800,7 +3782,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3823,7 +3805,7 @@ mod tests {
             member_indent: String::new(),
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3846,7 +3828,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3893,7 +3875,7 @@ mod tests {
     fn definition_void_guards_appends_return_true() {
         let info = ExtractionInfo {
             name: "validate".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if (!$x) return;".to_string(),
             target: ExtractionTarget::Method,
@@ -3901,7 +3883,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3919,7 +3901,7 @@ mod tests {
     fn definition_uniform_false_guards_appends_return_true() {
         let info = ExtractionInfo {
             name: "validate".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if (!$x) return false;".to_string(),
             target: ExtractionTarget::Method,
@@ -3927,7 +3909,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("false".to_string()),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3945,7 +3927,7 @@ mod tests {
     fn definition_uniform_true_guards_appends_return_false() {
         let info = ExtractionInfo {
             name: "validate".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if (!$x) return true;".to_string(),
             target: ExtractionTarget::Method,
@@ -3953,7 +3935,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("true".to_string()),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -3967,7 +3949,7 @@ mod tests {
     fn definition_sentinel_null_appends_return_null() {
         let info = ExtractionInfo {
             name: "classify".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if ($x < 0) return 'negative';".to_string(),
             target: ExtractionTarget::Method,
@@ -4002,7 +3984,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(false),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -4034,7 +4016,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::NullGuardWithValue(true),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -4144,7 +4126,7 @@ mod tests {
         // for the guards and `return true;` for the fall-through.
         let info = ExtractionInfo {
             name: "validate".to_string(),
-            params: vec![("$x".to_string(), PhpType::parse(""))],
+            params: vec![("$x".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if (!$x) return;\nif (!$y) return;".to_string(),
             target: ExtractionTarget::Method,
@@ -4152,7 +4134,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::VoidGuards,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -4178,7 +4160,7 @@ mod tests {
         // extracted function since the return type is bool.
         let info = ExtractionInfo {
             name: "validate".to_string(),
-            params: vec![("$id".to_string(), PhpType::parse(""))],
+            params: vec![("$id".to_string(), PhpType::untyped())],
             returns: vec![],
             body: "if ($id <= 0) return null;\nif (!$this->exists($id)) return null;".to_string(),
             target: ExtractionTarget::Method,
@@ -4186,7 +4168,7 @@ mod tests {
             member_indent: "    ".to_string(),
             body_indent: "        ".to_string(),
             return_strategy: ReturnStrategy::UniformGuards("null".to_string()),
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: String::new(),
         };
         let result = build_extracted_definition(&info);
@@ -4639,11 +4621,11 @@ function foo($x) {
 
     #[test]
     fn docblock_not_generated_for_empty_types() {
-        let params = vec![("$x".to_string(), PhpType::parse(""), PhpType::parse(""))];
+        let params = vec![("$x".to_string(), PhpType::untyped(), PhpType::untyped())];
         let result = build_docblock_for_extraction(
             &params,
-            &PhpType::parse(""),
-            &PhpType::parse(""),
+            &PhpType::untyped(),
+            &PhpType::untyped(),
             "",
             &no_classes,
         );
@@ -4704,7 +4686,7 @@ function foo($x) {
     fn docblock_return_type_hint_for_docblock_void_guards() {
         let result = build_return_type_hint_for_docblock(
             &ReturnStrategy::VoidGuards,
-            &PhpType::parse(""),
+            &PhpType::untyped(),
             &[],
         );
         assert_eq!(result, PhpType::parse("bool"));
@@ -4713,7 +4695,7 @@ function foo($x) {
     #[test]
     fn docblock_return_type_hint_for_docblock_none_void() {
         let result =
-            build_return_type_hint_for_docblock(&ReturnStrategy::None, &PhpType::parse(""), &[]);
+            build_return_type_hint_for_docblock(&ReturnStrategy::None, &PhpType::untyped(), &[]);
         assert_eq!(result, PhpType::parse("void"));
     }
 
@@ -4726,7 +4708,7 @@ function foo($x) {
         )];
         let result = build_return_type_hint_for_docblock(
             &ReturnStrategy::None,
-            &PhpType::parse(""),
+            &PhpType::untyped(),
             &returns,
         );
         assert_eq!(result, PhpType::parse("array"));
@@ -4744,7 +4726,7 @@ function foo($x) {
             member_indent: String::new(),
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: build_docblock_for_extraction(
                 &[(
                     "$items".to_string(),
@@ -4787,7 +4769,7 @@ function foo($x) {
             member_indent: String::new(),
             body_indent: "    ".to_string(),
             return_strategy: ReturnStrategy::None,
-            trailing_return_type: PhpType::parse(""),
+            trailing_return_type: PhpType::untyped(),
             docblock: build_docblock_for_extraction(
                 &[
                     (

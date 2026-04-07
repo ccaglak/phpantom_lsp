@@ -404,7 +404,7 @@ fn extract_checked_exception_fqn(message: &str) -> Option<String> {
     let start = message.find(marker)? + marker.len();
     let rest = &message[start..];
     let end = rest.find(" but")?;
-    let fqn = rest[..end].trim().trim_start_matches('\\');
+    let fqn = crate::util::strip_fqn_prefix(rest[..end].trim());
     if fqn.is_empty() {
         return None;
     }

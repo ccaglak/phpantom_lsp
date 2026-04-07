@@ -682,11 +682,7 @@ impl Backend {
             if c.name != sn {
                 return false;
             }
-            let class_fqn = match &c.file_namespace {
-                Some(ns) => format!("{}\\{}", ns, c.name),
-                None => c.name.clone(),
-            };
-            class_fqn == fqn
+            c.fqn() == fqn
         })?;
 
         let content = self.get_file_content(target_uri)?;
