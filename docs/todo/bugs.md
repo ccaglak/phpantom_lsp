@@ -267,3 +267,27 @@ function test(): void {
     $store->products()->filter()->add($product);
 }
 ```
+
+## B12 — Hover cross-file property docblock cache invalidation fails after edits
+
+**Root cause:** When a class is loaded from a cross-file source
+(PSR-4 or classmap) and its docblock is later edited, hover
+continues to show the stale docblock content instead of the updated
+version. The parsed `ClassInfo` cached in `ast_map` and/or
+`fqn_index` is not invalidated when the dependency file changes.
+
+Six integration tests document the failure:
+
+- `hover_cross_file_property_docblock_cache_invalidation_psr4_then_edit`
+- `hover_cross_file_property_docblock_cache_invalidation_dependent_class`
+- `hover_cross_file_property_docblock_cache_invalidation_via_var_annotation`
+- `hover_cross_file_property_docblock_cache_invalidation_dependent_class_with_model`
+- `hover_cross_file_property_docblock_cache_invalidation_via_method_chain`
+- `hover_cross_file_property_docblock_cache_warm_then_invalidate`
+
+**Where to fix:** The cache layer that stores cross-file
+`ClassInfo` results must be invalidated (or re-parsed) when
+`didChange` or `didSave` fires for the dependency file. The
+`resolved_class_cache` and/or `fqn_index` entries for the changed
+URI must be evicted so that the next hover request re-parses the
+file and picks up the new docblock content.

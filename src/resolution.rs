@@ -37,6 +37,8 @@ use std::sync::Arc;
 
 use std::path::Path;
 
+use tower_lsp::lsp_types::Url;
+
 use crate::Backend;
 use crate::composer;
 use crate::php_type::PhpType;
@@ -88,6 +90,24 @@ impl Backend {
         // ── Negative cache: skip the full multi-phase search ──
         if self.class_not_found_cache.read().contains(class_name) {
             return None;
+        }
+
+        // ── Phase 0: Try the class_index (FQN → URI) ──
+        // The class_index is populated by `scan_autoload_files` (Composer
+        // `autoload_files.php` entries and their `require_once` chains),
+        // by `update_ast` for every opened/changed file, and by the
+        // workspace full-scan for non-Composer projects.  It covers
+        // classes that don't follow PSR-4 conventions and aren't in the
+        // Composer classmap — e.g. global-namespace classes like `Mockery`
+        // that are loaded via Composer's `files` autoloading.
+        if let Some(file_uri) = self.class_index.read().get(class_name).cloned()
+            && let Some(file_path) = Url::parse(&file_uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok())
+            && let Some(classes) = self.parse_and_cache_file(&file_path)
+            && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
+        {
+            return Some(Arc::clone(cls));
         }
 
         // ── Phase 1: Search all already-parsed files in the ast_map ──
