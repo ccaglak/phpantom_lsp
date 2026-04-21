@@ -3,6 +3,10 @@
 //! Displays inline annotations in the editor for:
 //! - **Parameter name hints** at call sites (e.g. `/*needle:*/ $x`).
 //! - **By-reference indicators** for arguments passed by reference (`&`).
+//! - **Closure parameter type hints** for untyped closure/arrow function
+//!   parameters when the type can be inferred from the callable context.
+//! - **Closure return type hints** for closures/arrow functions without an
+//!   explicit return type when the callable context specifies one.
 //!
 //! The handler walks precomputed [`CallSite`] entries from the
 //! [`SymbolMap`] within the requested viewport range, resolves each
@@ -13,7 +17,7 @@ use tower_lsp::jsonrpc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
-use crate::symbol_map::CallSite;
+use crate::symbol_map::{CallSite, UntypedClosureSite};
 use crate::types::FileContext;
 use crate::util::{offset_to_position, position_to_offset};
 
@@ -63,6 +67,18 @@ impl Backend {
             }
 
             self.emit_parameter_hints(call_site, content, range, &ctx, &mut hints);
+        }
+
+        // ── Closure / arrow function hints ──────────────────────────
+        if !symbol_map.untyped_closure_sites.is_empty() {
+            self.emit_closure_hints(
+                content,
+                &symbol_map.untyped_closure_sites,
+                range_start,
+                range_end,
+                &ctx,
+                &mut hints,
+            );
         }
 
         Some(hints)
@@ -212,6 +228,104 @@ impl Backend {
                 padding_right: Some(true),
                 data: None,
             });
+        }
+    }
+
+    /// Emit a return-type inlay hint for a function / method / closure /
+    /// arrow function that lacks an explicit return type declaration.
+    /// Emit parameter-type and return-type inlay hints for closures and
+    /// arrow functions whose types can be inferred from the callable context.
+    fn emit_closure_hints(
+        &self,
+        content: &str,
+        sites: &[UntypedClosureSite],
+        range_start: u32,
+        range_end: u32,
+        ctx: &FileContext,
+        hints: &mut Vec<InlayHint>,
+    ) {
+        for site in sites {
+            // Quick range check: use close_paren_offset if available,
+            // otherwise the first untyped param offset.
+            let representative_offset = site
+                .close_paren_offset
+                .or_else(|| site.untyped_params.first().map(|&(_, off)| off));
+            if let Some(off) = representative_offset {
+                if off < range_start || off > range_end {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+
+            // Resolve the callable to get the parameter's type signature.
+            let position = offset_to_position(content, representative_offset.unwrap_or(0) as usize);
+            let resolved = match self.resolve_callable_target(
+                &site.parent_call_expression,
+                content,
+                position,
+                ctx,
+            ) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let param_info = match resolved.parameters.get(site.arg_index_in_parent) {
+                Some(p) => p,
+                None => continue,
+            };
+            let callable_type = match param_info.type_hint.as_ref() {
+                Some(t) => t,
+                None => continue,
+            };
+
+            // ── Parameter type hints ────────────────────────────────
+            if let Some(callable_params) = callable_type.callable_param_types() {
+                for &(param_idx, param_offset) in &site.untyped_params {
+                    if let Some(cp) = callable_params.get(param_idx) {
+                        let shortened = cp.type_hint.shorten();
+                        let type_str = shortened.to_string();
+                        if type_str.is_empty() || shortened.is_mixed() {
+                            continue;
+                        }
+
+                        let hint_position = offset_to_position(content, param_offset as usize);
+
+                        hints.push(InlayHint {
+                            position: hint_position,
+                            label: InlayHintLabel::String(format!("{} ", type_str)),
+                            kind: Some(InlayHintKind::TYPE),
+                            text_edits: None,
+                            tooltip: None,
+                            padding_left: None,
+                            padding_right: Some(false),
+                            data: None,
+                        });
+                    }
+                }
+            }
+
+            // ── Return type hint ────────────────────────────────────
+            if let Some(close_paren) = site.close_paren_offset
+                && let Some(ret_type) = callable_type.callable_return_type()
+            {
+                let shortened = ret_type.shorten();
+                let type_str = shortened.to_string();
+                if !type_str.is_empty() && !shortened.is_mixed() {
+                    let hint_position = offset_to_position(content, close_paren as usize);
+
+                    hints.push(InlayHint {
+                        position: hint_position,
+                        label: InlayHintLabel::String(format!(": {}", type_str)),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: None,
+                        padding_right: None,
+                        data: None,
+                    });
+                }
+            }
         }
     }
 }

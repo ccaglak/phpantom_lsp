@@ -3014,10 +3014,12 @@ class CodeLensDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawab
 
 
 // ── Inlay Hints ─────────────────────────────────────────────────────────────
-// Enable inlay hints in your editor to see parameter names and by-reference
-// indicators at call sites. PHPantom shows:
+// Enable inlay hints in your editor to see parameter names, by-reference
+// indicators, and closure type hints. PHPantom shows:
 //   - Parameter name hints: greet(/*name:*/ 'Alice', /*age:*/ 25)
 //   - By-reference indicators: modify(/*&data:*/ $arr)
+//   - Closure param types: $users->map(fn(/*User*/ $u) => $u->name)
+//   - Closure return types: fn($u) /*: string*/ => $u->name
 // Hints are suppressed when the argument already makes the parameter obvious
 // (e.g. $name matches $name, or a property ->name matches $name).
 
@@ -3045,12 +3047,69 @@ class InlayHintsDemo
         // Chained method calls:
         $pen = Pen::make('blue');                  // color:
         $pen->rename('Sky Blue');                  // name:
+
+        // ── Closure / arrow function hints ─────────────────────────
+        // When a closure or arrow function is passed to a callable-typed
+        // parameter, PHPantom infers types from the callable signature.
+        // Untyped params show the inferred type before $var, and the
+        // return type shows after the closing parenthesis.
+
+        // Arrow function: "User " before $u, ": string" after parens.
+        $names = $this->mapUsers(fn($u) => $u->name);
+
+        // Long-form closure gets the same treatment:
+        $upper = $this->mapUsers(function ($u) {
+            return strtoupper($u->name);
+        });
+
+        // Multiple params: "int " before $a, "int " before $b, ": int" after parens.
+        $sum = $this->reduce(fn($a, $b) => $a + $b);
+
+        // Partial typing: only the untyped $b gets a hint.
+        $sum2 = $this->reduce(fn(int $a, $b) => $a + $b);
+
+        // Already-typed parameters and return types get no hint:
+        $emails = $this->mapUsers(fn(User $u): string => $u->email);
+
+        // Standalone functions with callable params work too:
+        $sorted = sortByKey(['b', 'a', 'c'], fn($a, $b) => strcmp($a, $b));
+
+
+        // Method call context — filter shows "Order " before $o, ": bool" after.
+        $big = $this->filterOrders(fn($o) => $o->total > 100);
     }
 
     /** @param array<int> &$data */
     public function modify(array &$data, string $direction): void {}
 
     public function search(string $needle, int $limit = 10): mixed { return null; }
+
+    /** @param \Closure(User): string $fn */
+    public function mapUsers(\Closure $fn): array { return []; }
+
+    /** @param callable(int, int): int $fn */
+    public function reduce(callable $fn): int { return 0; }
+
+    /** @param callable(Order): bool $fn */
+    public function filterOrders(callable $fn): array { return []; }
+}
+
+/**
+ * @param array<string> $items
+ * @param callable(string, string): int $cmp
+ * @return array<string>
+ */
+function sortByKey(array $items, callable $cmp): array
+{
+    usort($items, $cmp);
+    return $items;
+}
+
+
+class Order
+{
+    public float $total = 0.0;
+    public string $status = 'pending';
 }
 
 

@@ -27,7 +27,7 @@ within the same impact tier.
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
 | D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variabl  e-diagnostic)                                                                                     | Medium | Medium      |
 | D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                              | Medium | Medium      |
-| F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                                    | Medium | Medium      |
+
 | F9  | [Namespace renaming](todo/lsp-features.md#f9-namespace-renaming)                                                                                                    | Medium | Medium      |
 | A40 | [Convert to instance variable](todo/actions.md#a40-convert-to-instance-variable)                                                                                    | Medium | Medium      |
 | D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                                                                            | Low    | Medium      |

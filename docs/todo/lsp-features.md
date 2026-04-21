@@ -133,67 +133,7 @@ workspace symbols on large codebases.
 
 ---
 
-## F4. Return type and closure parameter type inlay hints
 
-**Impact: Medium · Effort: Medium**
-
-PHPantom's inlay hints currently show **parameter names** and
-**by-reference indicators** at call sites. Two additional hint kinds
-would bring PHPantom to parity with Devsense and ahead of Intelephense:
-
-### Return type hints
-
-Show an inferred return type hint after the closing parenthesis of
-functions, methods, closures, and arrow functions that lack an explicit
-return type declaration:
-
-```php
-function doubled($x)  // → : int
-{
-    return $x * 2;
-}
-
-$fn = fn($x) => $x * 2;  // → : int
-```
-
-The hint should only appear when the return type can be inferred from
-the function body (or from the callable context for closures). Functions
-that already have a native return type hint or a `@return` docblock
-should not receive a hint.
-
-Ideally, clicking the hint (or double-clicking, depending on editor
-support) should insert the return type declaration as a text edit.
-
-### Closure / arrow function parameter type hints
-
-Show an inferred type hint after untyped closure and arrow function
-parameters when the type can be inferred from the callable context:
-
-```php
-$users->map(fn($u) => $u->name);
-//            ^ : User
-
-$filtered = array_filter($items, function ($item) { ... });
-//                                         ^ : Item
-```
-
-The hint should only appear when the parameter has no native type hint
-and the type is inferred from the enclosing callable signature (e.g.
-a `Closure(User): bool` parameter type, or a `@param` on the receiving
-function). Parameters that already have a type hint should not receive
-a hint.
-
-### What to avoid
-
-- **Variable type hints at assignment sites.** Phpactor shows these
-  (e.g. `$x` `: string` after every assignment). This is noisy in
-  practice and clutters the editor. Do not add this kind.
-- **End-of-block labels.** Phpactor shows `// class Foo` or
-  `// method bar` at closing braces. This is an editor feature (most
-  editors already show sticky scroll or breadcrumbs) and would add
-  visual noise. Do not add this kind.
-
----
 
 ## F5. Call hierarchy
 

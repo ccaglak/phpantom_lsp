@@ -1566,7 +1566,7 @@ fn extract_array_type_at_position(ty: &PhpType, position: usize) -> Option<PhpTy
 ///
 /// This covers `array`, `iterable`, `list`, and common Laravel/PHPStan
 /// collection interfaces whose generic args follow `<TKey, TValue>`.
-fn is_array_like_wrapper(name: &str) -> bool {
+pub(crate) fn is_array_like_wrapper(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "array" | "list" | "non-empty-array" | "non-empty-list" | "iterable"

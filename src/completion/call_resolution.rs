@@ -1469,6 +1469,72 @@ impl Backend {
                     }
                 }
                 TemplateBindingMode::GenericWrapper(ref wrapper_name, tpl_position) => {
+                    // For array-like wrappers (`array<T>`, `list<T>`, etc.)
+                    // resolve the argument to its array type and extract the
+                    // positional generic argument.
+                    //
+                    // `classify_template_binding` assigns positions by index
+                    // in the generic args list: `array<T>` → position 0,
+                    // `array<TKey, TValue>` → positions 0 and 1.  For
+                    // single-param `array<T>`, T is semantically the
+                    // *value* type even though it sits at index 0.  We
+                    // detect this by checking the param hint's generic
+                    // args count: if there's only one arg, position 0
+                    // maps to the value type; otherwise position 0 is the
+                    // key type and position 1 is the value type.
+                    if crate::completion::variable::rhs_resolution::is_array_like_wrapper(
+                        wrapper_name,
+                    ) {
+                        // Array literal: `[1, 2, 3]` — resolve individual
+                        // elements to infer the element type.
+                        // `resolve_arg_text_to_type("[1, 2, 3]")` returns
+                        // bare `array` (no generics), so we must unwrap the
+                        // literal and resolve the first element directly.
+                        if arg_text.starts_with('[') && arg_text.ends_with(']') {
+                            let inner = arg_text[1..arg_text.len() - 1].trim();
+                            if !inner.is_empty() {
+                                let elems =
+                                    crate::completion::types::conditional::split_text_args(inner);
+                                if let Some(elem) = elems.first()
+                                    && let Some(resolved_elem) =
+                                        Self::resolve_arg_text_to_type(elem.trim(), ctx)
+                                {
+                                    subs.insert(tpl_name.to_string(), resolved_elem);
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Variable or expression argument: resolve to a
+                        // typed value and extract the positional generic
+                        // argument (key or value type).
+                        if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
+                            let generic_arg_count = param_hint
+                                .and_then(|h| match h {
+                                    crate::php_type::PhpType::Generic(_, args) => Some(args.len()),
+                                    _ => None,
+                                })
+                                .unwrap_or(1);
+
+                            let concrete = if generic_arg_count <= 1 {
+                                // Single-param: `array<T>`, `list<T>` — T is the value/element type.
+                                resolved_type.extract_value_type(false).cloned()
+                            } else {
+                                match tpl_position {
+                                    0 => resolved_type.extract_key_type(false).cloned(),
+                                    1 => resolved_type.extract_value_type(false).cloned(),
+                                    _ => None,
+                                }
+                            };
+                            if let Some(concrete) = concrete {
+                                subs.insert(tpl_name.to_string(), concrete);
+                            } else {
+                                subs.insert(tpl_name.to_string(), resolved_type);
+                            }
+                        }
+                        continue;
+                    }
+
                     if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
                         // Special handling for class-string<T> to avoid double-wrapping
                         if wrapper_name == "class-string"
@@ -1502,7 +1568,26 @@ impl Backend {
                     }
                 }
                 TemplateBindingMode::ArrayElement => {
-                    if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
+                    // `@param T[] $items` or `@param array<T> $items` —
+                    // resolve individual array elements from array literals.
+                    // For `[1, 2, 3]`, extract the first element `1` and
+                    // resolve it to `int` so that `T = int`.
+                    if arg_text.starts_with('[') && arg_text.ends_with(']') {
+                        let inner = arg_text[1..arg_text.len() - 1].trim();
+                        if !inner.is_empty() {
+                            let first_elem =
+                                crate::completion::types::conditional::split_text_args(inner);
+                            if let Some(elem) = first_elem.first()
+                                && let Some(resolved_type) =
+                                    Self::resolve_arg_text_to_type(elem.trim(), ctx)
+                            {
+                                subs.insert(tpl_name.to_string(), resolved_type);
+                            }
+                        }
+                    } else if let Some(resolved_type) =
+                        Self::resolve_arg_text_to_type(arg_text, ctx)
+                    {
+                        // Fallback: treat as direct if not an array literal.
                         subs.insert(tpl_name.to_string(), resolved_type);
                     }
                 }

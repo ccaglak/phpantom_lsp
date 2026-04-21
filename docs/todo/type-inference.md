@@ -455,4 +455,45 @@ is now resolved by the `DB::select()` return type patch (B14) combined
 with `stdClass` property access suppression, but the general gap
 remains for any `$arr[$i] instanceof Foo` pattern.
 
+## T25. Call-site template argument inference for callable parameters
+
+**Impact: Medium · Effort: Medium**
+
+When a function has a `@template T` and a parameter typed
+`callable(T): T`, the closure inlay hint system cannot resolve `T`
+to a concrete type because it reads the callable signature literally.
+For example:
+
+```php
+/**
+ * @template T
+ * @param array<T> $items
+ * @param callable(T): T $fn
+ * @return array<T>
+ */
+function transform(array $items, callable $fn): array { ... }
+
+transform([1, 2, 3], fn($x) => $x * 2);
+//                      ^ no hint — $x is T, not int
+```
+
+To show `int` for `$x`, the hint system needs to:
+
+1. Resolve other arguments at the call site to infer `T = int` from
+   `array<T>` matched against `[1, 2, 3]` (which is `array<int>`).
+2. Substitute `T → int` in the callable's parameter and return types.
+3. Pass the substituted `callable(int): int` to the hint emitter.
+
+This is the same generic argument inference that conditional return
+types and PHPStan's `@template` system rely on. The substitution
+logic already exists in `inheritance.rs` (`build_substitution_map` /
+`apply_substitution`) for class-level templates. Extending it to
+function-level call sites would benefit closure inlay hints,
+completion inside closure bodies, and hover on closure parameters.
+
+**References:**
+- PHPStan: `GenericFunctionsReturnTypeExtension`, argument-based
+  template inference in `FunctionCallNode`.
+- Mago: `resolve_template_arguments` in the type checker.
+
 
