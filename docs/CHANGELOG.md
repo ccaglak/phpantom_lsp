@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Analyzer and LSP no longer hang on files with deeply nested loops.** Files with multiple levels of foreach/while/for inside if-branches caused exponential blowup in the forward walker's two-pass loop strategy. A unified loop-depth guard now bounds re-walks regardless of code path (diagnostics, completion, hover), preventing hangs on previously stuck files across three test projects.
+- **Analyzer and LSP no longer hang on files with deeply nested loops.** Files with multiple levels of foreach/while/for inside if-branches caused exponential blowup in the forward walker's two-pass loop strategy. A unified loop-depth guard now bounds re-walks regardless of code path (diagnostics, completion, hover), preventing hangs on all previously stuck files across three test projects.
 
 ### Changed
 

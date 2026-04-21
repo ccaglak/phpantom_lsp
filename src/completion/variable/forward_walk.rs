@@ -1783,16 +1783,15 @@ thread_local! {
 }
 
 /// Maximum loop nesting depth at which the two-pass strategy is used.
-/// Beyond this depth, loops use a single pass only.  Normal PHP code
-/// rarely nests loops beyond 4–5 levels; deeper nesting with the
-/// two-pass strategy causes exponential blowup from if-branch merging
-/// re-walking inner loop bodies (B27).
-const MAX_TWO_PASS_LOOP_DEPTH: u32 = 4;
+/// Beyond this depth, loops use a single pass only.  At depth 2, only
+/// a standalone loop or the outermost of two nested loops uses two
+/// passes; deeper nesting gets a single pass.
+const MAX_TWO_PASS_LOOP_DEPTH: u32 = 2;
 
 /// Maximum loop nesting depth before foreach bails out entirely
 /// (skipping even the single-pass body walk).  This is the hard
 /// safety net for truly pathological nesting.
-const MAX_LOOP_DEPTH: u32 = 8;
+const MAX_LOOP_DEPTH: u32 = 6;
 
 /// Walk a sequence of statements top-to-bottom, updating `scope` at
 /// each step.  Stops when a statement's start offset reaches or exceeds
@@ -5319,6 +5318,18 @@ fn bind_foreach_key<'b>(
 /// pre-loop scope, and the second pass re-walks with full visibility
 /// of loop-carried assignments.
 fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
+    let loop_depth = LOOP_DEPTH.with(|c| {
+        let v = c.get() + 1;
+        c.set(v);
+        v
+    });
+
+    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    if loop_depth > MAX_LOOP_DEPTH {
+        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        return;
+    }
+
     // Record `&&` chain snapshots for the while condition.
     record_and_chain_snapshots(while_stmt.condition, scope, ctx);
 
@@ -5369,12 +5380,6 @@ fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &Fo
             walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
         }
     }
-
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
 
     // Skip the second pass when loop nesting is deep to avoid
     // exponential blowup (B27).  Applies uniformly to all paths.
@@ -5432,6 +5437,18 @@ fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &Fo
 /// This handles the common pattern where a variable is assigned late
 /// in the body but referenced (or guarded on) earlier.
 fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
+    let loop_depth = LOOP_DEPTH.with(|c| {
+        let v = c.get() + 1;
+        c.set(v);
+        v
+    });
+
+    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    if loop_depth > MAX_LOOP_DEPTH {
+        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        return;
+    }
+
     // Process initializer expressions (e.g. `$i = 0`).
     for init_expr in for_stmt.initializations.iter() {
         process_assignment_expr(init_expr, scope, ctx);
@@ -5469,12 +5486,6 @@ fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardW
             walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
         }
     }
-
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
 
     // Skip the second pass when loop nesting is deep to avoid
     // exponential blowup (B27).  Applies uniformly to all paths.
@@ -5525,16 +5536,22 @@ fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardW
 /// least once, so we do NOT merge with a pre-loop scope — the final
 /// scope is the pass-2 result directly.
 fn process_do_while<'b>(dw: &'b DoWhile<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
-    let pre_loop_scope = scope.clone();
-
-    // ── Pass 1: discover types assigned in the body ─────────
-    walk_body_forward(std::iter::once(dw.statement), scope, ctx);
-
     let loop_depth = LOOP_DEPTH.with(|c| {
         let v = c.get() + 1;
         c.set(v);
         v
     });
+
+    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    if loop_depth > MAX_LOOP_DEPTH {
+        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        return;
+    }
+
+    let pre_loop_scope = scope.clone();
+
+    // ── Pass 1: discover types assigned in the body ─────────
+    walk_body_forward(std::iter::once(dw.statement), scope, ctx);
 
     // Skip the second pass when loop nesting is deep to avoid
     // exponential blowup (B27).  Applies uniformly to all paths.
