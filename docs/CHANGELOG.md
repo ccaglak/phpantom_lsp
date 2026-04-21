@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Editing responsiveness.** Classes evicted from the resolved-class cache after a file edit are now eagerly re-populated in dependency order, eliminating lazy resolution delays for diagnostics and completions.
 - **Virtual member resolution.** Virtual member providers (PHPDoc mixins, Laravel model, Eloquent Builder) now resolve completely on every class, eliminating cases where mixins or Eloquent accessors were missing after edits.
 - **Faster analysis.** String interning, O(1) method lookup, Arc-shared class metadata through the resolution pipeline, and reduced redundant work cut analysis time significantly on large projects.
+- **Loop type propagation.** Replaced the fixed two-pass loop strategy with assignment-depth-bounded iteration. A cheap AST walk computes the dependency chain depth for each loop body, and types are propagated through that many iterations with fixed-point early exit. This improves type accuracy for variables assigned late in loop bodies (visible from the start on subsequent iterations) and avoids the previous approach of skipping multi-pass entirely for nested loops.
 
 ### Fixed
 

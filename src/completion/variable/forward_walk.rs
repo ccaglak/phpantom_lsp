@@ -40,7 +40,7 @@
 ///   the pre-computed types in O(log N) time, eliminating the
 ///   O(N x depth x file_size) cost of per-span backward scanning.
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use mago_span::HasSpan;
@@ -1769,29 +1769,44 @@ const MAX_WALK_DEPTH: u32 = 50;
 
 thread_local! {
     /// Tracks the current loop nesting depth (foreach, while, for,
-    /// do-while).  The interaction of the two-pass loop strategy with
-    /// if-branch merging (which walks each branch independently via
-    /// `walk_body_forward`) causes exponential blowup on files with
-    /// deeply nested loops inside if statements.  Beyond a threshold
-    /// we skip the second pass and bail out of foreach entirely.
-    ///
-    /// This guard applies uniformly to ALL code paths (diagnostics,
-    /// completion, hover) — never gate performance fixes on
-    /// `is_diagnostic_scope_active()` alone, as that just moves the
-    /// hang from one feature to another (see B27, ARCHITECTURE.md).
+    /// do-while).  Used to reduce the number of loop iterations for
+    /// deeply nested loops, preventing the exponential blowup that
+    /// occurs when loop iteration interacts with if-branch merging.
     static LOOP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Maximum loop nesting depth at which the two-pass strategy is used.
-/// Beyond this depth, loops use a single pass only.  At depth 2, only
-/// a standalone loop or the outermost of two nested loops uses two
-/// passes; deeper nesting gets a single pass.
-const MAX_TWO_PASS_LOOP_DEPTH: u32 = 2;
-
-/// Maximum loop nesting depth before foreach bails out entirely
-/// (skipping even the single-pass body walk).  This is the hard
-/// safety net for truly pathological nesting.
+/// Maximum loop nesting depth before loop bodies are skipped entirely.
+/// PHP code rarely nests loops beyond 6 levels; this is a hard safety net.
 const MAX_LOOP_DEPTH: u32 = 6;
+
+/// Increment the loop depth counter and return the new depth.
+fn enter_loop() -> u32 {
+    LOOP_DEPTH.with(|c| {
+        let v = c.get() + 1;
+        c.set(v);
+        v
+    })
+}
+
+/// Decrement the loop depth counter.
+fn leave_loop(depth: u32) {
+    LOOP_DEPTH.with(|c| c.set(depth - 1));
+}
+
+/// Clamp `max_iterations` based on the current loop nesting depth.
+///
+/// At depth 1 (outermost loop), the full assignment-depth-bounded
+/// iteration count is used.  At depth 2, cap at 2 iterations.
+/// At depth 3+, use a single pass only.  This prevents exponential
+/// blowup from the interaction of loop iteration with if-branch
+/// merging in deeply nested loops.
+fn clamp_iterations_for_depth(max_iterations: u32, loop_depth: u32) -> u32 {
+    match loop_depth {
+        0 | 1 => max_iterations,
+        2 => max_iterations.min(2),
+        _ => 1,
+    }
+}
 
 /// Walk a sequence of statements top-to-bottom, updating `scope` at
 /// each step.  Stops when a statement's start offset reaches or exceeds
@@ -4706,19 +4721,323 @@ fn process_if_colon_body<'b>(
     }
 }
 
+/// Compute the assignment dependency depth for a loop body.
+///
+/// Does a cheap AST walk (no type resolution) to find which variables
+/// are assigned and which other variables appear on the RHS.  Then
+/// follows the dependency chain to compute the longest path.
+///
+/// For example, in:
+///   $a = $input;
+///   $b = transform($a);
+///   $c = $b + 1;
+///
+/// The dependency map is {$a → {$input}, $b → {$a}, $c → {$b}} and
+/// the longest chain is 3 ($input → $a → $b → $c).
+///
+/// This determines how many loop iterations are needed for types to
+/// propagate through the entire chain.  Typically 1-3 for real PHP.
+fn assignment_map_depth(statements: &[&Statement<'_>]) -> u32 {
+    // Build dependency map: assigned_var → set of RHS variables
+    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+
+    for stmt in statements {
+        collect_assignment_deps(stmt, &mut deps);
+    }
+
+    if deps.is_empty() {
+        return 1;
+    }
+
+    // Compute longest dependency chain via DFS with cycle detection.
+    let mut cache: HashMap<String, u32> = HashMap::new();
+    let mut max_depth: u32 = 1;
+    let keys: Vec<String> = deps.keys().cloned().collect();
+    for key in &keys {
+        let d = chain_depth(key, &deps, &mut cache, &mut HashSet::new());
+        max_depth = max_depth.max(d);
+    }
+
+    // The chain depth tells us how many levels of variable-to-variable
+    // propagation exist.  But even a single assignment needs 2 iterations:
+    // one to discover the assignment, one to re-walk with the discovered
+    // type visible from the start.  So: iterations = depth + 1.
+    // Clamp to a reasonable maximum to avoid pathological cases.
+    (max_depth + 1).min(5)
+}
+
+/// Recursively compute the dependency chain depth for a variable.
+fn chain_depth(
+    var: &str,
+    deps: &HashMap<String, HashSet<String>>,
+    cache: &mut HashMap<String, u32>,
+    visiting: &mut HashSet<String>,
+) -> u32 {
+    if let Some(&cached) = cache.get(var) {
+        return cached;
+    }
+    if !visiting.insert(var.to_string()) {
+        // Cycle detected — break it.
+        return 1;
+    }
+    let depth = if let Some(rhs_vars) = deps.get(var) {
+        let mut max_child: u32 = 0;
+        for dep in rhs_vars {
+            max_child = max_child.max(chain_depth(dep, deps, cache, visiting));
+        }
+        max_child + 1
+    } else {
+        1
+    };
+    visiting.remove(var);
+    cache.insert(var.to_string(), depth);
+    depth
+}
+
+/// Collect assignment dependencies from a statement (cheap AST walk).
+fn collect_assignment_deps(stmt: &Statement<'_>, deps: &mut HashMap<String, HashSet<String>>) {
+    match stmt {
+        Statement::Expression(expr_stmt) => {
+            collect_expr_assignment_deps(expr_stmt.expression, deps);
+        }
+        Statement::If(if_stmt) => {
+            // Walk all branches via the IfBody enum.
+            match &if_stmt.body {
+                IfBody::Statement(body) => {
+                    collect_assignment_deps(body.statement, deps);
+                    for ei in body.else_if_clauses.iter() {
+                        collect_assignment_deps(ei.statement, deps);
+                    }
+                    if let Some(ref else_clause) = body.else_clause {
+                        collect_assignment_deps(else_clause.statement, deps);
+                    }
+                }
+                IfBody::ColonDelimited(body) => {
+                    for s in body.statements.iter() {
+                        collect_assignment_deps(s, deps);
+                    }
+                    for ei in body.else_if_clauses.iter() {
+                        for s in ei.statements.iter() {
+                            collect_assignment_deps(s, deps);
+                        }
+                    }
+                    if let Some(ref else_clause) = body.else_clause {
+                        for s in else_clause.statements.iter() {
+                            collect_assignment_deps(s, deps);
+                        }
+                    }
+                }
+            }
+        }
+        Statement::Block(block) => {
+            for s in block.statements.iter() {
+                collect_assignment_deps(s, deps);
+            }
+        }
+        Statement::Try(try_stmt) => {
+            for s in try_stmt.block.statements.iter() {
+                collect_assignment_deps(s, deps);
+            }
+            for catch in try_stmt.catch_clauses.iter() {
+                for s in catch.block.statements.iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+            if let Some(ref finally) = try_stmt.finally_clause {
+                for s in finally.block.statements.iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+        }
+        Statement::Switch(switch) => {
+            for case in switch.body.cases().iter() {
+                for s in case.statements().iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+        }
+        // Nested loops: walk their bodies too.
+        Statement::Foreach(f) => match &f.body {
+            ForeachBody::Statement(s) => {
+                collect_assignment_deps(s, deps);
+            }
+            ForeachBody::ColonDelimited(body) => {
+                for s in body.statements.iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+        },
+        Statement::While(w) => match &w.body {
+            WhileBody::Statement(s) => {
+                collect_assignment_deps(s, deps);
+            }
+            WhileBody::ColonDelimited(body) => {
+                for s in body.statements.iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+        },
+        Statement::For(f) => match &f.body {
+            ForBody::Statement(s) => {
+                collect_assignment_deps(s, deps);
+            }
+            ForBody::ColonDelimited(body) => {
+                for s in body.statements.iter() {
+                    collect_assignment_deps(s, deps);
+                }
+            }
+        },
+        Statement::DoWhile(dw) => {
+            collect_assignment_deps(dw.statement, deps);
+        }
+        _ => {}
+    }
+}
+
+/// Extract assignment dependencies from an expression.
+fn collect_expr_assignment_deps(
+    expr: &Expression<'_>,
+    deps: &mut HashMap<String, HashSet<String>>,
+) {
+    use mago_syntax::ast::variable::Variable;
+
+    if let Expression::Assignment(assign) = expr
+        && let Expression::Variable(Variable::Direct(dv)) = assign.lhs
+    {
+        let lhs_name = format!("${}", dv.name);
+        let mut rhs_vars = HashSet::new();
+        collect_rhs_variables(assign.rhs, &mut rhs_vars);
+        deps.entry(lhs_name).or_default().extend(rhs_vars);
+    }
+}
+
+/// Collect all variable references from an expression (cheap, no type resolution).
+fn collect_rhs_variables(expr: &Expression<'_>, vars: &mut HashSet<String>) {
+    use mago_syntax::ast::variable::Variable;
+
+    match expr {
+        Expression::Variable(Variable::Direct(dv)) => {
+            vars.insert(format!("${}", dv.name));
+        }
+        Expression::Binary(binary) => {
+            collect_rhs_variables(binary.lhs, vars);
+            collect_rhs_variables(binary.rhs, vars);
+        }
+        Expression::UnaryPrefix(unary) => {
+            collect_rhs_variables(unary.operand, vars);
+        }
+        Expression::UnaryPostfix(unary) => {
+            collect_rhs_variables(unary.operand, vars);
+        }
+        Expression::Parenthesized(p) => {
+            collect_rhs_variables(p.expression, vars);
+        }
+        Expression::Call(call) => {
+            // Collect variables from call arguments.
+            match call {
+                Call::Function(fc) => {
+                    collect_rhs_variables(fc.function, vars);
+                    collect_arglist_variables(&fc.argument_list, vars);
+                }
+                Call::Method(mc) => {
+                    collect_rhs_variables(mc.object, vars);
+                    collect_arglist_variables(&mc.argument_list, vars);
+                }
+                Call::NullSafeMethod(mc) => {
+                    collect_rhs_variables(mc.object, vars);
+                    collect_arglist_variables(&mc.argument_list, vars);
+                }
+                Call::StaticMethod(sc) => {
+                    collect_rhs_variables(sc.class, vars);
+                    collect_arglist_variables(&sc.argument_list, vars);
+                }
+            }
+        }
+        Expression::Access(access) => match access {
+            mago_syntax::ast::access::Access::Property(pa) => {
+                collect_rhs_variables(pa.object, vars);
+            }
+            mago_syntax::ast::access::Access::NullSafeProperty(pa) => {
+                collect_rhs_variables(pa.object, vars);
+            }
+            mago_syntax::ast::access::Access::StaticProperty(sp) => {
+                collect_rhs_variables(sp.class, vars);
+            }
+            mago_syntax::ast::access::Access::ClassConstant(cc) => {
+                collect_rhs_variables(cc.class, vars);
+            }
+        },
+        Expression::ArrayAccess(aa) => {
+            collect_rhs_variables(aa.array, vars);
+        }
+        Expression::Conditional(cond) => {
+            collect_rhs_variables(cond.condition, vars);
+            if let Some(then_expr) = cond.then {
+                collect_rhs_variables(then_expr, vars);
+            }
+            collect_rhs_variables(cond.r#else, vars);
+        }
+
+        Expression::Instantiation(inst) => {
+            collect_rhs_variables(inst.class, vars);
+            if let Some(ref args) = inst.argument_list {
+                collect_arglist_variables(args, vars);
+            }
+        }
+        Expression::Assignment(assign) => {
+            // Nested assignments like `$a = $b = expr`.
+            collect_rhs_variables(assign.rhs, vars);
+        }
+        _ => {}
+    }
+}
+
+/// Collect variable references from an argument list.
+fn collect_arglist_variables(
+    args: &mago_syntax::ast::argument::ArgumentList<'_>,
+    vars: &mut HashSet<String>,
+) {
+    for arg in args.arguments.iter() {
+        let expr = match arg {
+            Argument::Positional(a) => a.value,
+            Argument::Named(a) => a.value,
+        };
+        collect_rhs_variables(expr, vars);
+    }
+}
+
+/// Check whether two scope states have the same types for all variables.
+/// Used for fixed-point detection in loop iteration.
+fn scopes_equal(a: &ScopeState, b: &ScopeState) -> bool {
+    if a.locals.len() != b.locals.len() {
+        return false;
+    }
+    for (name, a_types) in &a.locals {
+        match b.locals.get(name) {
+            None => return false,
+            Some(b_types) => {
+                if a_types.len() != b_types.len() {
+                    return false;
+                }
+                // Compare by type_string since ResolvedType may not impl PartialEq.
+                for (at, bt) in a_types.iter().zip(b_types.iter()) {
+                    if at.type_string != bt.type_string {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 /// Process a `foreach` statement.
 fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
+    let loop_depth = enter_loop();
 
-    // Hard limit: when the loop depth exceeds the threshold, bail out
-    // entirely.  The two-pass loop strategy combined with if-branch
-    // merging causes exponential blowup on deeply nested loops (B27).
+    // Hard limit: skip the body entirely at excessive nesting depth.
     if loop_depth > MAX_LOOP_DEPTH {
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        leave_loop(loop_depth);
         return;
     }
 
@@ -4727,17 +5046,16 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
 
     let pre_loop_scope = scope.clone();
 
-    // When the cursor is inside the loop body (completion path), pass 1
-    // must walk the ENTIRE body to discover assignments after the cursor.
-    // Create a context with cursor_offset = u32::MAX for pass 1; pass 2
-    // uses the real cursor_offset so it stops at the cursor as usual.
+    // When the cursor is inside the loop body (completion path), discovery
+    // passes must walk the ENTIRE body; the final pass uses the real
+    // cursor_offset so it stops at the cursor as usual.
     let body_span = match &foreach.body {
         ForeachBody::Statement(inner) => inner.span(),
         ForeachBody::ColonDelimited(body) => body.span(),
     };
     let cursor_in_body =
         ctx.cursor_offset >= body_span.start.offset && ctx.cursor_offset <= body_span.end.offset;
-    let pass1_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
+    let discovery_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
         ctx.with_cursor_offset(u32::MAX)
     } else {
         ctx.with_cursor_offset(ctx.cursor_offset)
@@ -4801,105 +5119,65 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
         }
     }
 
-    // Two-pass loop body walk.
+    // ── Assignment-depth-bounded loop iteration ─────────────────
     //
-    // The forward walker only processes the loop body once, so a
-    // variable assigned late in the body (e.g. `$lastPaidEnd =
-    // $periodEnd` at the end) is invisible to earlier statements
-    // that guard on it (e.g. `if ($lastPaidEnd !== null &&
-    // $lastPaidEnd->diffInDays(...))`).
-    //
-    // Fix: walk the body once to collect all assignments, merge
-    // the resulting scope back into the pre-loop state, re-bind
-    // the foreach variables, and walk the body a second time.
-    // The second pass sees the merged types from the first
-    // iteration, matching PHP's runtime behaviour on iteration ≥ 2.
-    //
-    // Only the second pass records diagnostic scope snapshots
-    // (the first pass runs with a temporary scope that is
-    // discarded after merging).
+    // Compute the assignment dependency depth of the loop body to
+    // determine how many iterations are needed for types to propagate
+    // through the entire chain.  Then iterate with fixed-point
+    // detection: stop early when scope no longer changes.
+    let body_stmts: Vec<&Statement<'b>> = match &foreach.body {
+        ForeachBody::Statement(inner) => vec![*inner],
+        ForeachBody::ColonDelimited(body) => body.statements.iter().collect(),
+    };
+    let max_iterations = clamp_iterations_for_depth(assignment_map_depth(&body_stmts), loop_depth);
 
-    // Use the two-pass strategy only when loop nesting is shallow.
-    // Beyond MAX_TWO_PASS_LOOP_DEPTH, a single pass avoids the
-    // exponential blowup from if-branch merging re-walking inner
-    // loops (B27).  This applies uniformly to all code paths.
-    let use_two_pass = loop_depth <= MAX_TWO_PASS_LOOP_DEPTH;
+    for iteration in 0..max_iterations {
+        let scope_before = scope.clone();
+        let walk_ctx = if iteration + 1 < max_iterations {
+            &discovery_ctx
+        } else {
+            ctx
+        };
 
-    if use_two_pass {
-        // ── Pass 1: discover types assigned in the loop body ────
-        // Use a temporary scope so the first pass does not record
-        // diagnostic snapshots that would be overwritten by pass 2.
-        let pass1_active = is_diagnostic_scope_active();
-        if pass1_active {
-            // Temporarily deactivate snapshot recording for pass 1.
-            // We do this by NOT calling walk_body_for_diagnostics;
-            // instead we use walk_body_forward which only records
-            // snapshots when the cache is active AND record_snapshots
-            // is true.  Since walk_body_forward checks
-            // is_diagnostic_scope_active() itself, we rely on the
-            // fact that walk_body_forward records snapshots — but
-            // those will be overwritten by pass 2 at the same offsets.
-        }
         match &foreach.body {
             ForeachBody::Statement(inner) => {
-                walk_body_forward(std::iter::once(*inner), scope, &pass1_ctx);
+                walk_body_forward(std::iter::once(*inner), scope, walk_ctx);
             }
             ForeachBody::ColonDelimited(body) => {
-                walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
+                walk_body_forward(body.statements.iter(), scope, walk_ctx);
             }
         }
 
-        // ── Merge pass-1 types into the pre-loop scope ──────────
-        // Variables assigned in pass 1 get their types merged with
-        // the pre-loop scope, so pass 2 sees them at every point.
-        let mut pass2_scope = pre_loop_scope.clone();
-        pass2_scope.merge_branch(scope);
-
-        // Re-bind foreach target variables on the merged scope so
-        // the foreach value/key types are present for pass 2.
-        match &foreach.target {
-            ForeachTarget::Value(val) => {
-                bind_foreach_value(val.value, &iter_type, &mut pass2_scope, ctx);
-            }
-            ForeachTarget::KeyValue(kv) => {
-                bind_foreach_key(kv.key, &iter_type, &mut pass2_scope, ctx);
-                bind_foreach_value(kv.value, &iter_type, &mut pass2_scope, ctx);
-            }
+        // Fixed-point: stop if scope did not change.
+        if scopes_equal(scope, &scope_before) {
+            break;
         }
 
-        // ── Pass 2: re-walk with the merged types ───────────────
-        match &foreach.body {
-            ForeachBody::Statement(inner) => {
-                walk_body_forward(std::iter::once(*inner), &mut pass2_scope, ctx);
+        // Prepare for the next iteration: merge discovered types back
+        // into the pre-loop scope and re-bind foreach variables.
+        if iteration + 1 < max_iterations {
+            let mut next_scope = pre_loop_scope.clone();
+            next_scope.merge_branch(scope);
+            match &foreach.target {
+                ForeachTarget::Value(val) => {
+                    bind_foreach_value(val.value, &iter_type, &mut next_scope, ctx);
+                }
+                ForeachTarget::KeyValue(kv) => {
+                    bind_foreach_key(kv.key, &iter_type, &mut next_scope, ctx);
+                    bind_foreach_value(kv.value, &iter_type, &mut next_scope, ctx);
+                }
             }
-            ForeachBody::ColonDelimited(body) => {
-                walk_body_forward(body.statements.iter(), &mut pass2_scope, ctx);
-            }
+            *scope = next_scope;
         }
-
-        // Use the pass-2 scope as the final scope, merged with the
-        // pre-loop scope (the iterable might be empty, so the loop
-        // body might not execute at all).
-        *scope = pre_loop_scope;
-        scope.merge_branch(&pass2_scope);
-    } else {
-        // Single-pass fallback for deeply nested foreach loops.
-        match &foreach.body {
-            ForeachBody::Statement(inner) => {
-                walk_body_forward(std::iter::once(*inner), scope, &pass1_ctx);
-            }
-            ForeachBody::ColonDelimited(body) => {
-                walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
-            }
-        }
-
-        // Merge with the pre-loop scope (loop body might not execute).
-        let post_loop = scope.clone();
-        *scope = pre_loop_scope;
-        scope.merge_branch(&post_loop);
     }
 
-    LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+    // The iterable might be empty, so the loop body might not execute
+    // at all.  Merge with the pre-loop scope.
+    let post_loop = scope.clone();
+    *scope = pre_loop_scope;
+    scope.merge_branch(&post_loop);
+
+    leave_loop(loop_depth);
 }
 
 /// Resolve the iterable expression's type for a foreach.
@@ -5297,18 +5575,14 @@ fn bind_foreach_key<'b>(
 /// Uses the same two-pass strategy as `process_foreach` and
 /// `process_for`: the first pass discovers all variable assignments
 /// inside the loop body, the results are merged back into the
-/// pre-loop scope, and the second pass re-walks with full visibility
+/// pre-loop scope, and the final pass re-walks with full visibility
 /// of loop-carried assignments.
 fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
+    let loop_depth = enter_loop();
 
-    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    // Hard limit: skip the body entirely at excessive nesting depth.
     if loop_depth > MAX_LOOP_DEPTH {
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        leave_loop(loop_depth);
         return;
     }
 
@@ -5323,15 +5597,16 @@ fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &Fo
     // only affects the loop body, not the post-loop scope.
     apply_condition_narrowing(while_stmt.condition, scope, ctx);
 
-    // When the cursor is inside the loop body (completion path), pass 1
-    // must walk the ENTIRE body to discover assignments after the cursor.
+    // When the cursor is inside the loop body (completion path), discovery
+    // passes must walk the ENTIRE body; the final pass uses the real
+    // cursor_offset so it stops at the cursor as usual.
     let body_span = match &while_stmt.body {
         WhileBody::Statement(inner) => inner.span(),
         WhileBody::ColonDelimited(body) => body.span(),
     };
     let cursor_in_body =
         ctx.cursor_offset >= body_span.start.offset && ctx.cursor_offset <= body_span.end.offset;
-    let pass1_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
+    let discovery_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
         ctx.with_cursor_offset(u32::MAX)
     } else {
         ctx.with_cursor_offset(ctx.cursor_offset)
@@ -5353,81 +5628,75 @@ fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &Fo
         record_scope_snapshot(body_start, scope);
     }
 
-    // ── Pass 1: discover types assigned in the loop body ────
-    match &while_stmt.body {
-        WhileBody::Statement(inner) => {
-            walk_body_forward(std::iter::once(*inner), scope, &pass1_ctx);
+    // ── Assignment-depth-bounded loop iteration ─────────────────
+    let body_stmts: Vec<&Statement<'b>> = match &while_stmt.body {
+        WhileBody::Statement(inner) => vec![*inner],
+        WhileBody::ColonDelimited(body) => body.statements.iter().collect(),
+    };
+    let max_iterations = clamp_iterations_for_depth(assignment_map_depth(&body_stmts), loop_depth);
+
+    for iteration in 0..max_iterations {
+        let scope_before = scope.clone();
+        let walk_ctx = if iteration + 1 < max_iterations {
+            &discovery_ctx
+        } else {
+            ctx
+        };
+
+        match &while_stmt.body {
+            WhileBody::Statement(inner) => {
+                walk_body_forward(std::iter::once(*inner), scope, walk_ctx);
+            }
+            WhileBody::ColonDelimited(body) => {
+                walk_body_forward(body.statements.iter(), scope, walk_ctx);
+            }
         }
-        WhileBody::ColonDelimited(body) => {
-            walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
+
+        // Fixed-point: stop if scope did not change.
+        if scopes_equal(scope, &scope_before) {
+            break;
+        }
+
+        // Prepare for the next iteration: merge discovered types back
+        // into the pre-loop scope and re-apply condition processing.
+        if iteration + 1 < max_iterations {
+            let mut next_scope = pre_loop_scope.clone();
+            next_scope.merge_branch(scope);
+            apply_condition_narrowing(while_stmt.condition, &mut next_scope, ctx);
+            process_condition_assignment(while_stmt.condition, &mut next_scope, ctx);
+            seed_pass_by_ref_in_condition(while_stmt.condition, &mut next_scope, ctx);
+            *scope = next_scope;
         }
     }
-
-    // Skip the second pass when loop nesting is deep to avoid
-    // exponential blowup (B27).  Applies uniformly to all paths.
-    if loop_depth > MAX_TWO_PASS_LOOP_DEPTH {
-        let post_loop = scope.clone();
-        *scope = pre_loop_scope;
-        scope.merge_branch(&post_loop);
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
-        return;
-    }
-
-    // ── Merge pass-1 types into the pre-loop scope ──────────
-    let mut pass2_scope = pre_loop_scope.clone();
-    pass2_scope.merge_branch(scope);
-
-    // Re-apply condition narrowing, assignments, and pass-by-ref on the
-    // merged scope so they remain visible in pass 2.
-    apply_condition_narrowing(while_stmt.condition, &mut pass2_scope, ctx);
-    process_condition_assignment(while_stmt.condition, &mut pass2_scope, ctx);
-    seed_pass_by_ref_in_condition(while_stmt.condition, &mut pass2_scope, ctx);
-
-    // ── Pass 2: re-walk with the merged types ───────────────
-    match &while_stmt.body {
-        WhileBody::Statement(inner) => {
-            walk_body_forward(std::iter::once(*inner), &mut pass2_scope, ctx);
-        }
-        WhileBody::ColonDelimited(body) => {
-            walk_body_forward(body.statements.iter(), &mut pass2_scope, ctx);
-        }
-    }
-
-    LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
 
     // When the cursor is inside the loop body (completion path), keep
-    // the pass-2 scope with condition narrowing applied.  The post-loop
+    // the scope with condition narrowing applied.  The post-loop
     // merge would erase the narrowing (since the loop might not execute),
     // but the cursor IS inside the body, so the condition is true.
     if cursor_in_body && !is_diagnostic_scope_active() {
-        *scope = pass2_scope;
         return;
     }
 
     // The loop body might not execute at all (condition false on
     // first check), so merge with the pre-loop scope.
+    let post_loop = scope.clone();
     *scope = pre_loop_scope;
-    scope.merge_branch(&pass2_scope);
+    scope.merge_branch(&post_loop);
+
+    leave_loop(loop_depth);
 }
 
 /// Process a `for` loop.
 ///
-/// Uses the same two-pass strategy as `process_foreach`: the first
-/// pass discovers all variable assignments inside the loop body, the
-/// results are merged back into the pre-loop scope, and the second
-/// pass re-walks with full visibility of loop-carried assignments.
-/// This handles the common pattern where a variable is assigned late
-/// in the body but referenced (or guarded on) earlier.
+/// Uses the same assignment-depth-bounded iteration as `process_foreach`:
+/// a cheap AST walk determines the dependency chain depth, then the body
+/// is re-walked up to that many times with fixed-point early exit.
 fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
+    let loop_depth = enter_loop();
 
-    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    // Hard limit: skip the body entirely at excessive nesting depth.
     if loop_depth > MAX_LOOP_DEPTH {
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        leave_loop(loop_depth);
         return;
     }
 
@@ -5445,120 +5714,118 @@ fn process_for<'b>(for_stmt: &'b For<'b>, scope: &mut ScopeState, ctx: &ForwardW
 
     let pre_loop_scope = scope.clone();
 
-    // When the cursor is inside the loop body (completion path), pass 1
-    // must walk the ENTIRE body to discover assignments after the cursor.
+    // When the cursor is inside the loop body (completion path), discovery
+    // passes must walk the ENTIRE body; the final pass uses the real
+    // cursor_offset so it stops at the cursor as usual.
     let body_span = match &for_stmt.body {
         ForBody::Statement(inner) => inner.span(),
         ForBody::ColonDelimited(body) => body.span(),
     };
     let cursor_in_body =
         ctx.cursor_offset >= body_span.start.offset && ctx.cursor_offset <= body_span.end.offset;
-    let pass1_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
+    let discovery_ctx = if cursor_in_body && !is_diagnostic_scope_active() {
         ctx.with_cursor_offset(u32::MAX)
     } else {
         ctx.with_cursor_offset(ctx.cursor_offset)
     };
 
-    // ── Pass 1: discover types assigned in the loop body ────
-    match &for_stmt.body {
-        ForBody::Statement(inner) => {
-            walk_body_forward(std::iter::once(*inner), scope, &pass1_ctx);
+    // ── Assignment-depth-bounded loop iteration ─────────────────
+    let body_stmts: Vec<&Statement<'b>> = match &for_stmt.body {
+        ForBody::Statement(inner) => vec![*inner],
+        ForBody::ColonDelimited(body) => body.statements.iter().collect(),
+    };
+    let max_iterations = clamp_iterations_for_depth(assignment_map_depth(&body_stmts), loop_depth);
+
+    for iteration in 0..max_iterations {
+        let scope_before = scope.clone();
+        let walk_ctx = if iteration + 1 < max_iterations {
+            &discovery_ctx
+        } else {
+            ctx
+        };
+
+        match &for_stmt.body {
+            ForBody::Statement(inner) => {
+                walk_body_forward(std::iter::once(*inner), scope, walk_ctx);
+            }
+            ForBody::ColonDelimited(body) => {
+                walk_body_forward(body.statements.iter(), scope, walk_ctx);
+            }
         }
-        ForBody::ColonDelimited(body) => {
-            walk_body_forward(body.statements.iter(), scope, &pass1_ctx);
+
+        // Fixed-point: stop if scope did not change.
+        if scopes_equal(scope, &scope_before) {
+            break;
+        }
+
+        // Prepare for the next iteration: merge discovered types back
+        // into the pre-loop scope and re-apply initializers.
+        if iteration + 1 < max_iterations {
+            let mut next_scope = pre_loop_scope.clone();
+            next_scope.merge_branch(scope);
+            for init_expr in for_stmt.initializations.iter() {
+                process_assignment_expr(init_expr, &mut next_scope, ctx);
+            }
+            *scope = next_scope;
         }
     }
-
-    // Skip the second pass when loop nesting is deep to avoid
-    // exponential blowup (B27).  Applies uniformly to all paths.
-    if loop_depth > MAX_TWO_PASS_LOOP_DEPTH {
-        let post_loop = scope.clone();
-        *scope = pre_loop_scope;
-        scope.merge_branch(&post_loop);
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
-        return;
-    }
-
-    // ── Merge pass-1 types into the pre-loop scope ──────────
-    let mut pass2_scope = pre_loop_scope.clone();
-    pass2_scope.merge_branch(scope);
-
-    // Re-apply initializers on the merged scope so they remain
-    // visible in pass 2.
-    for init_expr in for_stmt.initializations.iter() {
-        process_assignment_expr(init_expr, &mut pass2_scope, ctx);
-    }
-
-    // ── Pass 2: re-walk with the merged types ───────────────
-    match &for_stmt.body {
-        ForBody::Statement(inner) => {
-            walk_body_forward(std::iter::once(*inner), &mut pass2_scope, ctx);
-        }
-        ForBody::ColonDelimited(body) => {
-            walk_body_forward(body.statements.iter(), &mut pass2_scope, ctx);
-        }
-    }
-
-    LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
 
     // The loop body might not execute at all (condition false on
     // first check), so merge with the pre-loop scope.
+    let post_loop = scope.clone();
     *scope = pre_loop_scope;
-    scope.merge_branch(&pass2_scope);
+    scope.merge_branch(&post_loop);
+
+    leave_loop(loop_depth);
 }
 
 /// Process a `do-while` loop.
 ///
-/// Uses the same two-pass strategy as `process_foreach` and
-/// `process_for`: the first pass discovers all variable assignments
-/// inside the body, the results are merged back, and the second pass
-/// re-walks with full visibility of loop-carried assignments.
+/// Uses the same assignment-depth-bounded iteration as `process_foreach`:
+/// a cheap AST walk determines the dependency chain depth, then the body
+/// is re-walked up to that many times with fixed-point early exit.
 ///
 /// Unlike `for`/`while`, the body of a `do-while` always executes at
-/// least once, so we do NOT merge with a pre-loop scope — the final
-/// scope is the pass-2 result directly.
+/// least once, so we do NOT merge with a pre-loop scope at the end.
 fn process_do_while<'b>(dw: &'b DoWhile<'b>, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
-    let loop_depth = LOOP_DEPTH.with(|c| {
-        let v = c.get() + 1;
-        c.set(v);
-        v
-    });
+    let loop_depth = enter_loop();
 
-    // Hard limit: bail out entirely when loop depth is excessive (B27).
+    // Hard limit: skip the body entirely at excessive nesting depth.
     if loop_depth > MAX_LOOP_DEPTH {
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+        leave_loop(loop_depth);
         return;
     }
 
     let pre_loop_scope = scope.clone();
 
-    // ── Pass 1: discover types assigned in the body ─────────
-    walk_body_forward(std::iter::once(dw.statement), scope, ctx);
+    // ── Assignment-depth-bounded loop iteration ─────────────────
+    let body_stmts: Vec<&Statement<'b>> = vec![dw.statement];
+    let max_iterations = clamp_iterations_for_depth(assignment_map_depth(&body_stmts), loop_depth);
 
-    // Skip the second pass when loop nesting is deep to avoid
-    // exponential blowup (B27).  Applies uniformly to all paths.
-    if loop_depth > MAX_TWO_PASS_LOOP_DEPTH {
-        LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
-        return;
+    for iteration in 0..max_iterations {
+        let scope_before = scope.clone();
+
+        walk_body_forward(std::iter::once(dw.statement), scope, ctx);
+
+        // Fixed-point: stop if scope did not change.
+        if scopes_equal(scope, &scope_before) {
+            break;
+        }
+
+        // Prepare for the next iteration: merge discovered types back
+        // into the pre-loop scope and process the condition (evaluated
+        // after the body, so assignments and pass-by-ref seeding from
+        // it should be visible on iteration >= 2).
+        if iteration + 1 < max_iterations {
+            let mut next_scope = pre_loop_scope.clone();
+            next_scope.merge_branch(scope);
+            process_condition_assignment(dw.condition, &mut next_scope, ctx);
+            seed_pass_by_ref_in_condition(dw.condition, &mut next_scope, ctx);
+            *scope = next_scope;
+        }
     }
 
-    // ── Merge pass-1 types into the pre-loop scope ──────────
-    let mut pass2_scope = pre_loop_scope;
-    pass2_scope.merge_branch(scope);
-
-    // Process the do-while condition between passes.  The condition
-    // is evaluated after the body, so assignments and pass-by-ref
-    // seeding from the condition (e.g. `do { … } while (($x =
-    // next()) !== null)`) should be visible on iteration ≥ 2.
-    process_condition_assignment(dw.condition, &mut pass2_scope, ctx);
-    seed_pass_by_ref_in_condition(dw.condition, &mut pass2_scope, ctx);
-
-    // ── Pass 2: re-walk with the merged types ───────────────
-    walk_body_forward(std::iter::once(dw.statement), &mut pass2_scope, ctx);
-
-    *scope = pass2_scope;
-
-    LOOP_DEPTH.with(|c| c.set(loop_depth - 1));
+    leave_loop(loop_depth);
 }
 
 /// Process a `try-catch-finally` statement.

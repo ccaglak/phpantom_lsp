@@ -693,128 +693,6 @@ so this fast-path would apply to the majority of checks.
 
 ---
 
-## P20. Forward walker: bounded iteration and depth-cap cleanup
-
-The forward walker's two-pass loop strategy (walk body once to
-discover assignments, merge, walk again) interacts multiplicatively
-with if-branch merging. This exponential blowup is currently
-papered over with three thread-local depth counters:
-
-- `LOOP_DEPTH` / `MAX_LOOP_DEPTH = 6`: hard cap on loop nesting.
-  Beyond depth 2 (`MAX_TWO_PASS_LOOP_DEPTH`), loops get a single
-  pass only. Beyond depth 6, the body is skipped entirely.
-- `WALK_DEPTH` / `MAX_WALK_DEPTH = 50`: guards `walk_body_forward`
-  recursion across all block nesting (if/else, try/catch, switch).
-- `PROCESS_DEPTH` / `MAX_PROCESS_DEPTH = 80`: guards
-  `process_statement` recursion for the same nesting.
-
-All three caps silently produce incomplete type information when
-they fire. The high values of 50 and 80 (vs real PHP nesting of
-10-15) indicate they exist as safety nets for the exponential
-blowup, not for real nesting depth.
-
-### How Mago solves the loop problem
-
-Mago (`references/mago/crates/analyzer/src/statement/loop/`) uses
-assignment-depth-bounded iteration:
-
-1. **Assignment map.** Before analyzing a loop body, a cheap AST
-   walk (`assignment_map_visitor.rs`, no type resolution) builds a
-   `BTreeMap<Atom, BTreeSet<Atom>>` of which variables depend on
-   which other variables. The function `get_assignment_map_depth`
-   follows the dependency chain (using `remove` to break cycles)
-   and returns the longest chain length.
-
-2. **Bounded re-walking.** The loop body is re-walked at most
-   `assignment_depth` times (typically 1-3), not proportional to
-   nesting depth. Between iterations, `clean_nodes` clears cached
-   expression types so the body is re-analyzed fresh.
-
-3. **Fixed-point early exit.** After each re-walk, Mago checks
-   whether any variable's type actually changed (`has_changes`
-   flag). If types have stabilized, it breaks immediately
-   (`loop/mod.rs` lines 561-569).
-
-4. **Type widening.** Integer bounds are widened across iterations
-   (lines 430-494) to ensure convergence in few iterations.
-
-5. **Union merging.** Changed types are merged via
-   `combine_union_types` (lines 524-533), not by re-walking
-   branches. Nesting an if inside a foreach does not multiply walks.
-
-Note: Mago's statement walker itself IS recursive (the `Analyzable`
-trait dispatches via match, calling `.analyze()` on sub-statements).
-There are no depth limits and no stack size overrides. The walker
-does not need them because the loop analysis avoids the exponential
-blowup that makes our walker's recursion dangerous.
-
-PHPStan's `NodeScopeResolver::processStmtNodes()` is also recursive
-with no depth counters. Phpactor's `FrameResolver` likewise.
-
-### Deliverables
-
-This is a single work item with three steps:
-
-#### Step 1: Assignment-depth-bounded loop iteration
-
-Replace the `LOOP_DEPTH` / `MAX_TWO_PASS_LOOP_DEPTH` /
-`MAX_LOOP_DEPTH` system with Mago-style bounded iteration:
-
-- Build an assignment dependency map before each loop body
-  (cheap AST walk, no type resolution).
-- Compute assignment depth from the dependency chain.
-- Re-walk the body at most `assignment_depth` times.
-- After each re-walk, compare scope before/after. Stop when no
-  types changed (fixed-point).
-- Consider type widening for integer literal types inside loops.
-
-**Success criteria:** Remove `LOOP_DEPTH`, `MAX_TWO_PASS_LOOP_DEPTH`,
-and `MAX_LOOP_DEPTH`. No test regressions. Loop-heavy files that
-previously hit the depth cap now produce correct types.
-
-#### Step 2: Verify and remove `MAX_WALK_DEPTH` / `MAX_PROCESS_DEPTH`
-
-After Step 1 eliminates the exponential blowup, the 50/80 caps
-should never fire on real code (PHP nesting rarely exceeds 15).
-
-- Run the full test suite and `analyse` on the largest available
-  project. Log when either cap fires.
-- If neither fires, remove both counters entirely.
-- If either fires on real code, investigate why (it likely indicates
-  a remaining exponential path that Step 1 missed).
-
-**Success criteria:** `WALK_DEPTH` and `PROCESS_DEPTH` counters
-removed from `forward_walk.rs`. No test regressions.
-
-#### Step 3: Verify and remove 32 MB stack threads (diagnostic workers)
-
-The `analyse.rs` Phase 2 diagnostic workers use
-`stack_size(32 * 1024 * 1024)` because the forward walker's deep
-recursion can overflow the default 8 MB stack. After Steps 1-2,
-the recursion depth is bounded by actual PHP nesting (~15 levels).
-
-- Run the full test suite and `analyse` on the largest available
-  project with default stack sizes (remove or comment out the
-  `stack_size` calls on diagnostic worker threads).
-- If no stack overflows occur, remove the `stack_size` calls.
-- Note: the eager-population and index-worker threads also use
-  32 MB stacks for class resolution depth (addressed by ER5
-  separately). Only remove the diagnostic worker stacks here.
-
-**Success criteria:** Diagnostic worker threads in `analyse.rs`
-run with default stack sizes. The remaining `stack_size` calls
-(eager-population, index workers, reference parsing) are tracked
-by ER5 and P25 respectively.
-
-### When to implement
-
-After the forward walker stabilizes (it is less than a week old).
-The current depth guards are sufficient to prevent hangs; this item
-improves accuracy on deeply nested loops and eliminates the safety
-nets that mask the root cause.
-
----
-
 ## Appendix: Profiling
 
 ### Commands
@@ -847,8 +725,43 @@ like:
 
 ---
 
+## P27. Remove `WALK_DEPTH` / `PROCESS_DEPTH` guards and 32 MB stack threads
+
+**Impact: Low · Effort: Low**
+
+After the assignment-depth-bounded loop iteration landed (P20), the
+exponential blowup from loop/if-branch interaction is eliminated.
+The remaining depth guards in the forward walker are:
+
+- `WALK_DEPTH` / `MAX_WALK_DEPTH = 50`: guards `walk_body_forward`
+  recursion across all block nesting (if/else, try/catch, switch).
+- `PROCESS_DEPTH` / `MAX_PROCESS_DEPTH = 80`: guards
+  `process_statement` recursion for the same nesting.
+
+PHP code rarely nests beyond 15 levels; these caps (50, 80) exist as
+safety nets and should never fire on real code now that the
+exponential loop path is gone.
+
+Additionally, the `analyse.rs` Phase 2 diagnostic workers use
+`stack_size(32 * 1024 * 1024)` because the forward walker's deep
+recursion could overflow the default 8 MB stack. With the loop
+depth bounded, the recursion depth is bounded by actual PHP nesting
+(~15 levels) and default stack sizes should suffice.
+
+### Fix
+
+1. Run the full test suite and `analyse` on the largest available
+   projects with logging when either depth cap fires.
+2. If neither fires, remove both counters entirely.
+3. Remove the `stack_size(32 * 1024 * 1024)` calls on diagnostic
+   worker threads in `analyse.rs`. Keep the eager-population and
+   index-worker thread stacks (those are tracked by ER5 separately).
+
+---
+
 # Remaining anti-pattern fixes
 
-Most depth-cap and recursion-guard issues are addressed by P20
-(forward walker) and ER5 (class resolution). The items below are
-independent fixes that do not depend on either.
+Most remaining depth-cap issues are addressed by ER5 (class
+resolution). The forward walker loop iteration was addressed by the
+assignment-depth-bounded strategy. The items below are independent
+fixes that do not depend on either.
