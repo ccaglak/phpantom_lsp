@@ -128,6 +128,7 @@ pub(crate) mod unknown_functions;
 pub(crate) mod unknown_members;
 pub(crate) mod unresolved_member_access;
 mod unused_imports;
+pub(crate) mod unused_variables;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -161,6 +162,7 @@ impl Backend {
     ) {
         self.collect_syntax_error_diagnostics(uri_str, content, out);
         self.collect_unused_import_diagnostics(uri_str, content, out);
+        self.collect_unused_variable_diagnostics(uri_str, content, out);
     }
 
     /// Collect Phase 2 (slow) diagnostics: unknown class/member/function,

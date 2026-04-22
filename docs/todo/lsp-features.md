@@ -534,3 +534,59 @@ command = "phpantom_lsp"
 - Helix maintainers may want a brief README section documenting the
   server and its feature set.
 
+## F15. Go-to-declaration
+
+**Impact: Low-Medium · Effort: Low**
+
+Implement `textDocument/declaration` to jump from a concrete method to
+its abstract or interface prototype, complementing the existing
+go-to-definition (which jumps to the concrete implementation) and
+go-to-implementation (which jumps from an interface to concrete classes).
+
+### Behaviour
+
+When the cursor is on a method call or method name:
+
+1. Search for an **interface or abstract class** that declares a method
+   with the same name and is in the inheritance chain of the resolved
+   class.
+2. If found, jump to the interface/abstract method declaration.
+3. If no abstract prototype exists, fall back to the same result as
+   go-to-definition.
+
+### Implementation
+
+The existing `resolve_implementation` already does reverse lookups
+(concrete → prototype) via `resolve_reverse_implementation`. The
+declaration handler can reuse this: for `MemberAccess` and
+`MemberDeclaration` symbols, call the reverse-implementation resolver
+first. For class-level symbols, declaration and definition are the
+same.
+
+Register `declaration_provider` in `server.rs` and wire it to a thin
+handler that delegates to the existing infrastructure.
+
+## F16. On-type `}` brace de-indent
+
+**Impact: Low · Effort: Low**
+
+Extend the existing on-type formatting handler (currently triggered on
+`\n` for docblock generation) to also trigger on `}`, automatically
+de-indenting the closing brace to match its opening `{`.
+
+### Behaviour
+
+When the user types `}`:
+
+1. From the `}` position, scan backward through the document text to
+   find the matching `{` (tracking brace depth, skipping strings and
+   comments).
+2. Read the indentation of the line containing the matching `{`.
+3. If the `}` line has more indentation than the `{` line, return a
+   `TextEdit` that replaces the leading whitespace on the `}` line
+   with the `{` line's indentation.
+
+This is a pure text-based operation — no AST needed. Register `}` as
+an additional `on_type_formatting_trigger_character` alongside the
+existing `\n`.
+

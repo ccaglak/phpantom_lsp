@@ -23,83 +23,6 @@ PHPantom assigns diagnostic severity based on runtime consequences:
 
 ---
 
-## D4. Unused variable diagnostic
-
-**Impact: Medium · Effort: Medium**
-
-Flag variables that are assigned but never read. This is one of the
-most common issues in PHP codebases and catches dead code, typos in
-variable names, and forgotten refactoring leftovers.
-
-PHPantom already has an undefined-variable diagnostic
-(`undefined_variable` in `diagnostics/undefined_variables.rs`) that
-tracks variable definitions and reads through scope analysis. The
-unused-variable diagnostic is the dual: a variable that has a
-definition site but zero read sites within the same scope.
-
-**Severity:** Information (rendered as dimmed text). Assigned-but-
-unread variables are not bugs per se (the code still runs), but they
-are strong signals of dead code or typos. Information severity avoids
-alarming users while still making the issue visible.
-
-**Diagnostic code:** `unused_variable` (matches the planned CLI fix
-rule FX2).
-
-### Scope
-
-1. **Local variables in function/method bodies.** A variable assigned
-   inside a function or method body that is never read before the
-   scope ends. Parameters count as assignments; an unused parameter
-   in a non-abstract, non-interface method is flagged.
-2. **Foreach bindings.** `foreach ($items as $key => $value)` where
-   `$key` or `$value` is never read inside the loop body. Convention:
-   variables named `$_` or starting with `$_` are exempt (intentional
-   discard).
-3. **Catch variables.** `catch (Exception $e)` where `$e` is never
-   read. Same `$_` exemption applies.
-
-### Exclusions
-
-- Variables in the global scope (scripts, templates).
-- Variables passed by reference (`&$var`) to functions, since the
-  callee may use them as out-parameters.
-- Variables used inside closures or arrow functions that capture them
-  (explicit `use ($var)` or implicit capture).
-- Compact() calls that reference the variable by string name.
-- Variables used in string interpolation (`"Hello $name"`).
-- Variables whose RHS has side effects (method calls, function calls)
-  should still be flagged, but with a detail note that removing the
-  assignment would also remove the side effect.
-
-### PHPStan parallel
-
-PHPStan does not have a built-in unused-variable rule, but third-party
-rulesets (e.g. `phpstan-strict-rules`, `tomasvotruba/unused-public`)
-report similar issues. When D4 ships, the PHPStan quick-fix
-infrastructure should recognise our native `unused_variable` code so
-that:
-
-- The "Remove unused import" pattern can be extended to offer a
-  "Remove unused variable" quick-fix (same code action kind).
-- FX2 (`unused_variable` CLI fix rule) can consume our diagnostic
-  directly without needing PHPStan.
-
-### Implementation
-
-1. Extend the scope collector (`scope_collector/mod.rs`) to track
-   read sites per variable per frame (it already tracks definition
-   sites for the undefined-variable diagnostic).
-2. After processing a scope, iterate defined variables and flag any
-   that have zero reads and are not in the exclusion list.
-3. Emit diagnostics with `DiagnosticSeverity::HINT` and
-   `DiagnosticTag::UNNECESSARY` so editors render unused variables
-   as dimmed/faded text.
-4. Add a code action (in `code_actions/`) to remove the assignment
-   statement when the RHS is side-effect-free, or to prefix the
-   variable with `$_` to suppress the diagnostic.
-
----
-
 ## D3. Deprecated rendering — chain subject resolution
 
 **Impact: Low-Medium · Effort: Medium**
@@ -423,5 +346,35 @@ site. Without CFA, the false positive rate would be high. Consider
 reporting at **Warning** severity with a message like "argument type
 `Animal` is broader than expected `Dog`; verify the value was
 narrowed before this call."
+
+---
+
+## D15. Unused parameter diagnostic
+
+**Impact: Low · Effort: Low**
+
+Flag function and method parameters that are never read inside the
+body. This was intentionally excluded from D4 (unused variable
+diagnostic) because without suppression support (D5), false positives
+are unavoidable: callbacks, interface implementations, and framework
+conventions (e.g. Laravel event listeners) often require specific
+parameter signatures even when not all parameters are used.
+
+**Prerequisite:** D5 (diagnostic suppression intelligence) must ship
+first so users can silence false positives with `// @phpantom-ignore`
+or a configuration-level exclusion.
+
+### Scope
+
+1. Function and method parameters (including closures and arrow
+   functions) that are never read inside their body.
+2. Constructor parameters that are not promoted and never read.
+
+### Exclusions
+
+- Parameters named `$_` or starting with `$_` (intentional discard).
+- Promoted constructor parameters (they are property assignments).
+- Parameters in abstract methods and interface method signatures
+  (no body to check).
 
 
