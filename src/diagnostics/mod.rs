@@ -209,6 +209,7 @@ impl Backend {
         // `$query->where(...)`, and `Product::query()->where(...)`
         // call site in the file.
         let _callable_guard = crate::completion::call_resolution::with_callable_target_cache();
+        let _body_infer_guard = self.activate_body_return_inferrer();
 
         // ── Phase 2: forward-walked diagnostic scope cache ──────
         // Walk every function/method body in the file once with the

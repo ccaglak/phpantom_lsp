@@ -447,6 +447,7 @@ impl Backend {
     /// resolved to a meaningful description, or `None` when resolution
     /// fails or the cursor is not on a navigable symbol.
     pub fn handle_hover(&self, uri: &str, content: &str, position: Position) -> Option<Hover> {
+        let _body_infer_guard = self.activate_body_return_inferrer();
         let offset = crate::util::position_to_offset(content, position);
 
         // Try the exact cursor offset first.
@@ -1122,6 +1123,25 @@ impl Backend {
         uri: &str,
         content: &str,
     ) -> Hover {
+        // When the method has no declared return type and no @return
+        // docblock, try to infer the return type from the method body.
+        // This mirrors what completion/hover resolution does, so the
+        // hover display matches the resolved type the user sees.
+        let inferred_return_type: Option<crate::php_type::PhpType> =
+            if method.return_type.is_none() && method.name_offset != 0 && !method.is_virtual {
+                crate::completion::call_resolution::try_infer_body_return_type(&owner.fqn(), method)
+                    .filter(|t| !t.is_mixed() && !t.is_void())
+            } else {
+                None
+            };
+
+        // Use the inferred type as the effective return type when
+        // the method has no declared one.
+        let effective_return = method
+            .return_type
+            .as_ref()
+            .or(inferred_return_type.as_ref());
+
         let visibility = format_visibility(method.visibility);
         let static_kw = if method.is_static { "static " } else { "" };
         let native_params = format_native_params(&method.parameters);
@@ -1145,7 +1165,7 @@ impl Backend {
         // variance and bound so the user understands the constraint.
         // Method-level templates take priority over class-level ones.
         let mut seen_templates: Vec<PhpType> = Vec::new();
-        if let Some(ref ret) = method.return_type
+        if let Some(ret) = effective_return
             && let Some(tpl_line) = find_template_info_in_method_or_class(ret, method, owner)
         {
             seen_templates.push(ret.clone());
@@ -1192,7 +1212,7 @@ impl Backend {
         // Build the readable param/return section as markdown.
         if let Some(section) = build_param_return_section(
             &method.parameters,
-            method.return_type.as_ref(),
+            effective_return,
             method.native_return_type.as_ref(),
             method.return_description.as_deref(),
         ) {

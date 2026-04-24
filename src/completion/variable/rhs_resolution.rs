@@ -2146,6 +2146,28 @@ fn resolve_rhs_method_call_inner<'b>(
                 ctx.class_loader,
             )];
         }
+
+        // Body return type inference fallback: when the method has no
+        // declared return type and no @return docblock, try to infer
+        // the return type from the method body.  This handles non-class
+        // types (list<Foo>, int, array shapes) that
+        // resolve_method_return_types_with_args cannot represent.
+        if method_ref
+            .is_some_and(|m| m.return_type.is_none() && m.name_offset != 0 && !m.is_virtual)
+            && let Some(inferred) = crate::completion::call_resolution::try_infer_body_return_type(
+                &owner.fqn(),
+                method_ref.unwrap(),
+            )
+            && !inferred.is_void()
+            && !inferred.is_mixed()
+        {
+            return vec![resolved_type_with_lookup(
+                inferred,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            )];
+        }
     }
     vec![]
 }
@@ -2327,6 +2349,25 @@ fn resolve_rhs_static_call(
                 }
                 return vec![resolved_type_with_lookup(
                     hint.clone(),
+                    current_class_name,
+                    ctx.all_classes,
+                    ctx.class_loader,
+                )];
+            }
+
+            // Body return type inference fallback (static calls).
+            if method_ref
+                .is_some_and(|m| m.return_type.is_none() && m.name_offset != 0 && !m.is_virtual)
+                && let Some(inferred) =
+                    crate::completion::call_resolution::try_infer_body_return_type(
+                        &owner.fqn(),
+                        method_ref.unwrap(),
+                    )
+                && !inferred.is_void()
+                && !inferred.is_mixed()
+            {
+                return vec![resolved_type_with_lookup(
+                    inferred,
                     current_class_name,
                     ctx.all_classes,
                     ctx.class_loader,

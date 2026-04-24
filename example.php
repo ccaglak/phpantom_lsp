@@ -3545,6 +3545,34 @@ class ClosureScopeInferenceDemo
     }
 }
 
+// ── Body Return Type Inference ──────────────────────────────────────────────
+// When a method has no declared return type and no @return docblock,
+// PHPantom infers the type by scanning the method body for return statements.
+
+class BodyReturnTypeDemo
+{
+    public function demo(): void
+    {
+        $factory = new ScaffoldingUntypedFactory();
+
+        // Single return: `return new Pen()` → Pen
+        $pen = $factory->createPen();
+        $pen->write();
+
+        // Multiple returns: union of `new Pen()` and `new Pencil()`
+        $tool = $factory->createTool(true);
+        $tool->write();                           // shared by Pen (also Pencil via sketch)
+
+        // No return statements → void (no completions)
+        $factory->setup();
+
+        $pencils = $factory->getPencils();
+        foreach ($pencils as $pencil) {
+            $pencil->sketch();
+        }
+    }
+}
+
 // ── Global Keyword ─────────────────────────────────────────────────────────
 
 $globalPen = new Pen();
@@ -3637,6 +3665,27 @@ class ScaffoldingUntypedLogger
 }
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
+
+// ── Body Return Type Inference scaffolding ──────────────────────────────────
+class ScaffoldingUntypedFactory
+{
+    public function createPen() { return new Pen(); }
+
+    public function createTool(bool $flag)
+    {
+        if ($flag) {
+            return new Pen();
+        }
+        return new Pencil();
+    }
+
+    public function setup() { echo 'initializing'; }
+
+    public function getPencils()
+    {
+        return [new Pencil()];
+    }
+}
 
 // ── Inherited Docblock Scaffolding ──────────────────────────────────────────
 
@@ -5418,6 +5467,13 @@ enum OrderStatus: string
 
 function runDemoAssertions(): void
 {
+    // ── Body Return Type Inference ──────────────────────────────────────
+    $factory = new ScaffoldingUntypedFactory();
+    $pen = $factory->createPen();
+    assert($pen instanceof Pen, 'createPen() must return Pen (inferred from body)');
+    $tool = $factory->createTool(true);
+    assert($tool instanceof Pen || $tool instanceof Pencil, 'createTool() must return Pen|Pencil');
+
     // ── Return Type: static ─────────────────────────────────────────────
     $pen = Pen::make();
     assert($pen instanceof Pen, 'Pen::make() must return Pen');

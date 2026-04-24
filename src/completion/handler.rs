@@ -273,6 +273,7 @@ impl Backend {
             // prefixes are resolved once and reused within this completion
             // request.  The guard is re-entrant safe.
             let _chain_guard = super::resolver::with_chain_resolution_cache();
+            let _body_infer_guard = self.activate_body_return_inferrer();
 
             // Gather per-file context (classes, use-map, namespace) in one
             // call instead of three separate lock-and-unwrap blocks.

@@ -100,25 +100,6 @@ Fixtures ported at type level:
 
 ---
 
-## 21. Return statement type inference
-
-phpactor tests return type inference from method bodies:
-
-| Scenario | phpactor ref |
-|----------|-------------|
-| Single literal return | `return-statement/class_method.test` |
-| Missing return type → `<missing>` | `return-statement/missing_return_type.test` |
-| Multiple returns → union | `return-statement/multiple_return.test` |
-| No return → `void` | `return-statement/no_return.test` |
-
-**Effort: Medium** — body return type inference is a separate
-feature from our current declared-type-based resolution. Requires
-walking the function body AST, resolving each return expression's
-type, and unioning the results. Ignored fixture created at
-`type/return_type_from_body.fixture`.
-
----
-
 ## Summary by effort
 
 ### Low-Medium effort (need minor code changes)
@@ -132,7 +113,6 @@ type, and unioning the results. Ignored fixture created at
 | # | Item | phpactor ref |
 |---|------|-------------|
 | 8 | Array mutation tracking (conditional/unknown key) | `assignment/array_2.test`, `assignment/unknown_key.test` |
-| 21 | Return statement type inference | `return-statement/*.test` |
 
 ### Low priority
 

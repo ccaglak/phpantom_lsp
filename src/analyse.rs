@@ -320,6 +320,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             crate::completion::resolver::with_chain_resolution_cache();
                         let _callable_guard =
                             crate::completion::call_resolution::with_callable_target_cache();
+                        let _body_infer_guard = backend.activate_body_return_inferrer();
 
                         // ── Forward-walked diagnostic scope cache ───
                         // Walk every function/method body once with the

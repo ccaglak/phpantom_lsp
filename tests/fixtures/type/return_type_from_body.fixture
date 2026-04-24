@@ -1,6 +1,6 @@
 // test: return type inferred from method body when no declaration or docblock
 // feature: completion
-// ignore: Return type inference from method bodies is not yet implemented
+
 // Adapted from phpactor return-statement/class_method.test
 // expect: barMethod(
 ---

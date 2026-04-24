@@ -185,6 +185,5 @@ unlikely to move the needle for most users.
 | Q16 | Variable-variable `${$bar}` resolution                                                                                                                                      | Low         | Low-Medium  |
 
 | Q19 | Array mutation tracking (conditional/unknown-key scenarios)                                                                                                                  | Low         | Medium      |
-| Q20 | Return statement body type inference                                                                                                                                        | Low         | Medium      |
 
 | Q22 | Postfix increment / decrement literal types                                                                                                                                 | Low         | Low         |
