@@ -770,7 +770,26 @@ impl Backend {
         use_map: &'a HashMap<String, String>,
         namespace: &'a Option<String>,
     ) -> impl Fn(&str) -> Option<Arc<ClassInfo>> + 'a {
-        move |name: &str| self.resolve_class_name(name, classes, use_map, namespace)
+        move |name: &str| {
+            // Try a direct FQN lookup first.  Names that arrive here
+            // are often already-resolved FQNs (e.g. `parent_class`,
+            // `used_traits`, `interfaces` — all canonicalised by
+            // `resolve_parent_class_names`).  Passing a bare global
+            // name like `Exception` through namespace-aware resolution
+            // would incorrectly yield `Test\Exception` when a
+            // same-named class exists in the current namespace.
+            //
+            // The direct lookup is cheap (hash-map hit in fqn_index)
+            // and correct for FQNs.  For user-typed unqualified names
+            // that should resolve via namespace context, the direct
+            // lookup will miss (no global class with that name) and
+            // we fall through to full resolution.
+            let stripped = name.strip_prefix('\\').unwrap_or(name);
+            if let Some(cls) = self.find_or_load_class(stripped) {
+                return Some(cls);
+            }
+            self.resolve_class_name(name, classes, use_map, namespace)
+        }
     }
 
     /// Return a function-loader closure bound to a [`FileContext`].

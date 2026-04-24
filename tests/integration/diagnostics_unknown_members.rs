@@ -1,4 +1,6 @@
-use crate::common::{create_psr4_workspace, create_test_backend};
+use crate::common::{
+    create_psr4_workspace, create_test_backend, create_test_backend_with_exception_stubs,
+};
 use tower_lsp::lsp_types::*;
 
 // ─── Helpers for scope-cache-enabled diagnostics ────────────────────────────
@@ -4708,5 +4710,70 @@ class Monetary {
         diags.is_empty(),
         "self return type on cross-file parameter should resolve correctly. Got: {:?}",
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Same-name class in different namespace should not shadow parent (GH-87)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn no_false_positive_when_same_name_class_exists_in_namespace() {
+    let backend = create_test_backend_with_exception_stubs();
+    let uri = "file:///test.php";
+    // Adding `Test\Exception` should not affect `MyException extends \Exception`.
+    // The `\Exception` FQN explicitly refers to the global Exception class,
+    // so `getMessage()` (inherited from global Exception) must still resolve.
+    let text = r#"<?php
+namespace Test;
+
+class Exception extends \Exception {}
+
+class MyException extends \Exception {}
+
+class Consumer {
+    public function run(): void {
+        try {
+            throw new MyException("foobards");
+        } catch (MyException $e) {
+            echo $e->getMessage();
+        }
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "getMessage() is inherited from \\Exception — no diagnostic expected, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_false_positive_when_same_name_class_exists_in_namespace_scope_cache() {
+    let backend = create_test_backend_with_exception_stubs();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+namespace Test;
+
+class Exception extends \Exception {}
+
+class MyException extends \Exception {}
+
+class Consumer {
+    public function run(): void {
+        try {
+            throw new MyException("foobards");
+        } catch (MyException $e) {
+            echo $e->getMessage();
+        }
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics_with_scope_cache(&backend, uri, text);
+    assert!(
+        diags.is_empty(),
+        "getMessage() is inherited from \\Exception — no diagnostic expected (scope cache path), got: {:?}",
+        diags
     );
 }
