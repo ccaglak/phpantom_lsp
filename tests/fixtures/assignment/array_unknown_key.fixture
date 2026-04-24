@@ -1,0 +1,20 @@
+// test: unknown key assignment tracks value type
+// feature: completion
+// ignore: Unknown key array assignment type tracking is not yet implemented
+// Adapted from phpactor assignment/unknown_key.test
+// expect: getName(
+---
+<?php
+
+class Result {
+    public function getName(): string { return ''; }
+}
+
+/** @param string[] $files */
+function test(array $files): void {
+    $results = [];
+    foreach ($files as $file) {
+        $results[$file] = new Result();
+    }
+    $results['foo']-><>
+}

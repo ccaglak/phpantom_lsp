@@ -1,0 +1,18 @@
+// test: global keyword imports variable into function scope
+// feature: completion
+// ignore: Global variable type resolution is not supported
+// Adapted from phpactor global/global_keyword.test
+// expect: getName(
+---
+<?php
+
+class Config {
+    public function getName(): string { return ''; }
+}
+
+$config = new Config();
+
+function test(): void {
+    global $config;
+    $config-><>
+}

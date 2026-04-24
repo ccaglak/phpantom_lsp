@@ -131,6 +131,7 @@ mod selection_range;
 mod semantic_tokens;
 mod server;
 mod signature_help;
+pub mod stub_patches;
 pub mod stubs;
 pub mod subject_expr;
 pub(crate) mod subject_extraction;

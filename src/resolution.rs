@@ -570,10 +570,17 @@ impl Backend {
         for &name in candidates {
             if let Some(&stub_content) = stub_fn_idx.get(name) {
                 let ver = Some(self.php_version());
-                let functions = self.parse_functions_versioned(stub_content, ver);
+                let mut functions = self.parse_functions_versioned(stub_content, ver);
 
                 if functions.is_empty() {
                     continue;
+                }
+
+                // Apply stub patches for phpstorm-stubs deficiencies
+                // (e.g. array_reduce returning `mixed` instead of a
+                // template-based type).  See stub_patches.rs.
+                for func in &mut functions {
+                    crate::stub_patches::apply_function_stub_patches(func);
                 }
 
                 let stub_uri = format!("phpantom-stub-fn://{}", name);

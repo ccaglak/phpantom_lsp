@@ -22,6 +22,12 @@ pub(crate) mod rhs_resolution;
 // These constants encode domain knowledge about which PHP standard
 // library functions preserve array types vs extract single elements.
 // They are consumed by `raw_type_inference` and `call_resolution`.
+//
+// Stub deficiency: phpstorm-stubs declare these functions as returning
+// plain `array` or `mixed`, losing the element type.  PHPStan handles
+// this via dynamic return type extensions written in PHP; we use these
+// hardcoded lists instead.  See docs/todo/completion.md C1 for the
+// full inventory of functions that need special handling.
 
 /// Known array functions whose output preserves the input array's
 /// element type (the first positional argument).

@@ -1458,6 +1458,16 @@ class ArrayFuncDemo
 
         $mapped = array_map(fn($pen) => $pen, $src->members);
         $mapped[0]->write();              // Pen from array_map fallback
+
+        // array_reduce: return type inferred from initial value (3rd arg)
+        $merged = array_reduce($src->members, function(Pen $carry, Pen $item): Pen {
+            return $carry;
+        }, new Pen('merged'));
+        $merged->write();                 // Pen from initial value argument
+
+        // array_sum / array_product: always int|float
+        $total = array_sum([10, 20, 30]);
+        $product = array_product([2, 3, 4]);
     }
 }
 
@@ -5947,6 +5957,17 @@ function runDemoAssertions(): void
 
     $last = end($penArray2);
     assert($last instanceof Pen, 'end() must return Pen');
+
+    $reduced = array_reduce($penArray2, function(Pen $carry, Pen $item): Pen {
+        return $carry;
+    }, new Pen('merged'));
+    assert($reduced instanceof Pen, 'array_reduce must return type of initial value');
+
+    $sum = array_sum([10, 20, 30]);
+    assert(is_int($sum) || is_float($sum), 'array_sum must return int or float');
+
+    $product = array_product([2, 3, 4]);
+    assert(is_int($product) || is_float($product), 'array_product must return int or float');
 
     // ── Match expression types ──────────────────────────────────────────
     $matchResult = match (0) {

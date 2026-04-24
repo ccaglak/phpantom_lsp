@@ -929,3 +929,181 @@ function test() {
         "Shape should contain nested 'zip: string', got: {ts}"
     );
 }
+
+/// `array_sum` should resolve to `int|float`.
+#[test]
+fn resolve_var_array_sum() {
+    let content = r#"<?php
+function test() {
+    $result = array_sum([10, 20, 30]);
+    echo $result;
+}
+"#;
+    let cursor_offset = content.find("echo $result").unwrap() as u32;
+
+    // Provide a function loader that returns FunctionInfo with the
+    // stub return type (int|float), matching what the real backend
+    // produces from phpstorm-stubs.
+    let func_loader = |name: &str| -> Option<crate::types::FunctionInfo> {
+        if name.eq_ignore_ascii_case("array_sum") || name.eq_ignore_ascii_case("array_product") {
+            Some(stub_function_info(
+                name,
+                Some(PhpType::Union(vec![PhpType::int(), PhpType::float()])),
+            ))
+        } else {
+            None
+        }
+    };
+
+    let results = super::resolve_variable_types(
+        "$result",
+        &ClassInfo::default(),
+        &[],
+        content,
+        cursor_offset,
+        &|_| None,
+        Loaders {
+            function_loader: Some(&func_loader),
+            ..Loaders::default()
+        },
+    );
+
+    assert!(!results.is_empty(), "Should resolve $result to a type");
+    let ts = ResolvedType::types_joined(&results).to_string();
+    assert!(
+        ts.contains("int") && ts.contains("float"),
+        "array_sum should return int|float, got: {ts}"
+    );
+}
+
+/// `array_product` should resolve to `int|float`.
+#[test]
+fn resolve_var_array_product() {
+    let content = r#"<?php
+function test() {
+    $result = array_product([2, 3, 4]);
+    echo $result;
+}
+"#;
+    let cursor_offset = content.find("echo $result").unwrap() as u32;
+
+    let func_loader = |name: &str| -> Option<crate::types::FunctionInfo> {
+        if name.eq_ignore_ascii_case("array_sum") || name.eq_ignore_ascii_case("array_product") {
+            Some(stub_function_info(
+                name,
+                Some(PhpType::Union(vec![PhpType::int(), PhpType::float()])),
+            ))
+        } else {
+            None
+        }
+    };
+
+    let results = super::resolve_variable_types(
+        "$result",
+        &ClassInfo::default(),
+        &[],
+        content,
+        cursor_offset,
+        &|_| None,
+        Loaders {
+            function_loader: Some(&func_loader),
+            ..Loaders::default()
+        },
+    );
+
+    assert!(!results.is_empty(), "Should resolve $result to a type");
+    let ts = ResolvedType::types_joined(&results).to_string();
+    assert!(
+        ts.contains("int") && ts.contains("float"),
+        "array_product should return int|float, got: {ts}"
+    );
+}
+
+/// `array_reduce` with a class initial value should resolve to that class.
+#[test]
+fn resolve_var_array_reduce_initial_value() {
+    let content = r#"<?php
+class Accumulator { public function total(): int { return 0; } }
+function test() {
+    $result = array_reduce([1, 2, 3], function(Accumulator $carry, int $item): Accumulator {
+        return $carry;
+    }, new Accumulator());
+    $result->
+}
+"#;
+    let acc = make_class("Accumulator");
+    let all_classes: Vec<Arc<ClassInfo>> = vec![Arc::new(acc.clone())];
+    let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
+        if name == "Accumulator" {
+            Some(Arc::new(make_class("Accumulator")))
+        } else {
+            None
+        }
+    };
+
+    // Provide a function loader that returns a patched array_reduce
+    // FunctionInfo (with @template TReturn bound to $initial),
+    // matching what the real backend produces after stub patches.
+    let func_loader = |name: &str| -> Option<crate::types::FunctionInfo> {
+        if name.eq_ignore_ascii_case("array_reduce") {
+            let mut fi = stub_function_info(name, Some(PhpType::mixed()));
+            fi.parameters = vec![
+                crate::test_fixtures::make_param("$array", Some("array"), true),
+                crate::test_fixtures::make_param("$callback", Some("callable"), true),
+                crate::test_fixtures::make_param("$initial", Some("mixed"), false),
+            ];
+            crate::stub_patches::apply_function_stub_patches(&mut fi);
+            Some(fi)
+        } else {
+            None
+        }
+    };
+
+    let cursor_offset = content.find("$result->").unwrap() as u32;
+
+    let results = super::resolve_variable_types(
+        "$result",
+        &ClassInfo::default(),
+        &all_classes,
+        content,
+        cursor_offset,
+        &class_loader,
+        Loaders {
+            function_loader: Some(&func_loader),
+            ..Loaders::default()
+        },
+    );
+
+    assert!(!results.is_empty(), "Should resolve $result to a type");
+    let ts = ResolvedType::types_joined(&results).to_string();
+    assert!(
+        ts.contains("Accumulator"),
+        "array_reduce should return type of initial value, got: {ts}"
+    );
+}
+
+/// Helper: build a minimal `FunctionInfo` with a given name and return type,
+/// simulating what the real backend produces from phpstorm-stubs.
+fn stub_function_info(name: &str, return_type: Option<PhpType>) -> crate::types::FunctionInfo {
+    crate::types::FunctionInfo {
+        name: crate::atom::atom(name),
+        name_offset: 0,
+        parameters: Vec::new(),
+        return_type,
+        native_return_type: None,
+        description: None,
+        return_description: None,
+        links: Vec::new(),
+        see_refs: Vec::new(),
+        namespace: None,
+        conditional_return: None,
+        type_assertions: Vec::new(),
+        deprecation_message: None,
+        deprecated_replacement: None,
+        template_params: Vec::new(),
+        template_bindings: Vec::new(),
+        template_param_bounds: Default::default(),
+        throws: Vec::new(),
+        is_polyfill: false,
+    }
+}
