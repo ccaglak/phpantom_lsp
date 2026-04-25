@@ -663,6 +663,32 @@ fn walk_closures_in_call_args<'b, F>(
 /// from the enclosing call's callable signature.  When a parameter has
 /// no explicit type hint, the corresponding inferred type (matched by
 /// positional index) is used instead.
+/// Check whether a `/** … */` docblock is directly attached to the
+/// code at `fn_offset` — i.e. only whitespace separates the closing
+/// `*/` from `fn_offset`.  This prevents `@param` annotations from
+/// sibling closures/arrow functions from leaking across statement
+/// boundaries.
+fn is_docblock_adjacent(content: &str, fn_offset: usize) -> bool {
+    let before = match content.get(..fn_offset) {
+        Some(s) => s,
+        None => return false,
+    };
+    // Walk backward over whitespace, then over optional keywords
+    // (`static`, visibility modifiers) that may sit between the
+    // docblock and `fn`.
+    let trimmed = before.trim_end();
+    if trimmed.ends_with("*/") {
+        return true;
+    }
+    // Allow `static` keyword between docblock and `fn(…)`:
+    //   /** @param T $x */ static fn(T $x) => …
+    // Also allow the `function` keyword for regular closures.
+    let trimmed = trimmed
+        .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        .trim_end();
+    trimmed.ends_with("*/")
+}
+
 fn seed_closure_params(
     scope: &mut ScopeState,
     parameter_list: &FunctionLikeParameterList<'_>,
@@ -677,11 +703,20 @@ fn seed_closure_params(
         let native_type = param.hint.as_ref().map(|h| extract_hint_type(h));
 
         // Check the `@param` docblock annotation.
+        //
+        // Only trust the result when the docblock is directly attached
+        // to this closure/arrow function (no intervening code).  Without
+        // this guard, sibling arrow functions that share a parameter
+        // name (e.g. two `array_map(fn($row) => …)` calls) would leak
+        // `@param` annotations from one closure to the other, because
+        // arrow functions don't introduce `{`/`}` scope boundaries and
+        // `find_iterable_raw_type_in_source` scans backward freely.
         let raw_docblock_type = crate::docblock::find_iterable_raw_type_in_source(
             ctx.content,
             fn_span_start as usize,
             &pname,
-        );
+        )
+        .filter(|_| is_docblock_adjacent(ctx.content, fn_span_start as usize));
 
         let effective_type = crate::docblock::resolve_effective_type_typed(
             native_type.as_ref(),

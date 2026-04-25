@@ -1487,6 +1487,7 @@ async fn test_goto_definition_inline_conditional_return_class_string() {
         "}\n",
         "\n",
         "/**\n",
+        " * @template TClass\n",
         " * @return ($abstract is class-string<TClass> ? TClass : ($abstract is null ? \\App : mixed))\n",
         " */\n",
         "function app($abstract = null, array $parameters = []) {}\n",
@@ -1514,7 +1515,7 @@ async fn test_goto_definition_inline_conditional_return_class_string() {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
-                line: 13,
+                line: 14,
                 character: 36,
             },
         },

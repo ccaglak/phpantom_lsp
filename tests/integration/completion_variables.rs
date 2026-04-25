@@ -1658,6 +1658,7 @@ async fn test_completion_conditional_return_class_string() {
         "}\n",
         "\n",
         "/**\n",
+        " * @template TClass\n",
         " * @return ($abstract is class-string<TClass> ? TClass : ($abstract is null ? \\App : mixed))\n",
         " */\n",
         "function app($abstract = null, array $parameters = []) {}\n",
@@ -1680,12 +1681,12 @@ async fn test_completion_conditional_return_class_string() {
     };
     backend.did_open(open_params).await;
 
-    // Cursor after `$obj->` on line 17
+    // Cursor after `$obj->` on line 18
     let params = CompletionParams {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri },
             position: Position {
-                line: 17,
+                line: 18,
                 character: 14,
             },
         },
@@ -1899,6 +1900,7 @@ async fn test_completion_inline_conditional_return_class_string() {
         "}\n",
         "\n",
         "/**\n",
+        " * @template TClass\n",
         " * @return ($abstract is class-string<TClass> ? TClass : ($abstract is null ? \\App : mixed))\n",
         " */\n",
         "function app($abstract = null, array $parameters = []) {}\n",
@@ -1926,7 +1928,7 @@ async fn test_completion_inline_conditional_return_class_string() {
         text_document_position: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri },
             position: Position {
-                line: 13,
+                line: 14,
                 character: 36,
             },
         },

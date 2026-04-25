@@ -1715,6 +1715,9 @@ fn resolve_rhs_function_call<'b>(
         // Try conditional return type first
         if let Some(ref cond) = func_info.conditional_return {
             let var_resolver = build_var_resolver_from_ctx(ctx);
+            let tpl = crate::completion::types::conditional::TemplateContext::with_params(
+                &func_info.template_params,
+            );
             let resolved_type = resolve_conditional_with_args(
                 cond,
                 &func_info.parameters,
@@ -1722,6 +1725,7 @@ fn resolve_rhs_function_call<'b>(
                 Some(&var_resolver),
                 Some(current_class_name),
                 class_loader,
+                &tpl,
             );
             if let Some(ref ty) = resolved_type {
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(

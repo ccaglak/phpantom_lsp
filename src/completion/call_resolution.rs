@@ -48,7 +48,7 @@ use crate::util::{
 };
 
 use super::conditional_resolution::{
-    VarClassStringResolver, resolve_conditional_with_text_args,
+    TemplateContext, VarClassStringResolver, resolve_conditional_with_text_args,
     resolve_conditional_with_text_args_and_defaults, resolve_conditional_without_args,
     resolve_conditional_without_args_and_defaults, split_call_subject, split_text_args,
 };
@@ -1040,6 +1040,7 @@ impl Backend {
                 {
                     if let Some(ref cond) = func_info.conditional_return {
                         let var_resolver = build_var_resolver(ctx);
+                        let tpl = TemplateContext::with_params(&func_info.template_params);
                         let resolved_type = if !text_args.is_empty() {
                             resolve_conditional_with_text_args(
                                 cond,
@@ -1048,6 +1049,7 @@ impl Backend {
                                 Some(&var_resolver),
                                 ctx.current_class.map(|c| c.name.as_str()),
                                 ctx.class_loader,
+                                &tpl,
                             )
                         } else {
                             resolve_conditional_without_args(cond, &func_info.parameters)
@@ -1274,6 +1276,16 @@ impl Backend {
         let resolve_method = |method: &MethodInfo| -> Vec<Arc<ClassInfo>> {
             // Try conditional return type first (PHPStan syntax)
             if let Some(ref cond) = method.conditional_return {
+                let tpl = TemplateContext {
+                    defaults: Some(
+                        &class_info
+                            .template_param_defaults
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.clone()))
+                            .collect::<HashMap<String, PhpType>>(),
+                    ),
+                    params: &method.template_params,
+                };
                 let resolved_type = if !text_args.is_empty() {
                     resolve_conditional_with_text_args_and_defaults(
                         cond,
@@ -1281,26 +1293,14 @@ impl Backend {
                         text_args,
                         var_resolver,
                         mr_ctx.calling_class_name,
-                        Some(
-                            &class_info
-                                .template_param_defaults
-                                .iter()
-                                .map(|(k, v)| (k.to_string(), v.clone()))
-                                .collect::<HashMap<String, PhpType>>(),
-                        ),
                         mr_ctx.class_loader,
+                        &tpl,
                     )
                 } else {
                     resolve_conditional_without_args_and_defaults(
                         cond,
                         &method.parameters,
-                        Some(
-                            &class_info
-                                .template_param_defaults
-                                .iter()
-                                .map(|(k, v)| (k.to_string(), v.clone()))
-                                .collect::<HashMap<String, PhpType>>(),
-                        ),
+                        tpl.defaults,
                     )
                 };
                 if let Some(ref parsed) = resolved_type {

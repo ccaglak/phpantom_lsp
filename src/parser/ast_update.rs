@@ -252,6 +252,12 @@ impl Backend {
                         func.native_return_type = Some(resolved);
                     }
                 }
+                if let Some(ref cond) = func.conditional_return {
+                    let resolved = cond.resolve_names(&resolver);
+                    if resolved != *cond {
+                        func.conditional_return = Some(resolved);
+                    }
+                }
                 for param in &mut func.parameters {
                     if let Some(ref hint) = param.type_hint {
                         let resolved = hint.resolve_names(&resolver);
@@ -869,6 +875,12 @@ impl Backend {
                     let resolved = ret.resolve_names(method_resolver);
                     if resolved != *ret {
                         method.return_type = Some(resolved);
+                    }
+                }
+                if let Some(ref cond) = method.conditional_return {
+                    let resolved = cond.resolve_names(method_resolver);
+                    if resolved != *cond {
+                        method.conditional_return = Some(resolved);
                     }
                 }
                 for param in &mut method.parameters {
