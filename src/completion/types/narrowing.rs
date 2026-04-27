@@ -977,7 +977,12 @@ pub(in crate::completion) fn statement_unconditionally_exits(stmt: &Statement<'_
         Statement::Break(_) => true,
         // `throw new …;` is parsed as an expression statement
         // containing a Throw expression.
-        Statement::Expression(es) => matches!(es.expression, Expression::Throw(_)),
+        Statement::Expression(es) => matches!(
+            es.expression,
+            Expression::Throw(_)
+                | Expression::Construct(mago_syntax::ast::Construct::Exit(_))
+                | Expression::Construct(mago_syntax::ast::Construct::Die(_))
+        ),
         // A block exits if its last statement exits.
         Statement::Block(block) => block
             .statements
@@ -1438,6 +1443,7 @@ pub(crate) enum TypeGuardKind {
     Numeric,
     Callable,
     Null,
+    Scalar,
 }
 
 /// Return the canonical `PhpType` that a type-guard narrows `mixed` to.
@@ -1457,6 +1463,12 @@ fn guard_kind_to_narrowed_type(kind: TypeGuardKind) -> PhpType {
         TypeGuardKind::Numeric => PhpType::numeric(),
         TypeGuardKind::Callable => PhpType::callable(),
         TypeGuardKind::Null => PhpType::null(),
+        TypeGuardKind::Scalar => PhpType::Union(vec![
+            PhpType::int(),
+            PhpType::float(),
+            PhpType::string(),
+            PhpType::bool(),
+        ]),
     }
 }
 
@@ -1491,6 +1503,7 @@ pub(crate) fn try_extract_type_guard(
                 "is_numeric" => TypeGuardKind::Numeric,
                 "is_callable" => TypeGuardKind::Callable,
                 "is_null" => TypeGuardKind::Null,
+                "is_scalar" => TypeGuardKind::Scalar,
                 _ => return None,
             };
             let args = &fc.argument_list.arguments;
@@ -1533,6 +1546,12 @@ fn type_matches_guard(ty: &PhpType, kind: TypeGuardKind) -> bool {
         TypeGuardKind::Callable => ty.is_callable(),
         TypeGuardKind::Object => ty.is_object_like(),
         TypeGuardKind::Null => ty.is_null(),
+        TypeGuardKind::Scalar => {
+            ty.is_subtype_of(&PhpType::string())
+                || ty.is_subtype_of(&PhpType::int())
+                || ty.is_subtype_of(&PhpType::float())
+                || ty.is_subtype_of(&PhpType::bool())
+        }
     }
 }
 

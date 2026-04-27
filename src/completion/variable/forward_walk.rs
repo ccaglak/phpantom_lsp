@@ -4809,6 +4809,12 @@ fn process_if_statement_body<'b>(
         apply_condition_narrowing_inverse(if_stmt.condition, scope, ctx);
         apply_guard_clause_null_narrowing(if_stmt, scope, ctx);
     }
+
+    // Remove synthetic property access keys that were seeded by
+    // condition narrowing inside branches.  These represent narrowed
+    // types that only hold within specific branches, not after the
+    // if/elseif/else block.
+    strip_synthetic_property_keys(scope);
 }
 
 /// Process if with colon-delimited body.
@@ -6023,6 +6029,13 @@ fn process_while<'b>(while_stmt: &'b While<'b>, scope: &mut ScopeState, ctx: &Fo
     *scope = pre_loop_scope;
     scope.merge_branch(&post_loop);
 
+    // Remove synthetic property access keys that were seeded by
+    // condition narrowing.  These represent narrowed types that only
+    // hold inside the loop body (where the condition is true).
+    // After the loop, the condition may be false, so the narrowing
+    // no longer applies.
+    strip_synthetic_property_keys(scope);
+
     leave_loop(loop_depth);
 }
 
@@ -6347,6 +6360,10 @@ fn apply_condition_narrowing<'b>(
     scope: &mut ScopeState,
     ctx: &ForwardWalkCtx<'_>,
 ) {
+    // Seed property access keys from conditions into the scope so that
+    // narrowing functions can find and narrow them.
+    seed_property_keys_into_scope(condition, scope, ctx);
+
     // Decompose `&&` chains so that `$x instanceof Foo && $x instanceof Bar`
     // applies both narrowings as a union (intersection semantics: the
     // variable satisfies both checks, so members from both types are
@@ -6365,6 +6382,13 @@ fn apply_condition_narrowing<'b>(
     for name in collect_condition_var_names(condition) {
         if !var_names.contains(&name) {
             var_names.push(name);
+        }
+    }
+    // Include property access keys from conditions (e.g. `$a->foo`
+    // from `$a->foo instanceof Foo`) so instanceof narrowing applies.
+    for key in collect_condition_property_keys(condition) {
+        if !var_names.contains(&key) {
+            var_names.push(key);
         }
     }
 
@@ -6584,6 +6608,10 @@ fn apply_condition_narrowing_inverse_single<'b>(
     scope: &mut ScopeState,
     ctx: &ForwardWalkCtx<'_>,
 ) {
+    // Seed property access keys from conditions into the scope so that
+    // narrowing functions can find and narrow them.
+    seed_property_keys_into_scope(condition, scope, ctx);
+
     let scope_snapshot = scope.locals.clone();
     let scope_resolver =
         |vn: &str| -> Vec<ResolvedType> { scope_snapshot.get(vn).cloned().unwrap_or_default() };
@@ -6595,6 +6623,13 @@ fn apply_condition_narrowing_inverse_single<'b>(
     for name in collect_condition_var_names(condition) {
         if !var_names.contains(&name) {
             var_names.push(name);
+        }
+    }
+    // Include property access keys from conditions (e.g. `$a->foo`
+    // from `$a->foo instanceof Foo`) so instanceof narrowing applies.
+    for key in collect_condition_property_keys(condition) {
+        if !var_names.contains(&key) {
+            var_names.push(key);
         }
     }
     for var_name in &var_names {
@@ -7127,7 +7162,14 @@ fn apply_type_guard_on_operands(condition: &Expression<'_>, scope: &mut ScopeSta
     // Decompose `&&` chains so that `is_object($x) && is_string($y)`
     // applies both guards.
     let operands = collect_and_chain_operands(condition);
-    let var_names: Vec<String> = scope.locals.keys().cloned().collect();
+    let mut var_names: Vec<String> = scope.locals.keys().cloned().collect();
+    // Include property access keys from conditions (e.g. `$a->foo`
+    // from `is_string($a->foo)`) so they can be narrowed.
+    for key in collect_condition_property_keys(condition) {
+        if !var_names.contains(&key) {
+            var_names.push(key);
+        }
+    }
     for operand in &operands {
         for var_name in &var_names {
             if let Some((kind, negated)) = narrowing::try_extract_type_guard(operand, var_name) {
@@ -7468,6 +7510,163 @@ fn collect_condition_var_names(expr: &Expression<'_>) -> Vec<String> {
     let mut names = Vec::new();
     collect_condition_var_names_inner(expr, &mut names);
     names
+}
+
+/// Remove synthetic property access keys (entries containing `->`)
+/// from the scope.  Called after loop merges and other scope
+/// transitions where condition-based property narrowing no longer
+/// holds.
+fn strip_synthetic_property_keys(scope: &mut ScopeState) {
+    scope.locals.retain(|key, _| !key.contains("->"));
+}
+
+/// Collect property access keys (e.g. `$a->foo`) from conditions that
+/// contain type guards or instanceof checks on property accesses.
+/// These keys are injected into the scope so that narrowing applies.
+fn collect_condition_property_keys(expr: &Expression<'_>) -> Vec<String> {
+    let mut keys = Vec::new();
+    collect_condition_property_keys_inner(expr, &mut keys);
+    keys
+}
+
+fn collect_condition_property_keys_inner(expr: &Expression<'_>, keys: &mut Vec<String>) {
+    match expr {
+        // instanceof: `$a->foo instanceof Foo`
+        Expression::Binary(bin) if bin.operator.is_instanceof() => {
+            if let Some(key) = narrowing::expr_to_subject_key(bin.lhs)
+                && key.contains("->")
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+            }
+        }
+        // Negation: `!is_string($a->foo)`, `!($a->foo instanceof Foo)`
+        Expression::UnaryPrefix(prefix) if prefix.operator.is_not() => {
+            collect_condition_property_keys_inner(prefix.operand, keys);
+        }
+        Expression::Parenthesized(p) => {
+            collect_condition_property_keys_inner(p.expression, keys);
+        }
+        // Logical connectives
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_)
+                    | BinaryOperator::LowAnd(_)
+                    | BinaryOperator::Or(_)
+                    | BinaryOperator::LowOr(_)
+            ) =>
+        {
+            collect_condition_property_keys_inner(bin.lhs, keys);
+            collect_condition_property_keys_inner(bin.rhs, keys);
+        }
+        // Type guard functions: `is_string($a->foo)`, `is_int($a->foo)`, etc.
+        Expression::Call(Call::Function(func_call)) => {
+            if let Expression::Identifier(ident) = func_call.function {
+                let func_name = ident.value();
+                let is_type_guard = matches!(
+                    func_name,
+                    "is_array"
+                        | "is_string"
+                        | "is_int"
+                        | "is_integer"
+                        | "is_long"
+                        | "is_float"
+                        | "is_double"
+                        | "is_real"
+                        | "is_bool"
+                        | "is_object"
+                        | "is_numeric"
+                        | "is_callable"
+                        | "is_null"
+                        | "is_scalar"
+                );
+                if is_type_guard && let Some(first_arg) = func_call.argument_list.arguments.first()
+                {
+                    let arg_expr = match first_arg {
+                        Argument::Positional(pos) => pos.value,
+                        Argument::Named(named) => named.value,
+                    };
+                    if let Some(key) = narrowing::expr_to_subject_key(arg_expr)
+                        && key.contains("->")
+                        && !keys.contains(&key)
+                    {
+                        keys.push(key);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Resolve the type of a property access key (e.g. `$a->foo`) from
+/// the current scope and seed it into the scope as a synthetic entry.
+/// This allows subsequent narrowing functions to find and narrow
+/// property access expressions.
+fn seed_property_keys_into_scope(
+    condition: &Expression<'_>,
+    scope: &mut ScopeState,
+    ctx: &ForwardWalkCtx<'_>,
+) {
+    let keys = collect_condition_property_keys(condition);
+    if keys.is_empty() {
+        return;
+    }
+    for key in &keys {
+        // Skip if already seeded (e.g. from a prior elseif condition).
+        if scope.contains(key) {
+            continue;
+        }
+        // Parse the key to extract object variable and property name.
+        // Key format: `$var->prop` (possibly chained like `$a->b->c`).
+        if let Some(arrow_pos) = key.rfind("->") {
+            let obj_var = &key[..arrow_pos];
+            let prop_name = &key[arrow_pos + 2..];
+
+            // Resolve the object variable's type from scope.
+            let obj_types = scope.get(obj_var);
+            if obj_types.is_empty() {
+                continue;
+            }
+
+            // Look up the property type on the resolved class(es).
+            let mut prop_results: Vec<ResolvedType> = Vec::new();
+            for rt in obj_types {
+                if let Some(ref cls) = rt.class_info {
+                    let type_hint = crate::inheritance::resolve_property_type_hint(
+                        cls,
+                        prop_name,
+                        ctx.class_loader,
+                    );
+                    if let Some(hint) = type_hint {
+                        let resolved_classes =
+                            crate::completion::type_resolution::type_hint_to_classes_typed(
+                                &hint,
+                                &ctx.current_class.name,
+                                ctx.all_classes,
+                                ctx.class_loader,
+                            );
+                        if resolved_classes.is_empty() {
+                            ResolvedType::extend_unique(
+                                &mut prop_results,
+                                vec![ResolvedType::from_type_string(hint)],
+                            );
+                        } else {
+                            ResolvedType::extend_unique(
+                                &mut prop_results,
+                                ResolvedType::from_classes_with_hint(resolved_classes, hint),
+                            );
+                        }
+                    }
+                }
+            }
+
+            if !prop_results.is_empty() {
+                scope.set(key.clone(), prop_results);
+            }
+        }
+    }
 }
 
 fn collect_condition_var_names_inner(expr: &Expression<'_>, names: &mut Vec<String>) {

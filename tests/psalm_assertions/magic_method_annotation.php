@@ -1,0 +1,290 @@
+<?php
+// Source: Psalm MagicMethodAnnotationTest.php
+// Auto-extracted by scripts/extract_psalm_tests.php
+// Do not edit manually — re-run the extraction script instead.
+
+// Test: validSimpleAnnotations
+namespace PsalmTest_magic_method_annotation_1 {
+    class ParentClass {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @method string getString() dsa sada
+     * @method  void setInteger(int $integer) dsa sada
+     * @method setString(int $integer) dsa sada
+     * @method setMixed(mixed $foo) dsa sada
+     * @method setImplicitMixed($foo) dsa sada
+     * @method setAnotherImplicitMixed( $foo, $bar,$baz) dsa sada
+     * @method setYetAnotherImplicitMixed( $foo  ,$bar,  $baz    ) dsa sada
+     * @method  getBool(string $foo)  :   bool dsa sada
+     * @method (string|int)[] getArray() with some text dsa sada
+     * @method (callable() : string) getCallable() dsa sada
+     */
+    class Child extends ParentClass {}
+
+    $child = new Child();
+
+    $a = $child->getString();
+    $child->setInteger(4);
+    /** @psalm-suppress MixedAssignment */
+    $b = $child->setString(5);
+    $c = $child->getBool("hello");
+    $d = $child->getArray();
+    $e = $child->getCallable();
+    $child->setMixed("hello");
+    $child->setMixed(4);
+    $child->setImplicitMixed("hello");
+    $child->setImplicitMixed(4);
+
+    assertType('string', $a);
+    assertType('mixed', $b);
+    assertType('bool', $c); // SKIP — @method with colon return type syntax not resolved
+    assertType('array<array-key, int|string>', $d); // SKIP — @method with grouped union array return type not resolved
+    assertType('callable():string', $e); // SKIP — @method with callable return type not resolved
+}
+
+// Test: validSimpleAnnotationsWithStatic
+namespace PsalmTest_magic_method_annotation_2 {
+    class ParentClass {
+        public function __callStatic(string $name, array $args) {}
+    }
+
+    /**
+     * @method static string getString() dsa sada
+     * @method static void setInteger(int $integer) dsa sada
+     * @method static mixed setString(int $integer) dsa sada
+     * @method static mixed setMixed(mixed $foo) dsa sada
+     * @method static mixed setImplicitMixed($foo) dsa sada
+     * @method static mixed setAnotherImplicitMixed( $foo, $bar,$baz) dsa sada
+     * @method static mixed setYetAnotherImplicitMixed( $foo  ,$bar,  $baz    ) dsa sada
+     * @method static bool getBool(string $foo)   dsa sada
+     * @method static (string|int)[] getArray() with some text dsa sada
+     * @method static (callable() : string) getCallable() dsa sada
+     * @method static static getInstance() dsa sada
+     */
+    class Child extends ParentClass {}
+
+    $a = Child::getString();
+    Child::setInteger(4);
+    /** @psalm-suppress MixedAssignment */
+    $b = Child::setString(5);
+    $c = Child::getBool("hello");
+    $d = Child::getArray();
+    $e = Child::getCallable();
+    $f = Child::getInstance();
+    Child::setMixed("hello");
+    Child::setMixed(4);
+    Child::setImplicitMixed("hello");
+    Child::setImplicitMixed(4);
+
+    assertType('string', $a);
+    assertType('mixed', $b);
+    assertType('bool', $c); // SKIP — static @method with bool return not resolved
+    assertType('array<array-key, int|string>', $d); // SKIP — static @method with grouped union array return not resolved
+    assertType('callable():string', $e); // SKIP — static @method with callable return not resolved
+    assertType('Child', $f); // SKIP — static @method returning static not resolved
+}
+
+// Test: validStaticAnnotationWithDefault
+namespace PsalmTest_magic_method_annotation_3 {
+    class ParentClass {
+        public static function __callStatic(string $name, array $args) {}
+    }
+
+    /**
+     * @method static string getString(int $foo) with some more text
+     */
+    class Child extends ParentClass {}
+
+    $child = new Child();
+
+    $a = $child::getString(5);
+
+    assertType('string', $a);
+}
+
+// Test: validUnionAnnotations
+namespace PsalmTest_magic_method_annotation_4 {
+    class ParentClass {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @method setBool(string $foo, string|bool $bar)  :   bool dsa sada
+     * @method void setAnotherArray(int[]|string[] $arr = [], int $foo = 5) with some more text
+     */
+    class Child extends ParentClass {}
+
+    $child = new Child();
+
+    $b = $child->setBool("hello", true);
+    $c = $child->setBool("hello", "true");
+    $child->setAnotherArray(["boo"]);
+
+    assertType('bool', $b); // SKIP — @method with colon return type syntax not resolved
+    assertType('bool', $c); // SKIP — @method with colon return type syntax not resolved
+}
+
+// Test: magicMethodReturnSelf
+namespace PsalmTest_magic_method_annotation_5 {
+    /**
+     * @method static self getSelf()
+     * @method $this getThis()
+     */
+    class C {
+        public static function __callStatic(string $c, array $args) {}
+        public function __call(string $c, array $args) {}
+    }
+
+    $a = C::getSelf();
+    $b = (new C)->getThis();
+
+    assertType('C', $a);
+    assertType('C', $b);
+}
+
+// Test: allowMagicMethodStatic
+namespace PsalmTest_magic_method_annotation_6 {
+    /** @method static getStatic() */
+    class C {
+        public function __call(string $c, array $args) {}
+    }
+
+    class D extends C {}
+
+    $c = (new C)->getStatic();
+    $d = (new D)->getStatic();
+
+    assertType('C', $c); // SKIP — @method returning static on instance not resolved
+    assertType('D', $d); // SKIP — @method returning static on subclass instance not resolved
+}
+
+// Test: validSimplePsalmAnnotations
+namespace PsalmTest_magic_method_annotation_7 {
+    class ParentClass {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @psalm-method string getString() dsa sada
+     * @psalm-method  void setInteger(int $integer) dsa sada
+     */
+    class Child extends ParentClass {}
+
+    $child = new Child();
+
+    $a = $child->getString();
+    $child->setInteger(4);
+
+    assertType('string', $a);
+}
+
+// Test: overrideMethodAnnotations
+namespace PsalmTest_magic_method_annotation_8 {
+    class ParentClass {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @method int getString() dsa sada
+     * @method  void setInteger(string $integer) dsa sada
+     * @psalm-method string getString() dsa sada
+     * @psalm-method  void setInteger(int $integer) dsa sada
+     */
+    class Child extends ParentClass {}
+
+    $child = new Child();
+
+    $a = $child->getString();
+    $child->setInteger(4);
+
+    assertType('string', $a);
+}
+
+// Test: returnThisShouldKeepGenerics
+namespace PsalmTest_magic_method_annotation_9 {
+    /**
+     * @template E
+     * @method $this foo()
+     */
+    class A
+    {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @template E
+     * @method $this foo()
+     */
+    interface I {}
+
+    class B {}
+
+    /** @var A<B> $a */
+    $a = new A();
+    $b = $a->foo();
+
+    /** @var I<B> $i */
+    $c = $i->foo();
+
+    assertType('A<B>&static', $b); // SKIP — $this @method should preserve generics and add &static
+    assertType('I<B>&static', $c); // SKIP — $this @method on interface should preserve generics and add &static
+}
+
+// Test: genericsOfInheritedMethodsShouldBeResolved
+namespace PsalmTest_magic_method_annotation_10 {
+    /**
+     * @template E
+     * @method E get()
+     */
+    interface I {}
+
+    /**
+     * @template E
+     * @implements I<E>
+     */
+    class A implements I
+    {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @template E
+     * @extends I<E>
+     */
+    interface I2 extends I {}
+
+    class B {}
+
+    /**
+     * @template E
+     * @method E get()
+     */
+    class C
+    {
+        public function __call(string $name, array $args) {}
+    }
+
+    /**
+     * @template E
+     * @extends C<E>
+     */
+    class D extends C {}
+
+    /** @var A<B> $a */
+    $a = new A();
+    $b = $a->get();
+
+    /** @var I2<B> $i */
+    $c = $i->get();
+
+    /** @var D<B> $d */
+    $d = new D();
+    $e = $d->get();
+
+    assertType('B', $b); // SKIP — @method generic not substituted through @implements
+    assertType('B', $c); // SKIP — @method generic not resolved through extended interface
+    assertType('B', $e); // SKIP — @method generic not substituted through @extends on class
+}
+

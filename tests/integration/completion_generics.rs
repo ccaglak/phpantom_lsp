@@ -8549,3 +8549,72 @@ async fn test_class_template_params_preserved_through_self_return_then_first() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+#[tokio::test]
+async fn test_static_return_preserves_generic_parameters() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///test_static_return_generics.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                                  // 0
+        "/** @template T */\n",                                                     // 1
+        "class Collection {\n",                                                     // 2
+        "    /** @var list<T> */\n",                                                // 3
+        "    private array $items = [];\n",                                         // 4
+        "    public function lateBinding(): static { return new static(); }\n",     // 5
+        "    /** @return T|null */\n",                                              // 6
+        "    public function first(): mixed { return $this->items[0] ?? null; }\n", // 7
+        "}\n",                                                                      // 8
+        "class User { public function getName(): string { return ''; } }\n",        // 9
+        "/** @var Collection<User> $c */\n",                                        // 10
+        "$c = new Collection();\n",                                                 // 11
+        "$result = $c->lateBinding();\n",                                           // 12
+        "$item = $result->first();\n",                                              // 13
+        "$item->\n",                                                                // 14
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 14,
+                    character: 7,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Completion should return results");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getName"),
+                "After lateBinding() returning static (Collection<User>), first() should resolve T→User and show 'getName', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

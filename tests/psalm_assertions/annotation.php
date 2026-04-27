@@ -1,0 +1,73 @@
+<?php
+// Source: Psalm AnnotationTest.php
+// Auto-extracted by scripts/extract_psalm_tests.php
+// Do not edit manually — re-run the extraction script instead.
+
+// Test: nopType
+namespace PsalmTest_annotation_1 {
+    $_a = "hello";
+
+    /** @var int $_a */
+
+    assertType('int', $_a);
+}
+
+// Test: doubleVar
+namespace PsalmTest_annotation_2 {
+    function foo() : array {
+        return ["hello" => new stdClass, "goodbye" => new stdClass];
+    }
+
+    $_a = null;
+    $_b = null;
+
+    /**
+     * @var string $_key
+     * @var stdClass $_value
+     */
+    foreach (foo() as $_key => $_value) {
+        $_a = $_key;
+        $_b = $_value;
+    }
+
+    assertType('null|string', $_a); // SKIP — loop variable union includes int from array key
+    assertType('null|stdClass', $_b); // SKIP — loop variable resolves to null instead of null|stdClass
+}
+
+// Test: spreadOperatorByRefAnnotation
+namespace PsalmTest_annotation_3 {
+    /**
+     * @param string &...$s
+     * @psalm-suppress UnusedParam
+     */
+    function foo(&...$s) : void {}
+    /**
+     * @param string ...&$s
+     * @psalm-suppress UnusedParam
+     */
+    function bar(&...$s) : void {}
+    /**
+     * @param string[] &$s
+     * @psalm-suppress UnusedParam
+     */
+    function bat(&...$s) : void {}
+
+    $a = "hello";
+    $b = "goodbye";
+    $c = "hello again";
+    foo($a);
+    bar($b);
+    bat($c);
+
+    assertType('string', $a);
+    assertType('string', $b);
+    assertType('string', $c);
+}
+
+// Test: arrayWithKeySlashesAndNewline
+namespace PsalmTest_annotation_4 {
+    $_arr = ["foo\bar\nbaz" => "literal"];
+
+    assertType('array{\\', $_arr); // SKIP — escaped backslash in array key not normalized
+}
+

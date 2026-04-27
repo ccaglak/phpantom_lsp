@@ -2047,3 +2047,80 @@ async fn test_guard_clause_sequential_instanceof_interfaces() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+#[tokio::test]
+async fn test_switch_default_throw_narrows_variable() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///switch_default_throw.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                         // 0
+        "class Dog { public function bark(): void {} }\n", // 1
+        "class Cat { public function meow(): void {} }\n", // 2
+        "/** @var string $type */\n",                      // 3
+        "$type = 'dog';\n",                                // 4
+        "/** @var Dog|Cat|null $pet */\n",                 // 5
+        "$pet = null;\n",                                  // 6
+        "switch ($type) {\n",                              // 7
+        "    case 'dog':\n",                               // 8
+        "        $pet = new Dog();\n",                     // 9
+        "        break;\n",                                // 10
+        "    case 'cat':\n",                               // 11
+        "        $pet = new Cat();\n",                     // 12
+        "        break;\n",                                // 13
+        "    default:\n",                                  // 14
+        "        throw new \\Exception('unknown');\n",     // 15
+        "}\n",                                             // 16
+        "$pet->\n",                                        // 17
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 17,
+                    character: 6,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"bark"),
+                "Should include Dog's 'bark' after switch with default throw, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"meow"),
+                "Should include Cat's 'meow' after switch with default throw, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

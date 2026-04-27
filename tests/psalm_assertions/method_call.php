@@ -1,0 +1,128 @@
+<?php
+// Source: Psalm MethodCallTest.php
+// Auto-extracted by scripts/extract_psalm_tests.php
+// Do not edit manually — re-run the extraction script instead.
+
+// Test: dateTimeImmutableStatic
+namespace PsalmTest_method_call_1 {
+    final class MyDate extends DateTimeImmutable {}
+
+    $today = new MyDate();
+    $yesterday = $today->sub(new DateInterval("P1D"));
+
+    $b = (new DateTimeImmutable())->modify("+3 hours");
+
+    assertType('MyDate', $yesterday); // SKIP — hover can't resolve static return type on DateTimeImmutable::sub
+    assertType('DateTimeImmutable', $b); // SKIP — hover can't resolve DateTimeImmutable::modify return
+}
+
+// Test: magicCall
+namespace PsalmTest_method_call_2 {
+    /** @psalm-no-seal-methods */
+    class A {
+        public function __call(string $method_name, array $args) : string {
+            return "hello";
+        }
+    }
+
+    $a = new A;
+    $s = $a->bar();
+
+    assertType('string', $s); // SKIP — @psalm-no-seal-methods __call return type not resolved
+}
+
+// Test: simpleXml
+namespace PsalmTest_method_call_3 {
+    $xml = new SimpleXMLElement("<a><b></b></a>");
+    $a = $xml->asXML();
+    $b = $xml->asXML("foo.xml");
+
+    assertType('false|string', $a); // SKIP — SimpleXMLElement::asXML overloaded return type not resolved
+    assertType('bool', $b); // SKIP — SimpleXMLElement::asXML overloaded return type not resolved
+}
+
+// Test: pdoStatementSetFetchMode
+namespace PsalmTest_method_call_4 {
+    class A {
+        /** @var ?string */
+        public $a;
+    }
+    class B extends A {}
+
+    $db = new PDO("sqlite::memory:");
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $stmt = $db->prepare("select \"a\" as a");
+    $stmt->setFetchMode(PDO::FETCH_CLASS, A::class);
+    $stmt2 = $db->prepare("select \"a\" as a");
+    $stmt2->setFetchMode(PDO::FETCH_ASSOC);
+    $stmt3 = $db->prepare("select \"a\" as a");
+    $stmt3->setFetchMode(PDO::ATTR_DEFAULT_FETCH_MODE);
+    $stmt->execute();
+    $stmt2->execute();
+    /** @psalm-suppress MixedAssignment */
+    $a = $stmt->fetch();
+    $b = $stmt->fetchAll();
+    $c = $stmt->fetch(PDO::FETCH_CLASS);
+    $d = $stmt->fetchAll(PDO::FETCH_CLASS);
+    $e = $stmt->fetchAll(PDO::FETCH_CLASS, B::class);
+    $f = $stmt->fetch(PDO::FETCH_ASSOC);
+    $g = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    /** @psalm-suppress MixedAssignment */
+    $h = $stmt2->fetch();
+    $i = $stmt2->fetchAll();
+    $j = $stmt2->fetch(PDO::FETCH_BOTH);
+    $k = $stmt2->fetchAll(PDO::FETCH_BOTH);
+    /** @psalm-suppress MixedAssignment */
+    $l = $stmt3->fetch();
+
+    assertType('mixed', $a); // SKIP — PDOStatement::fetch mode-dependent return type not resolved
+    assertType('array<array-key, mixed>|false', $b); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('false|object', $c); // SKIP — PDOStatement::fetch mode-dependent return type not resolved
+    assertType('list<object>', $d); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('list<B>', $e); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('array<string, null|scalar>|false', $f); // SKIP — PDOStatement::fetch mode-dependent return type not resolved
+    assertType('list<array<string, null|scalar>>', $g); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('mixed', $h);
+    assertType('array<array-key, mixed>|false', $i); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('array<array-key, null|scalar>|false', $j); // SKIP — PDOStatement::fetch mode-dependent return type not resolved
+    assertType('list<array<array-key, null|scalar>>', $k); // SKIP — PDOStatement::fetchAll mode-dependent return type not resolved
+    assertType('mixed', $l);
+}
+
+// Test: newSplObjectStorageDefaultEmpty
+namespace PsalmTest_method_call_5 {
+    $a = new SplObjectStorage();
+
+    assertType('SplObjectStorage<never, never>', $a); // SKIP — SplObjectStorage generic defaults not inferred
+}
+
+// Test: parentMagicMethodCall
+namespace PsalmTest_method_call_6 {
+    /** @psalm-no-seal-methods */
+    class Model {
+        /**
+         * @return static
+         */
+        public function __call(string $method, array $args) {
+            /** @psalm-suppress UnsafeInstantiation */
+            return new static;
+        }
+    }
+
+    class BlahModel extends Model {
+        /**
+         * @param mixed $input
+         */
+        public function create($input): BlahModel
+        {
+            return parent::create([]);
+        }
+    }
+
+    $m = new BlahModel();
+    $n = $m->create([]);
+
+    assertType('BlahModel', $n);
+}
+

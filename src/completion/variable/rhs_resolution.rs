@@ -288,7 +288,20 @@ fn resolve_rhs_expression_inner<'b>(
         }
         Expression::ArrayAccess(array_access) => resolve_rhs_array_access(array_access, expr, ctx),
         Expression::Call(call) => resolve_rhs_call(call, expr, ctx),
-        Expression::Access(access) => resolve_rhs_property_access(access, ctx),
+        Expression::Access(access) => {
+            // Check if the scope has a narrowed type for this property
+            // access (e.g. `$a->foo` narrowed through if/elseif conditions).
+            if let Some(resolver) = ctx.scope_var_resolver
+                && let Some(key) = crate::completion::types::narrowing::expr_to_subject_key(expr)
+                && key.contains("->")
+            {
+                let from_scope = resolver(&key);
+                if !from_scope.is_empty() {
+                    return from_scope;
+                }
+            }
+            resolve_rhs_property_access(access, ctx)
+        }
         Expression::Parenthesized(p) => resolve_rhs_expression(p.expression, ctx),
         Expression::Match(match_expr) => {
             let is_match_true = match_expr.expression.is_true();

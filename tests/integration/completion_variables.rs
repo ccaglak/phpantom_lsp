@@ -21370,3 +21370,62 @@ async fn test_completion_falsy_narrowing_after_throw_guard() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+#[tokio::test]
+async fn test_null_coalescing_with_throw_narrows_nullable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_null_coalesce_throw.php").unwrap();
+
+    let php = r#"<?php
+class Item { public function getName(): string { return ''; } }
+/** @return Item|null */
+function findItem(): ?Item { return new Item(); }
+$item = findItem() ?? throw new \Exception();
+$item->
+"#;
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: php.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 5,
+                    character: 7,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Completion should return results");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getName"),
+                "After ?? throw, $item should be narrowed to Item (not nullable) and include 'getName', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

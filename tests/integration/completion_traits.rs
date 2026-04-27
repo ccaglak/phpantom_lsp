@@ -3948,3 +3948,525 @@ trait IsAuditableTrait {
         _ => panic!("Expected completion results for $user-> inside cross-file trait method"),
     }
 }
+
+// ─── Phase 4B: Trait resolution (ported from Mago) ──────────────────────────
+
+#[tokio::test]
+async fn test_trait_constant_access_via_static_and_this() {
+    // Ported from Mago trait_constant_access.php
+    // Trait constants accessed via static:: and $this:: inside the using class
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_const_access.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait HasSettings {\n",
+        "    public const TIMEOUT = 30;\n",
+        "    public const LABEL = 'default';\n",
+        "}\n",
+        "class Service {\n",
+        "    use HasSettings;\n",
+        "    public const NAME = 'svc';\n",
+        "    function testStatic() {\n",
+        "        static::\n",
+        "    }\n",
+        "    function testThis() {\n",
+        "        $this::\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // static:: at line 9, character 16
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 9,
+                    character: 16,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let const_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::CONSTANT))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                const_names.contains(&"TIMEOUT"),
+                "static:: should include trait constant TIMEOUT, got: {:?}",
+                const_names
+            );
+            assert!(
+                const_names.contains(&"LABEL"),
+                "static:: should include trait constant LABEL, got: {:?}",
+                const_names
+            );
+            assert!(
+                const_names.contains(&"NAME"),
+                "static:: should include own constant NAME, got: {:?}",
+                const_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+
+    // $this:: at line 12, character 15
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 12,
+                    character: 15,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let const_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::CONSTANT))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                const_names.contains(&"TIMEOUT"),
+                "$this:: should include trait constant TIMEOUT, got: {:?}",
+                const_names
+            );
+            assert!(
+                const_names.contains(&"LABEL"),
+                "$this:: should include trait constant LABEL, got: {:?}",
+                const_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_trait_alias_with_self_return_resolves_to_using_class() {
+    // Ported from Mago trait_alias_vis_self.php
+    // Trait method returning `self` aliased with visibility change should
+    // resolve self to the using class, enabling chaining.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_alias_self.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait SomeTrait {\n",
+        "    protected function someTraitMethod(): self {\n",
+        "        return $this;\n",
+        "    }\n",
+        "}\n",
+        "class SomeClass {\n",
+        "    use SomeTrait {\n",
+        "        SomeTrait::someTraitMethod as public someClassMethod;\n",
+        "    }\n",
+        "    public function ownMethod(): string { return ''; }\n",
+        "}\n",
+        "$cls = new SomeClass();\n",
+        "$cls->someClassMethod()->\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // $cls->someClassMethod()-> at line 13, character 27
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 13,
+                    character: 27,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"ownMethod"),
+                "Aliased trait method returning self should resolve to SomeClass, offering ownMethod(), got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"someClassMethod"),
+                "Should also offer the aliased method for further chaining, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_self_in_closure_param_within_trait_resolves_to_using_class() {
+    // Ported from Mago trait_method_closure_self.php
+    // `self` used as a closure parameter type hint inside a trait method
+    // should resolve to the class that uses the trait.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_closure_self.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait FooTrait {\n",
+        "    /** @param array<string, \\Closure(self):void> $steps */\n",
+        "    protected function applySteps(array $steps): void {}\n",
+        "}\n",
+        "class Foo {\n",
+        "    use FooTrait;\n",
+        "    public function getName(): string { return ''; }\n",
+        "    public function test(): void {\n",
+        "        $this->applySteps([\n",
+        "            'step1' => function (self $ctx): void {\n",
+        "                $ctx->\n",
+        "            },\n",
+        "        ]);\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // $ctx-> at line 11, character 22
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 11,
+                    character: 22,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"getName"),
+                "self in closure param within trait should resolve to Foo, offering getName(), got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_require_extends_self_return_resolves_to_using_class() {
+    // Ported from Mago trait_require_extends_self_return.php
+    // Trait with @phpstan-require-extends returning self should resolve
+    // to the concrete class that uses the trait.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_require_extends.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "abstract class BaseElement {\n",
+        "    abstract public function getName(): string;\n",
+        "}\n",
+        "/** @phpstan-require-extends BaseElement */\n",
+        "trait NamedElement {\n",
+        "    public function getThis(): self { return $this; }\n",
+        "    public function getName(): string { return 'named'; }\n",
+        "}\n",
+        "class ConcreteElement extends BaseElement {\n",
+        "    use NamedElement;\n",
+        "    public function getTag(): string { return ''; }\n",
+        "}\n",
+        "$el = new ConcreteElement();\n",
+        "$el->getThis()->\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // $el->getThis()-> at line 14, character 18
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 14,
+                    character: 18,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"getTag"),
+                "self return from require-extends trait should resolve to ConcreteElement, offering getTag(), got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getName"),
+                "Should also offer getName() from the trait/base, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_require_implements_self_return_resolves_to_using_class() {
+    // Ported from Mago trait_require_implements_self_return.php
+    // Trait with @phpstan-require-implements returning self should resolve
+    // to the concrete class that uses the trait.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_require_implements.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "interface Element {\n",
+        "    /** @param Element[] $children */\n",
+        "    public function setChildren(array $children): self;\n",
+        "}\n",
+        "/** @phpstan-require-implements Element */\n",
+        "trait IsElement {\n",
+        "    /** @param Element[] $children */\n",
+        "    public function setChildren(array $children): self { return $this; }\n",
+        "}\n",
+        "final class CollectionElement implements Element {\n",
+        "    use IsElement;\n",
+        "    public function getSize(): int { return 0; }\n",
+        "}\n",
+        "$el = new CollectionElement();\n",
+        "$el->setChildren([])->\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // $el->setChildren([])-> at line 15, character 24
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 15,
+                    character: 24,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"getSize"),
+                "self return from require-implements trait should resolve to CollectionElement, offering getSize(), got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"setChildren"),
+                "Should also offer setChildren() for further chaining, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_require_extends_and_implements_combined_self_return() {
+    // Ported from Mago trait_require_combined.php
+    // Trait with both @phpstan-require-extends and @phpstan-require-implements
+    // returning self should resolve to the concrete class.
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_require_combined.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "abstract class Base {\n",
+        "    abstract public function getBase(): string;\n",
+        "}\n",
+        "interface Handler {\n",
+        "    public function handle(): void;\n",
+        "}\n",
+        "/**\n",
+        " * @phpstan-require-extends Base\n",
+        " * @phpstan-require-implements Handler\n",
+        " */\n",
+        "trait CombinedTrait {\n",
+        "    public function getSelf(): self { return $this; }\n",
+        "    public function getBase(): string { return 'base'; }\n",
+        "    public function handle(): void {}\n",
+        "}\n",
+        "class MyClass extends Base implements Handler {\n",
+        "    use CombinedTrait;\n",
+        "    public function extra(): int { return 1; }\n",
+        "}\n",
+        "$obj = new MyClass();\n",
+        "$obj->getSelf()->\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    // $obj->getSelf()-> at line 21, character 19
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 21,
+                    character: 19,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some());
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"extra"),
+                "self return from combined require trait should resolve to MyClass, offering extra(), got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getBase"),
+                "Should offer getBase() from the trait/base, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"handle"),
+                "Should offer handle() from the trait/interface, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

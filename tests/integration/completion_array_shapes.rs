@@ -5656,3 +5656,188 @@ async fn test_variable_key_assignment_no_loop() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+#[tokio::test]
+async fn test_array_shape_unsealed_optional_key_value_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_optional_key.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User { public function getName(): string { return ''; } }\n",
+        "/** @return array{user: User, admin?: User} */\n",
+        "function get_data(): array { return ['user' => new User()]; }\n",
+        "$data = get_data();\n",
+        "$u = $data['user'];\n",
+        "$u->\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 6,
+                character: 4,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for array shape value with optional keys"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"getName"),
+                "Should suggest User::getName() from optional-key shape, got {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_array_shape_union_of_shapes_key_access() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_union.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Foo { public function run(): void {} }\n",
+        "class Bar { public function exec(): void {} }\n",
+        "/** @return array{item: Foo}|array{item: Bar} */\n",
+        "function get(): array { return ['item' => new Foo()]; }\n",
+        "$result = get();\n",
+        "$result['item']->\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 6,
+                character: 17,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for union of array shapes"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"run"),
+                "Should suggest Foo::run() from union of shapes, got {:?}",
+                method_names
+            );
+            // TODO: Bar::exec() should also appear once union-of-shapes resolves
+            // all variants. Currently only the first shape variant is resolved.
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+#[tokio::test]
+async fn test_array_shape_isset_narrowing_optional_key() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_isset.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config { public function get(): string { return ''; } }\n",
+        "/** @var array{service?: Config} $opts */\n",
+        "$opts = [];\n",
+        "if (isset($opts['service'])) {\n",
+        "    $opts['service']->\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 5,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions after isset() narrowing on optional shape key"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+            assert!(
+                method_names.contains(&"get"),
+                "Should suggest Config::get() after isset narrowing, got {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

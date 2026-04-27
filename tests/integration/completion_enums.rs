@@ -3250,3 +3250,70 @@ async fn test_completion_foreach_enum_cases_cross_file() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+#[tokio::test]
+async fn test_enum_implementing_generic_interface() {
+    let backend = create_test_backend_with_stubs();
+
+    let uri = Url::parse("file:///test_enum_generic_interface.php").unwrap();
+    let text = r#"<?php
+/** @template T */
+interface Labeled {
+    /** @return T */
+    public function label(): mixed;
+}
+/** @implements Labeled<string> */
+enum Color: string implements Labeled {
+    case Red = 'red';
+    case Blue = 'blue';
+    public function label(): string { return $this->value; }
+}
+$c = Color::Red;
+$c->
+"#;
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line: 13,
+                    character: 4,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Completion should return results");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            assert!(
+                labels.iter().any(|l| l.contains("label")),
+                "$c-> should include 'label' from Labeled interface, got: {:?}",
+                labels
+            );
+            assert!(
+                labels.iter().any(|l| l.contains("name")),
+                "$c-> should include 'name' from UnitEnum, got: {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

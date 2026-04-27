@@ -663,4 +663,5 @@ fn run_assert_type(path: &Path, content: String) -> datatest_stable::Result<()> 
 
 datatest_stable::harness! {
     { test = run_assert_type, root = "tests/phpstan_nsrt", pattern = r"\.php$" },
+    { test = run_assert_type, root = "tests/psalm_assertions", pattern = r"\.php$" },
 }
