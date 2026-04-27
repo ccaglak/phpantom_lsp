@@ -3709,3 +3709,57 @@ class TestCase {
         );
     }
 }
+
+// ─── parent::__construct() with @extends generics ───────────────────────────
+
+#[test]
+fn no_false_positive_parent_construct_with_extends_generics() {
+    let php = r#"<?php
+/**
+ * @template T of object
+ */
+class ItemResult {
+    /** @param ?T $item */
+    public function __construct(private readonly ?object $item) {}
+}
+
+/**
+ * @extends ItemResult<BonusCashItem>
+ */
+final class BonusCashItemResult extends ItemResult {
+    public function __construct(?BonusCashItem $credited) {
+        parent::__construct($credited);
+    }
+}
+
+class BonusCashItem {}
+"#;
+    let diags = collect(php);
+    let msgs = type_error_messages(&diags);
+    assert!(
+        msgs.is_empty(),
+        "Expected no type errors for parent::__construct with @extends generics, got: {msgs:?}"
+    );
+}
+
+// ─── Array access on bare `array` returns mixed ─────────────────────────────
+
+#[test]
+fn no_false_positive_array_access_on_bare_array() {
+    let php = r#"<?php
+function foo(array $params = []): void {
+    $authToken = $params['authToken'] ?? null;
+    if (!$authToken || !is_string($authToken)) {
+        throw new \Exception('missing');
+    }
+    bar($authToken);
+}
+function bar(string $s): void {}
+"#;
+    let diags = collect(php);
+    let msgs = type_error_messages(&diags);
+    assert!(
+        msgs.is_empty(),
+        "Expected no type errors for array access on bare array, got: {msgs:?}"
+    );
+}

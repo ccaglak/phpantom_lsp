@@ -539,18 +539,31 @@ impl Backend {
     ) -> Option<ResolvedCallableTarget> {
         let owner = super::resolver::resolve_static_owner_class(class, rctx)?;
 
-        // When the class has template params but no generic annotation
-        // (e.g. `RunningBonus::collect(...)` where RunningBonus extends
-        // Data without `@extends` generics), substitute class-level
-        // template params with their declared upper bounds or `mixed`.
+        // When the class has template params, try to substitute them with
+        // concrete types. For `parent::` calls, use the child's @extends
+        // generics to get the concrete type arguments. Otherwise fall back
+        // to upper bounds / `mixed`.
         let merged = if !owner.template_params.is_empty() {
-            let default_args = crate::inheritance::default_type_args(&owner);
+            let type_args = if class.eq_ignore_ascii_case("parent") {
+                // Look up the child's extends_generics for the parent class
+                rctx.current_class.and_then(|child| {
+                    let parent_short = crate::util::short_name(&owner.name);
+                    child
+                        .extends_generics
+                        .iter()
+                        .find(|(name, _)| crate::util::short_name(name) == parent_short)
+                        .map(|(_, args)| args.clone())
+                })
+            } else {
+                None
+            };
+            let args = type_args.unwrap_or_else(|| crate::inheritance::default_type_args(&owner));
             let base = crate::virtual_members::resolve_class_fully_maybe_cached(
                 &owner,
                 rctx.class_loader,
                 rctx.resolved_class_cache,
             );
-            Arc::new(crate::inheritance::apply_generic_args(&base, &default_args))
+            Arc::new(crate::inheritance::apply_generic_args(&base, &args))
         } else {
             crate::virtual_members::resolve_class_fully_maybe_cached(
                 &owner,

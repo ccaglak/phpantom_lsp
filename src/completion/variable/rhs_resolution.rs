@@ -1233,6 +1233,10 @@ fn resolve_rhs_array_access<'b>(
 
             if let Some(element) = class_element {
                 current = element;
+            } else if current.is_bare_array() || current.is_mixed() {
+                // Bare `array` and `mixed` have unknown element types;
+                // accessing any key yields `mixed`.
+                current = PhpType::mixed();
             } else {
                 return vec![];
             }

@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`parent::__construct()` with `@extends` generics.** Calling `parent::__construct($arg)` in a child class that specifies `@extends Parent<Concrete>` no longer produces false-positive type errors for the substituted parameter types.
+- **Array access on bare `array` and `mixed` types.** Accessing a key on a parameter typed as plain `array` (e.g. `$params['key']`) now resolves to `mixed` instead of an empty type, eliminating false-positive type errors downstream (e.g. `$x = $params['key'] ?? null` followed by an `is_string()` guard).
 - **Analyzer and LSP no longer hang on files with deeply nested loops.** Files with multiple levels of foreach/while/for inside if-branches no longer cause exponential blowup.
 - **Non-deterministic diagnostic counts eliminated.** Projects with heavy use of method-level `@template` no longer see spurious false positives that vary between runs due to cache contamination by concrete type arguments.
 - **Duplicate diagnostics in editors with pull-diagnostic support.** Editors like Zed that support pull-diagnostics no longer show every slow diagnostic twice.
