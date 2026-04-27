@@ -8372,3 +8372,180 @@ async fn test_implements_generic_interface_completion() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// Class-level template parameters must survive through a chained method call
+/// that returns `self<T>` (B8).  When `products()` returns `Collection<Product>`
+/// and `filter()` returns `self<TItem>`, completing after `->` should show
+/// Collection's methods (proving the type is still Collection<Product>).
+#[tokio::test]
+async fn test_class_template_params_preserved_through_chained_calls() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b8_chain_generic.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                         // 0
+        "class Product {\n",                               // 1
+        "    public function getPrice(): float {}\n",      // 2
+        "    public function getTitle(): string {}\n",     // 3
+        "}\n",                                             // 4
+        "\n",                                              // 5
+        "/**\n",                                           // 6
+        " * @template TItem\n",                            // 7
+        " */\n",                                           // 8
+        "class Collection {\n",                            // 9
+        "    /** @return TItem */\n",                      // 10
+        "    public function first() {}\n",                // 11
+        "    /** @return self<TItem> */\n",                // 12
+        "    public function filter() {}\n",               // 13
+        "    /** @return self<TItem> */\n",                // 14
+        "    public function sort() {}\n",                 // 15
+        "}\n",                                             // 16
+        "\n",                                              // 17
+        "class Store {\n",                                 // 18
+        "    /** @return Collection<Product> */\n",        // 19
+        "    public function products(): Collection {}\n", // 20
+        "\n",                                              // 21
+        "    function test() {\n",                         // 22
+        "        $this->products()->filter()->\n",         // 23
+        "    }\n",                                         // 24
+        "}\n",                                             // 25
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Line 23: "        $this->products()->filter()->"
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 23,
+                character: 99,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            // After filter(), we should still have Collection<Product> so
+            // Collection's own methods should be visible.
+            assert!(
+                method_names.contains(&"first"),
+                "Chained products()->filter()-> should show Collection methods like 'first', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"sort"),
+                "Chained products()->filter()-> should show Collection methods like 'sort', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// B8: After calling a method that returns `self<TItem>` on a Collection<Product>,
+/// further chaining `->first()->` should resolve TItem to Product and show
+/// Product's methods.  Uses a variable assignment to keep the chain to 2 levels
+/// at the completion point.
+#[tokio::test]
+async fn test_class_template_params_preserved_through_self_return_then_first() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b8_chain_first.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                            // 0
+        "class Product {\n",                                  // 1
+        "    public function getPrice(): float {}\n",         // 2
+        "    public function getTitle(): string {}\n",        // 3
+        "}\n",                                                // 4
+        "\n",                                                 // 5
+        "/**\n",                                              // 6
+        " * @template TItem\n",                               // 7
+        " */\n",                                              // 8
+        "class Collection {\n",                               // 9
+        "    /** @return TItem */\n",                         // 10
+        "    public function first() {}\n",                   // 11
+        "    /** @return self<TItem> */\n",                   // 12
+        "    public function filter() {}\n",                  // 13
+        "}\n",                                                // 14
+        "\n",                                                 // 15
+        "class Store {\n",                                    // 16
+        "    /** @return Collection<Product> */\n",           // 17
+        "    public function products(): Collection {}\n",    // 18
+        "\n",                                                 // 19
+        "    function test() {\n",                            // 20
+        "        $filtered = $this->products()->filter();\n", // 21
+        "        $filtered->first()->\n",                     // 22
+        "    }\n",                                            // 23
+        "}\n",                                                // 24
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Line 22: "        $filtered->first()->"
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 22,
+                character: 99,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getPrice"),
+                "After filter() (self<TItem>), first() should resolve TItem→Product and show 'getPrice', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getTitle"),
+                "After filter() (self<TItem>), first() should resolve TItem→Product and show 'getTitle', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

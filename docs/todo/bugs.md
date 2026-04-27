@@ -175,60 +175,7 @@ function test(): void {
 }
 ```
 
-## B8 — Class-level template parameters lost through chained method calls
 
-**Root cause:** When a method returns a generic class (e.g.
-`Collection<Product>`) and the next method in the chain accesses a
-member of that class, the generic type arguments are discarded
-during the chain resolution. Specifically,
-`resolve_call_return_types_expr` converts intermediate
-`ResolvedType` values (which carry generic args in their
-`type_string` field) to `Vec<Arc<ClassInfo>>` via
-`into_arced_classes`. This conversion discards the `type_string`,
-so by the time the next method's return type needs to be
-template-substituted, the generic arguments are gone.
-
-**Where to fix:** The `MethodCall` arm of
-`resolve_call_return_types_expr` must thread `ResolvedType` (with
-its `type_string`) through to the method return-type resolution
-step instead of flattening to bare `ClassInfo` first. The generic
-arguments from the intermediate return type must survive into
-`build_generic_subs` so that template substitution works at every
-level of the chain, not just the first.
-
-The first call in a chain already works (B6 fix). The fix here is
-to apply the same pattern to subsequent calls in the chain.
-
-Reproducer:
-
-```php
-/**
- * @template TItem
- */
-class Collection {
-    /** @param TItem $item */
-    public function add($item): void {}
-
-    /** @return self<TItem> */
-    public function filter(): self { return $this; }
-}
-
-class Product {}
-
-class Store {
-    /** @return Collection<Product> */
-    public function products(): Collection { return new Collection(); }
-}
-
-function test(): void {
-    $store = new Store();
-    $product = new Product();
-    // First level works: $store->products()->add($product)
-    // Second level fails: $store->products()->filter()->add($product)
-    // false positive: "expects TItem, got Product"
-    $store->products()->filter()->add($product);
-}
-```
 
 
 

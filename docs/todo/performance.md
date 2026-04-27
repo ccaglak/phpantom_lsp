@@ -778,6 +778,107 @@ behavioural change. Can land any time.
 
 ---
 
+---
+
+## P20. Content-hash gated resolution cache persistence
+
+**Impact: Medium · Effort: Medium**
+
+The resolved-class cache (`resolved_class_cache`) is ephemeral — it
+lives only for the duration of the process. On LSP restart or cold
+start, all class resolution (inheritance merging, virtual members,
+template substitution) is re-computed from scratch even when files
+haven't changed.
+
+**Fix:** Persist resolved `ClassInfo` entries to a project-local cache
+directory, keyed by `xxh128(file_contents)`. On startup, walk the
+project, compare content hashes, and load cached entries for unchanged
+files. Only re-resolve classes whose source files (or dependency files)
+have changed.
+
+Psalm implements exactly this pattern with three cache layers:
+- Parser cache (serialized AST, keyed by file content hash)
+- File storage cache (classes-in-file, functions, constants)
+- ClassLike storage cache (methods, properties, template types,
+  parent chains — keyed by `xxh128(file_contents)`)
+
+Each layer checks the hash on load and discards stale entries. Schema
+versioning (tracking `filemtime` of the storage struct source files)
+auto-invalidates all caches when internal types change.
+
+**Design:**
+
+1. Use `bincode` serialization (already evaluated in X6) for
+   `ClassInfo` entries.
+2. Key: `(fqn, content_hash)` → serialized `ClassInfo`.
+3. On startup: load cache entries where content hash matches current
+   file. Skip resolution for those classes entirely.
+4. On file change: evict entries for the changed file AND entries
+   whose classes depend on changed members (using the existing
+   dependency tracking from ER4).
+5. Schema version: embed a version constant derived from `ClassInfo`
+   struct layout. Invalidate entire cache on version mismatch.
+
+**Relationship to X6:** X6 (disk cache) is the broader evaluation of
+whether disk caching is worthwhile. P20 is the specific application
+to resolved-class storage, which is the most expensive thing to
+recompute. P20 can ship independently as a targeted optimization
+even if the broader X6 evaluation concludes that full disk caching
+isn't needed.
+
+**References:**
+- Psalm: `ClassLikeStorageCacheProvider` in
+  `references/psalm/src/Psalm/Internal/Provider/ClassLikeStorageCacheProvider.php`
+- Psalm: `FileStorageCacheProvider` for the content-hash invalidation
+  pattern
+
+---
+
+## P21. Offset-shifting for cached diagnostics on partial edits
+
+**Impact: Medium · Effort: Medium**
+
+When a user edits one method in a file, PHPantom currently re-runs
+diagnostics on the entire file. For large files (500+ lines), this
+is wasteful — diagnostics in unchanged regions are still valid, just
+at shifted byte offsets.
+
+**Fix:** After a file edit, compute a line-level diff (Myers algorithm)
+to produce byte-offset shift deltas. Apply the deltas to cached
+diagnostics in unchanged regions. Only re-diagnose methods whose
+byte ranges overlap with the edited region.
+
+Psalm implements this with:
+1. `FileDiffer` — Myers line-level diff producing byte-offset ranges
+2. `FileStatementsDiffer` — AST-level statement diff classifying
+   statements as keep/keep_signature/add_or_delete
+3. `shiftFileOffsets()` — shifts surviving diagnostics/references by
+   the offset delta, removes those in deleted ranges
+
+**Design:**
+
+1. On `didChange`, compute a line diff between old and new content.
+2. Produce a `diff_map: Vec<(old_start, old_end, offset_delta)>`.
+3. Walk cached diagnostics for this file:
+   - If diagnostic span falls in a deleted range → remove it.
+   - If diagnostic span is after the edit → shift by delta.
+   - If diagnostic span is before the edit → keep as-is.
+4. Re-run diagnostics only for methods/functions whose spans overlap
+   with changed regions (use the member-level AST diff from ER4's
+   incremental repopulation).
+5. Merge shifted cached diagnostics with freshly-computed ones.
+
+**Prerequisites:** The incremental repopulation (ER4) already
+identifies which members changed. This task extends that to the
+diagnostic layer.
+
+**References:**
+- Psalm: `FileDiffer` and `FileStatementsDiffer` in
+  `references/psalm/src/Psalm/Internal/Diff/`
+- Psalm: `Analyzer::shiftFileOffsets()` for the offset-shifting logic
+
+---
+
 # Remaining anti-pattern fixes
 
 Most remaining depth-cap issues are addressed by ER5 (class

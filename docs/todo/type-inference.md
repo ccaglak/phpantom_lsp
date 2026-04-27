@@ -411,6 +411,40 @@ NonEmptyCountable.
 `Psalm/Storage/Assertion/`. PHPStan's `TypeSpecifier` returns
 `SpecifiedTypes` with dual sure/sureNot maps.
 
+**Psalm's architecture (reference/psalm):**
+
+Psalm converts conditions to **Conjunctive Normal Form** (CNF). Each
+`Clause` is an OR-disjunction mapping variable string keys to assertion
+sets. The `Algebra` class provides pure functions:
+
+- `simplifyCNF` — unit propagation (`($a) ∧ ($a ∨ $b) → $a`)
+- `getTruthsFromFormula` — extract definite truths from unit clauses
+- `negateFormula` — De Morgan's law for the else-branch (mechanical,
+  no separate logic needed)
+- `combineOredClauses` — cartesian product for `||`
+
+Key design decisions to adopt:
+
+1. **Clauses are content-addressed** (xxh128 hash for dedup). In Rust,
+   derive `Hash + Eq` and use `FxHashSet`.
+2. **Complexity guards** — >65K clauses → bail out. Prevents exponential
+   blowup without depth caps.
+3. **Clauses accumulate in context** — entering an `if` ANDs new clauses
+   with existing ones, giving compound narrowing for free.
+4. **Variables identified by string keys** (`$a`, `$this->prop`,
+   `$a->b[c]`) via an `ExpressionIdentifier` — maps to our
+   `subject_extraction` approach.
+5. **Assertions are first-class objects** with `getNegation()` — makes
+   else-branch derivation trivial.
+6. **Separate extraction from reconciliation** — `AssertionFinder`
+   (AST → assertions) is purely separate from `Reconciler`
+   (assertions + types → narrowed types). Each is independently
+   testable.
+
+See `references/psalm/src/Psalm/Internal/Algebra.php`,
+`references/psalm/src/Psalm/Internal/Clause.php`, and
+`references/psalm/src/Psalm/Internal/Analyzer/Statements/Expression/AssertionFinder.php`.
+
 **Depends on:** The structured type representation (`PhpType`) has
 landed, which makes reconciliation much simpler than working with
 raw strings.
@@ -540,6 +574,161 @@ it should:
 - PHPStan: `ConstantWildcardType` / constant enum resolution.
 - Phpactor: `GlobbedConstantUnionType`.
 
+---
 
+## T27. Per-expression type caching during forward walk
+
+**Impact: Medium-High · Effort: Medium**
+
+The forward walker re-resolves the same expressions repeatedly during
+a single analysis pass. For example, in `$a->foo()->bar()->baz()`,
+resolving `baz()` requires re-resolving `$a->foo()->bar()`, which
+re-resolves `$a->foo()`, which re-resolves `$a`. This creates
+exponential work on chained expressions.
+
+**Fix:** Cache resolved types per AST span (or node identity) for the
+duration of a single forward-walk pass. When a sub-expression has
+already been resolved, return the cached result in O(1). The cache is
+invalidated entirely when the file changes (since spans change).
+
+Psalm's `NodeTypeProvider` implements exactly this pattern: a simple
+`setType(node, type)` / `getType(node)` interface keyed by AST node
+identity. Types are cached for one analysis pass, not persisted. Only
+expressions, names, and return statements get cached (not all nodes).
+
+**Design:**
+
+1. Add a `HashMap<TextRange, PhpType>` (or `FxHashMap`) to the forward
+   walker's state, scoped to the current walk invocation.
+2. Before resolving any expression, check the cache by span.
+3. After resolving, store the result.
+4. Clear the cache when starting a new file or when the file content
+   changes.
+
+This eliminates the exponential re-resolution that causes performance
+issues on deeply chained expressions (P20 class of problems).
+
+**References:**
+- Psalm: `NodeTypeProvider` interface in
+  `references/psalm/src/Psalm/NodeTypeProvider.php`
+- Mago: per-node type caching via `spl_object_id` equivalent
+
+---
+
+## T28. Template inference depth priority (shallowest bound wins)
+
+**Impact: Medium · Effort: Low-Medium**
+
+When a generic type parameter is inferred from multiple argument
+positions at a call site, all inferred types are currently unioned.
+This produces overly broad types when a shallow (direct) inference
+and a deep (nested) inference compete.
+
+**Fix:** Track an `appearance_depth` on each inferred template bound.
+When the same template param receives bounds from multiple sources,
+the shallowest (most direct) match wins. Only union bounds at the
+same depth level.
+
+For example, given:
+```php
+/** @template T */
+function wrap(T $value, array<T> $context): T { ... }
+wrap("hello", [1, 2, 3]);
+```
+
+The `$value` argument gives `T = string` at depth 0. The `$context`
+argument gives `T = int` at depth 1 (inside `array<>`). The shallow
+bound (`string`) should win, not produce `string|int`.
+
+**Design:**
+
+```
+struct TemplateBound {
+    ty: PhpType,
+    depth: u8,        // 0 = direct match, 1 = one generic layer deep, etc.
+    arg_offset: u8,   // which argument produced this bound
+}
+```
+
+When selecting the final type for a template param:
+1. Group bounds by depth.
+2. Take the shallowest depth group.
+3. Union the types within that group.
+
+**References:**
+- Psalm: `TemplateBound` with `appearance_depth` and
+  `getMostSpecificTypeFromBounds` in
+  `references/psalm/src/Psalm/Internal/Type/TemplateResult.php`
+
+---
+
+## T29. Definite vs possible variable existence tracking
+
+**Impact: Medium · Effort: Medium**
+
+PHPantom currently treats all assigned variables as definitely in
+scope. This causes false negatives: a variable assigned only inside
+one branch of an `if` (without the other branch) is treated as
+always available after the `if`.
+
+**Fix:** Split variable tracking into two maps:
+
+1. **`vars_in_scope`** — variables with a definite type (assigned on
+   all code paths reaching this point).
+2. **`vars_possibly_in_scope`** — variables that *might* exist
+   (assigned in only one branch). Accessing these without a guard
+   could be flagged as "possibly undefined."
+
+Psalm's `Context` uses exactly this split. The `vars_in_scope` map
+holds `Union` types for definitely-typed variables. The
+`vars_possibly_in_scope` map is a boolean set tracking variables that
+might exist. After an if/else where only one branch assigns `$x`,
+`$x` moves from `vars_in_scope` to `vars_possibly_in_scope` (or is
+removed from `vars_in_scope` and added to `vars_possibly_in_scope`).
+
+Additionally, contextual flags like `inside_isset` and
+`inside_conditional` should suppress diagnostics about undefined
+variables in those positions (accessing `$x` inside `isset($x)` is
+intentional).
+
+**Design:**
+
+1. Add a `possibly_defined: HashSet<SmolStr>` alongside the existing
+   variable type map in the forward walker state.
+2. When merging branches (if/else, try/catch), variables assigned in
+   only one path move to `possibly_defined`.
+3. Hover shows `T|undefined` or similar annotation for possibly-defined
+   variables.
+4. Future diagnostic (D-series) can warn on access of possibly-undefined
+   variables.
+
+**References:**
+- Psalm: `Context::$vars_in_scope` and `Context::$vars_possibly_in_scope`
+  in `references/psalm/src/Psalm/Context.php`
+
+---
+
+## T30. Literal type collapse limit
+
+**Impact: Low-Medium · Effort: Low**
+
+When combining union types, if the number of literal type variants
+(literal strings, literal ints) exceeds a threshold, collapse them to
+the parent scalar type. Without this, large switch statements, array
+initializers, or enum-like constant groups can produce unbounded union
+types that consume excessive memory and slow down type display.
+
+**Fix:** In `PhpType` union combining logic, after merging two types:
+if the result contains more than 500 literal string values, replace
+them all with `string`. Same for literal ints → `int`.
+
+Psalm uses exactly this threshold (500 literals → scalar collapse) in
+`Type::combineUnionTypes()`. The number is chosen to be high enough
+that normal code never hits it, but low enough to prevent pathological
+blowup.
+
+**References:**
+- Psalm: literal limit in `Type::combineUnionTypes()` at
+  `references/psalm/src/Psalm/Type.php`
 
 

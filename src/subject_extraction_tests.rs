@@ -58,6 +58,19 @@ fn test_regular_chain() {
 }
 
 #[test]
+fn test_triple_method_chain() {
+    // B8: 3-level chained method calls must be fully extracted.
+    let input = "$this->products()->filter()->first()->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert!(
+        result.contains("products") && result.contains("filter") && result.contains("first"),
+        "Expected full 3-level chain, got: {result}"
+    );
+}
+
+#[test]
 fn test_simple_variable() {
     let input = "$user->";
     let chars: Vec<char> = input.chars().collect();

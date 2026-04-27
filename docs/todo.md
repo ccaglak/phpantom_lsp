@@ -89,7 +89,11 @@ unlikely to move the needle for most users.
 | C6  | `#[ExpectedValues]` parameter value suggestions                                                                                                                             | Low         | Medium      |
 | C10 | [Deprecation markers on class-name completions from all sources](todo/completion.md#c10-deprecation-markers-on-class-name-completions-from-all-sources)                     | Low         | Low         |
 |     | **[Type Inference](todo/type-inference.md)**                                                                                                                                |             |             |
-| T20 | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (sure/sureNot tracking, AND/OR algebra)                             | Medium-High | High        |
+| T20 | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (CNF clause algebra, sure/sureNot tracking)                         | Medium-High | High        |
+| T27 | [Per-expression type caching during forward walk](todo/type-inference.md#t27-per-expression-type-caching-during-forward-walk)                                               | Medium-High | Medium      |
+| T28 | [Template inference depth priority (shallowest bound wins)](todo/type-inference.md#t28-template-inference-depth-priority-shallowest-bound-wins)                              | Medium      | Low-Medium  |
+| T29 | [Definite vs possible variable existence tracking](todo/type-inference.md#t29-definite-vs-possible-variable-existence-tracking)                                             | Medium      | Medium      |
+| T30 | [Literal type collapse limit](todo/type-inference.md#t30-literal-type-collapse-limit)                                                                                       | Low-Medium  | Low         |
 | T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium  |
 | T13 | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                                             | Low-Medium  | Medium      |
 | T26 | [Globbed constant unions (`Foo::BAR_*`)](todo/type-inference.md#t26-globbed-constant-unions-foobar_)                                                                         | Low-Medium  | Medium      |
@@ -177,6 +181,8 @@ unlikely to move the needle for most users.
 | P17 | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low         |
 | P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low         |
 | P19 | [Arena reuse on the parse hot path](todo/performance.md#p19-arena-reuse-on-the-parse-hot-path) (thread-local `Bump::reset()` instead of `Bump::new()`)                      | Medium      | Low         |
+| P20 | [Content-hash gated resolution cache persistence](todo/performance.md#p20-content-hash-gated-resolution-cache-persistence)                                                  | Medium      | Medium      |
+| P21 | [Offset-shifting for cached diagnostics on partial edits](todo/performance.md#p21-offset-shifting-for-cached-diagnostics-on-partial-edits)                                  | Medium      | Medium      |
 |     | **[Indexing](todo/indexing.md)**                                                                                                                                            |             |             |
 | X3  | Completion item detail on demand (`completionItem/resolve`)                                                                                                                 | Medium      | Medium      |
 | X7  | [Recency tracking](todo/indexing.md#x7-recency-tracking)                                                                                                                    | Medium      | Medium      |

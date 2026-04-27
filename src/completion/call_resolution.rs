@@ -879,10 +879,12 @@ impl Backend {
             SubjectExpr::MethodCall { base, method } => {
                 let method_name = method.as_str();
 
-                // Resolve the base expression to class(es).
-                let lhs_classes: Vec<Arc<ClassInfo>> = ResolvedType::into_arced_classes(
-                    super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx),
-                );
+                // Resolve the base expression preserving generic type
+                // arguments (e.g. `Collection<Product>`) so class-level
+                // template parameters can be substituted in the method's
+                // return type.
+                let lhs_resolved: Vec<ResolvedType> =
+                    super::resolver::resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
 
                 // Capture the raw return type hint while we iterate
                 // the owner classes below.  We grab it from the first
@@ -891,21 +893,57 @@ impl Backend {
                 let mut hint_captured = false;
                 let mut results = Vec::new();
 
-                for owner in &lhs_classes {
+                for rt in &lhs_resolved {
+                    let owner = match &rt.class_info {
+                        Some(ci) => Arc::clone(ci),
+                        None => continue,
+                    };
+
+                    // Extract class-level generic type arguments from the
+                    // resolved type string (e.g. `Collection<Product>` →
+                    // `[Product]`) so we can substitute class-level
+                    // template parameters (e.g. `TItem → Product`).
+                    // Skip self-like args ($this, self, static) because
+                    // they refer to the caller's class context which is
+                    // not available here.
+                    let class_level_subs: HashMap<String, PhpType> = match &rt.type_string {
+                        PhpType::Generic(_, args)
+                            if !args.is_empty()
+                                && !owner.template_params.is_empty()
+                                && !args.iter().any(|a| a.is_self_like()) =>
+                        {
+                            owner
+                                .template_params
+                                .iter()
+                                .zip(args.iter())
+                                .map(|(name, ty)| (name.to_string(), ty.clone()))
+                                .collect()
+                        }
+                        _ => HashMap::new(),
+                    };
+
                     let split_args = split_text_args(text_args);
                     let arg_refs = split_args.to_vec();
-                    let template_subs =
-                        Self::build_method_template_subs(owner, method_name, &arg_refs, ctx);
+                    let method_subs =
+                        Self::build_method_template_subs(&owner, method_name, &arg_refs, ctx);
+
+                    // Merge class-level generic substitutions with
+                    // method-level template substitutions.  Class-level
+                    // subs map e.g. `TItem → Product`; method-level subs
+                    // map method @template params from call-site args.
+                    // Method-level subs take precedence (inserted last).
+                    let mut template_subs = class_level_subs;
+                    template_subs.extend(method_subs);
 
                     // Capture the return type hint from the first owner
                     // that has the method.  Apply template substitutions
                     // so that generic return types like `T` are resolved
-                    // to their concrete types (e.g. `ASTClass`).  Without
+                    // to their concrete types (e.g. `Product`).  Without
                     // this, callers that use the hint for downstream
                     // template binding would see unsubstituted params.
                     if !hint_captured && let Some(ref mut hint_out) = return_type_hint_out {
                         let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
-                            owner,
+                            &owner,
                             ctx.class_loader,
                             ctx.resolved_class_cache,
                         );
@@ -946,7 +984,7 @@ impl Backend {
                         is_static: false,
                     };
                     results.extend(Self::resolve_method_return_types_with_args(
-                        owner,
+                        &owner,
                         method_name,
                         text_args,
                         &mr_ctx,
