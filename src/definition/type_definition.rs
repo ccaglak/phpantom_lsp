@@ -276,8 +276,18 @@ fn resolve_variable_type_names(
 ) -> Option<PhpType> {
     let var_name = format!("${}", name);
 
-    // $this resolves to the enclosing class.
+    // $this resolves to the enclosing class, but not in static methods.
     if name == "this" {
+        let in_static =
+            crate::parser::with_parsed_program(content, "this_static_typedef", |program, _| {
+                crate::util::is_offset_in_static_method_in_program(
+                    &program.statements,
+                    cursor_offset,
+                )
+            });
+        if in_static {
+            return None;
+        }
         return current_class.map(|cc| PhpType::Named(cc.name.to_string()));
     }
 

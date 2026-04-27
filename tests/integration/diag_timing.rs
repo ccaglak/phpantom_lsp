@@ -1392,7 +1392,6 @@ class Service {
 
 /// Verify that `$this` is NOT seeded in static methods.
 #[test]
-#[ignore = "$this still resolves in static methods — fix the resolver to skip seeding $this in static context"]
 fn this_not_seeded_in_static_method() {
     // In a static method, `$this` is not available.  The forward walker
     // should not seed it, so `$this->method()` should not resolve.
@@ -1433,9 +1432,6 @@ class Factory {
         "Expected at least one diagnostic: $this should not resolve in a static method, \
          so $w->title should flag as unknown member access"
     );
-
-    // Once the resolver stops seeding $this in static methods, remove the
-    // #[ignore] attribute above so this test runs in CI.
 }
 
 /// When a closure parameter has no explicit type hint AND the inferred

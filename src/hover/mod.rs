@@ -934,9 +934,19 @@ impl Backend {
             cursor_offset
         };
 
-        // $this resolves to the enclosing class
+        // $this resolves to the enclosing class, but not inside static methods.
         if name == "this" {
-            if let Some(cc) = current_class {
+            let in_static = crate::parser::with_parsed_program(
+                content,
+                "hover_this_static_check",
+                |program, _| {
+                    crate::util::is_offset_in_static_method_in_program(
+                        &program.statements,
+                        cursor_offset,
+                    )
+                },
+            );
+            if !in_static && let Some(cc) = current_class {
                 let ns_line = namespace_line(cc.file_namespace.as_deref());
                 return Some(make_hover(format!(
                     "```php\n<?php\n{}$this = {}\n```",

@@ -186,9 +186,20 @@ pub(crate) fn catch_panic_unwind_safe<T>(
 /// fails (non-absolute paths on some platforms), which should never
 /// happen in practice.
 pub(crate) fn path_to_uri(path: &Path) -> String {
-    Url::from_file_path(path)
+    // Canonicalize relative paths to absolute so that
+    // `Url::from_file_path` never fails due to a missing leading `/`.
+    let abs_path;
+    let effective = if path.is_relative() {
+        abs_path = std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf());
+        abs_path.as_path()
+    } else {
+        path
+    };
+    Url::from_file_path(effective)
         .map(|u| u.to_string())
-        .unwrap_or_else(|()| format!("file://{}", path.display()))
+        .unwrap_or_else(|()| format!("file://{}", effective.display()))
 }
 
 /// Recursively collect all `.php` files under a directory, respecting
@@ -1936,6 +1947,68 @@ pub(crate) fn find_enclosing_method_block_in_members<'a>(
         }
     }
     None
+}
+
+/// Check whether `offset` falls inside a `static` method body.
+///
+/// Walks the members of a class-like and returns `true` when the offset
+/// is inside the body of a method that has the `static` modifier.
+/// Returns `false` when the offset is outside any method body or inside
+/// a non-static method.
+pub(crate) fn is_offset_in_static_method<'a>(
+    members: impl Iterator<Item = &'a mago_syntax::ast::class_like::member::ClassLikeMember<'a>>,
+    offset: u32,
+) -> bool {
+    use mago_syntax::ast::class_like::member::ClassLikeMember;
+    use mago_syntax::ast::class_like::method::MethodBody;
+
+    for member in members {
+        if let ClassLikeMember::Method(method) = member
+            && let MethodBody::Concrete(block) = &method.body
+        {
+            let body_start = block.left_brace.start.offset;
+            let body_end = block.right_brace.end.offset;
+            if offset >= body_start && offset <= body_end {
+                return method.modifiers.contains_static();
+            }
+        }
+    }
+    false
+}
+
+/// Check whether `offset` falls inside a `static` method in any class-like
+/// definition in the given program statements.
+///
+/// Walks top-level and namespaced `class`, `trait`, and `enum` statements.
+pub(crate) fn is_offset_in_static_method_in_program(
+    statements: &mago_syntax::ast::sequence::Sequence<
+        '_,
+        mago_syntax::ast::statement::Statement<'_>,
+    >,
+    offset: u32,
+) -> bool {
+    use mago_syntax::ast::statement::Statement;
+
+    for stmt in statements.iter() {
+        match stmt {
+            Statement::Class(class) if is_offset_in_static_method(class.members.iter(), offset) => {
+                return true;
+            }
+            Statement::Trait(tr) if is_offset_in_static_method(tr.members.iter(), offset) => {
+                return true;
+            }
+            Statement::Enum(en) if is_offset_in_static_method(en.members.iter(), offset) => {
+                return true;
+            }
+            Statement::Namespace(ns)
+                if is_offset_in_static_method_in_program(ns.statements(), offset) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Push a location only if it is not already present (deduplication).

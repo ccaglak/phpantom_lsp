@@ -10016,3 +10016,32 @@ class Handler {
         text
     );
 }
+
+/// Self-referencing array key assignment (`$arr['k'] = f($arr['k'])`) must
+/// not hang or cause infinite re-entry in the forward walker.
+#[test]
+fn hover_array_key_self_referencing_assignment_does_not_hang() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function transform(string $v): string { return strtoupper($v); }
+
+function process(): void {
+    $data = ['name' => 'alice', 'count' => 0];
+    $data['name'] = transform($data['name']);
+    $data['count'] = count($data);
+    echo $data['name'];
+}
+"#;
+
+    // The test passes if it completes without hanging.  Hover on
+    // `$data` at the echo statement (line 7, 0-indexed) to exercise
+    // the full forward-walk pipeline including array shape merging.
+    let hover = hover_at(&backend, uri, content, 7, 10).expect("expected hover on $data");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("data"),
+        "should produce hover for $data: {}",
+        text
+    );
+}

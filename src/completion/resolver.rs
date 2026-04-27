@@ -446,6 +446,27 @@ fn resolve_target_classes_expr_inner_impl(
     match expr {
         // ── Keywords that always mean "current class" ────────────
         SubjectExpr::This => {
+            // `$this` is not available inside static methods.  Check the
+            // AST to see whether the cursor is inside a static method body
+            // and return nothing if so.
+            if current_class.is_some() {
+                let cursor = ctx.cursor_offset;
+                let content = ctx.content;
+                let in_static = crate::parser::with_parsed_program(
+                    content,
+                    "this_static_check",
+                    |program, _| {
+                        crate::util::is_offset_in_static_method_in_program(
+                            &program.statements,
+                            cursor,
+                        )
+                    },
+                );
+                if in_static {
+                    return vec![];
+                }
+            }
+
             // Check for `@param-closure-this` override: when the cursor
             // is inside a closure passed as an argument to a function
             // whose parameter carries `@param-closure-this`, resolve
