@@ -1143,9 +1143,15 @@ impl Backend {
 
                 // Merge vendor packages (excluded from the workspace
                 // walk above, scanned separately here).
-                let vendor_cm = classmap_scanner::scan_vendor_packages(root, &vendor_dir);
-                for (fqcn, path) in vendor_cm {
+                let vendor_scan = classmap_scanner::scan_vendor_packages(root, &vendor_dir);
+                for (fqcn, path) in vendor_scan.classmap {
                     scan.classmap.entry(fqcn).or_insert(path);
+                }
+                for (fqn, path) in vendor_scan.function_index {
+                    scan.function_index.entry(fqn).or_insert(path);
+                }
+                for (name, path) in vendor_scan.constant_index {
+                    scan.constant_index.entry(name).or_insert(path);
                 }
 
                 self.populate_autoload_indices(&scan);
@@ -1724,7 +1730,7 @@ impl Backend {
         );
 
         // Scan vendor packages from installed.json.
-        let vendor_cm =
+        let vendor_scan =
             classmap_scanner::scan_vendor_packages_with_skip(project_root, vendor_dir, skip_paths);
 
         let mut result = WorkspaceScanResult {
@@ -1732,8 +1738,14 @@ impl Backend {
             ..Default::default()
         };
 
-        for (fqcn, path) in vendor_cm {
+        for (fqcn, path) in vendor_scan.classmap {
             result.classmap.entry(fqcn).or_insert(path);
+        }
+        for (fqn, path) in vendor_scan.function_index {
+            result.function_index.entry(fqn).or_insert(path);
+        }
+        for (name, path) in vendor_scan.constant_index {
+            result.constant_index.entry(name).or_insert(path);
         }
 
         result

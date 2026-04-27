@@ -127,7 +127,8 @@ fn scan_vendor_packages_composer_v1_format() {
     )
     .unwrap();
 
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let classmap = result.classmap;
     assert!(
         classmap.contains_key("Acme\\Tools\\Hammer"),
         "keys: {:?}",
@@ -169,16 +170,16 @@ fn scan_vendor_packages_composer_v2_format() {
     )
     .unwrap();
 
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
-    assert!(classmap.contains_key("Foo\\Bar\\Baz"));
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    assert!(result.classmap.contains_key("Foo\\Bar\\Baz"));
 }
 
 #[test]
 fn scan_vendor_packages_missing_installed_json() {
     let dir = tempfile::tempdir().unwrap();
     // No installed.json at all
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
-    assert!(classmap.is_empty());
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    assert!(result.classmap.is_empty());
 }
 
 #[test]
@@ -223,7 +224,8 @@ fn scan_vendor_packages_multiple_psr4_paths() {
     )
     .unwrap();
 
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let classmap = result.classmap;
     assert!(classmap.contains_key("Multi\\Pkg\\Alpha"));
     assert!(classmap.contains_key("Multi\\Pkg\\Beta"));
 }
@@ -703,7 +705,8 @@ fn scan_vendor_packages_with_classmap_file_entry() {
     )
     .unwrap();
 
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    let classmap = result.classmap;
     assert!(
         classmap.contains_key("LegacyGlobal"),
         "keys: {:?}",
@@ -740,8 +743,8 @@ fn scan_vendor_packages_skips_missing_package_dirs() {
     .unwrap();
 
     // Should not panic, just return empty
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
-    assert!(classmap.is_empty());
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    assert!(result.classmap.is_empty());
 }
 
 #[test]
@@ -764,8 +767,8 @@ fn scan_vendor_packages_skips_packages_without_autoload() {
     )
     .unwrap();
 
-    let classmap = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
-    assert!(classmap.is_empty());
+    let result = classmap_scanner::scan_vendor_packages(dir.path(), "vendor");
+    assert!(result.classmap.is_empty());
 }
 
 // ─── Custom vendor dir name ────────────────────────────────────────────────

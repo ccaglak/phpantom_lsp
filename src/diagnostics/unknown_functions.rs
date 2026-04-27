@@ -461,4 +461,57 @@ class MyTest {
             out,
         );
     }
+
+    #[test]
+    fn no_diagnostic_for_use_function_importing_type_keyword_name() {
+        // Functions whose name coincides with a PHP type keyword
+        // (e.g. `int`, `string`, `bool`) must still be resolvable
+        // when imported via `use function`.
+        let backend = Backend::new_test();
+
+        let def_uri = "file:///vendor/psl/Type/int.php";
+        let def_php = r#"<?php
+namespace Psl\Type;
+
+function int(): TypeInterface {
+    return new Internal\IntType();
+}
+"#;
+        backend.update_ast(def_uri, def_php);
+
+        let def_uri2 = "file:///vendor/psl/Type/vec.php";
+        let def_php2 = r#"<?php
+namespace Psl\Type;
+
+function vec(TypeInterface $valueType): TypeInterface {
+    return new Internal\VecType($valueType);
+}
+"#;
+        backend.update_ast(def_uri2, def_php2);
+
+        let uri = "file:///src/Test.php";
+        let php = r#"<?php
+namespace App;
+
+use function Psl\Type\vec;
+use function Psl\Type\int;
+
+class Test {
+    public function a(): void {
+        vec(
+            int()
+        )->coerce(1);
+    }
+}
+"#;
+        backend.update_ast(uri, php);
+
+        let mut out = Vec::new();
+        backend.collect_unknown_function_diagnostics(uri, php, &mut out);
+        assert!(
+            out.is_empty(),
+            "No diagnostics expected for use-function imported calls named after type keywords, got: {:?}",
+            out,
+        );
+    }
 }

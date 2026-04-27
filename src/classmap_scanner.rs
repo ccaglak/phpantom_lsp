@@ -254,7 +254,7 @@ pub fn scan_psr4_directories_with_skip(
 /// Reads `<vendor_path>/composer/installed.json` and scans each
 /// package's autoload directories.  Supports PSR-4 and classmap
 /// entries.
-pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> HashMap<String, PathBuf> {
+pub fn scan_vendor_packages(workspace_root: &Path, vendor_dir: &str) -> WorkspaceScanResult {
     scan_vendor_packages_with_skip(workspace_root, vendor_dir, &HashSet::new())
 }
 
@@ -265,16 +265,16 @@ pub fn scan_vendor_packages_with_skip(
     workspace_root: &Path,
     vendor_dir: &str,
     skip_paths: &HashSet<PathBuf>,
-) -> HashMap<String, PathBuf> {
+) -> WorkspaceScanResult {
     let vendor_path = workspace_root.join(vendor_dir);
     let installed_path = vendor_path.join("composer").join("installed.json");
 
     let Ok(content) = std::fs::read_to_string(&installed_path) else {
-        return HashMap::new();
+        return WorkspaceScanResult::default();
     };
 
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return HashMap::new();
+        return WorkspaceScanResult::default();
     };
 
     // installed.json has two formats:
@@ -285,7 +285,7 @@ pub fn scan_vendor_packages_with_skip(
     } else if let Some(pkgs) = json.get("packages").and_then(|p| p.as_array()) {
         pkgs.as_slice()
     } else {
-        return HashMap::new();
+        return WorkspaceScanResult::default();
     };
 
     let vendor_dir_paths: Vec<PathBuf> = vec![vendor_path.clone()];
@@ -374,13 +374,10 @@ pub fn scan_vendor_packages_with_skip(
     }
 
     // Phase 2: scan all collected files in parallel
-    let mut classmap = scan_files_parallel_psr4(&psr4_files);
-    let plain_classmap = scan_files_parallel_classes(&plain_files);
-    for (fqcn, path) in plain_classmap {
-        classmap.entry(fqcn).or_insert(path);
-    }
+    let mut all_files: Vec<PathBuf> = psr4_files.into_iter().map(|(path, _)| path).collect();
+    all_files.extend(plain_files);
 
-    classmap
+    scan_files_parallel_full(&all_files)
 }
 
 /// Scan all `.php` files under the workspace root using the PSR-4
@@ -2089,7 +2086,8 @@ class Real {}
         )
         .unwrap();
 
-        let classmap = scan_vendor_packages(dir.path(), "vendor");
+        let result = scan_vendor_packages(dir.path(), "vendor");
+        let classmap = result.classmap;
         assert!(
             classmap.contains_key("Acme\\Logger\\Logger"),
             "classmap keys: {:?}",
@@ -2136,7 +2134,8 @@ class Real {}
         )
         .unwrap();
 
-        let classmap = scan_vendor_packages(dir.path(), "vendor");
+        let result = scan_vendor_packages(dir.path(), "vendor");
+        let classmap = result.classmap;
         assert!(
             classmap.contains_key("My\\Lib\\Widget"),
             "install-path should resolve non-standard locations; keys: {:?}",
@@ -2178,7 +2177,8 @@ class Real {}
         )
         .unwrap();
 
-        let classmap = scan_vendor_packages(dir.path(), "vendor");
+        let result = scan_vendor_packages(dir.path(), "vendor");
+        let classmap = result.classmap;
         assert!(
             classmap.contains_key("Old\\Pkg\\Legacy"),
             "should fall back to vendor/<name> when install-path is absent; keys: {:?}",
@@ -2215,8 +2215,8 @@ class Real {}
         )
         .unwrap();
 
-        let classmap = scan_vendor_packages(dir.path(), "vendor");
-        assert!(classmap.contains_key("Helper"));
+        let result = scan_vendor_packages(dir.path(), "vendor");
+        assert!(result.classmap.contains_key("Helper"));
     }
 
     #[test]
@@ -2364,6 +2364,21 @@ const DEBUG = true;
         let content = b"<?php\n// function notReal(): void {}\nfunction real(): void {}";
         let result = find_symbols(content);
         assert_eq!(result.functions, vec!["real"]);
+    }
+
+    #[test]
+    fn symbols_function_named_int() {
+        let content = br#"<?php
+declare(strict_types=1);
+namespace Psl\Type;
+function int(): TypeInterface
+{
+    static $instance = new Internal\IntType();
+    return $instance;
+}
+"#;
+        let result = find_symbols(content);
+        assert_eq!(result.functions, vec!["Psl\\Type\\int"]);
     }
 
     #[test]
