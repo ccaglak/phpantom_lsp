@@ -2307,6 +2307,15 @@ fn resolve_static_access_type(text: &str, ctx: &ResolutionCtx<'_>) -> Option<Php
 /// literals (`42`, `-1`), float literals (`3.14`), boolean literals
 /// (`true`, `false`), `null`, and array literals (`[…]`).
 fn resolve_literal_type(text: &str) -> Option<PhpType> {
+    // Closure / arrow function literals: fn(...) or function(...)
+    if text.starts_with("fn(")
+        || text.starts_with("fn (")
+        || text.starts_with("function(")
+        || text.starts_with("function (")
+    {
+        return Some(PhpType::Named("Closure".to_string()));
+    }
+
     // String literals: "…" or '…'
     if (text.starts_with('"') && text.ends_with('"'))
         || (text.starts_with('\'') && text.ends_with('\''))

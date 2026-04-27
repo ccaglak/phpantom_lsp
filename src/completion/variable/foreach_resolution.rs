@@ -72,9 +72,7 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
         let short = short_name(name);
         if ITERABLE_IFACE_NAMES.contains(&short) && !args.is_empty() {
             let value = args.last().unwrap();
-            if !value.is_scalar() {
-                return Some(value.clone());
-            }
+            return Some(value.clone());
         }
     }
 
@@ -89,9 +87,7 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
             && is_transitive_iterable(&iface, class_loader)
         {
             let value = args.last().unwrap();
-            if !value.is_scalar() {
-                return Some(value.clone());
-            }
+            return Some(value.clone());
         }
     }
 
@@ -100,9 +96,7 @@ pub(in crate::completion) fn extract_iterable_element_type_from_class(
     for (_, args) in &class.extends_generics {
         if !args.is_empty() {
             let value = args.last().unwrap();
-            if !value.is_scalar() {
-                return Some(value.clone());
-            }
+            return Some(value.clone());
         }
     }
 

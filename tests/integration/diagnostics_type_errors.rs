@@ -1765,6 +1765,34 @@ function test(): void {
     );
 }
 
+#[test]
+fn no_false_positive_for_closure_literal_to_template_param() {
+    // When a method declares @template TClosure of \Closure and the
+    // call-site argument is a closure/arrow function literal, the
+    // template should be substituted with Closure so no false positive
+    // is emitted.
+    let php = r#"<?php
+class Mockery {
+    /**
+     * @template TClosure of \Closure
+     * @param TClosure $closure
+     * @return void
+     */
+    public static function on($closure): void {}
+}
+
+function test(): void {
+    Mockery::on(fn(array $query): bool => true);
+    Mockery::on(function (int $x): string { return "hi"; });
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Should not flag closure literal passed to @template TClosure of \\Closure, got: {diags:?}"
+    );
+}
+
 // ─── Interface → concrete implementor: MAYBE (reverse hierarchy) ────────────
 
 #[test]
@@ -2476,6 +2504,43 @@ class Foo {
     assert!(
         !has_type_error(&diags),
         "Foreach key $type should be string when passed to from(), not DeviationType: {diags:?}"
+    );
+}
+
+#[test]
+fn no_false_positive_for_foreach_over_extends_subclass_with_scalar_element() {
+    // When iterating over a subclass that extends a generic collection
+    // with scalar type args (e.g. `IntCollection extends Collection<int, int>`),
+    // the foreach element type should be the concrete scalar, not the raw
+    // template parameter name.
+    let php = r#"<?php
+/**
+ * @template TKey of array-key
+ * @template TValue
+ * @implements \ArrayAccess<TKey, TValue>
+ */
+class Collection implements \ArrayAccess {
+    /** @return TValue */
+    public function offsetGet(mixed $offset): mixed {}
+    public function offsetExists(mixed $offset): bool {}
+    public function offsetSet(mixed $offset, mixed $value): void {}
+    public function offsetUnset(mixed $offset): void {}
+}
+
+/** @extends Collection<int, int> */
+final class IntCollection extends Collection {}
+
+function test(): void {
+    $ids = new IntCollection();
+    foreach ($ids as $id) {
+        array_key_exists($id, [1 => 'a']);
+    }
+}
+"#;
+    let diags = collect(php);
+    assert!(
+        !has_type_error(&diags),
+        "Foreach element over @extends Collection<int, int> should be int, not TValue: {diags:?}"
     );
 }
 
