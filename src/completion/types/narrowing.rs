@@ -107,7 +107,34 @@ pub(in crate::completion) fn expr_to_subject_key(expr: &Expression<'_>) -> Optio
                 None
             }
         }
+        Expression::ArrayAccess(aa) => {
+            let base = expr_to_subject_key(aa.array)?;
+            let key = array_access_key_as_string(aa)?;
+            Some(format!("{}[\"{}\"]", base, key))
+        }
         _ => None,
+    }
+}
+
+/// Extract a string-literal key from an array access expression.
+///
+/// Returns the unquoted key string for `$a["test"]` or `$a['test']`,
+/// and `None` for non-literal keys like `$a[$i]`.
+pub(in crate::completion) fn array_access_key_as_string(
+    aa: &mago_syntax::ast::ArrayAccess<'_>,
+) -> Option<String> {
+    use mago_syntax::ast::Literal;
+    if let Expression::Literal(Literal::String(s)) = aa.index {
+        // `value` is the unquoted content; fall back to stripping quotes
+        // from `raw`.
+        let key = s.value.map(|v| v.to_string()).unwrap_or_else(|| {
+            crate::util::unquote_php_string(s.raw)
+                .unwrap_or(s.raw)
+                .to_string()
+        });
+        Some(key)
+    } else {
+        None
     }
 }
 

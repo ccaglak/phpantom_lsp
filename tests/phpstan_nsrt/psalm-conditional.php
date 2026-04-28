@@ -19,7 +19,7 @@ class ArrayAssignmentPropagation {
 			$a = $dummy;
 		}
 		$var = $a["test"];
-		assertType('int', $var); // SKIP — array shape key not narrowed through conditional reassignment
+		assertType('int', $var);
 	}
 }
 

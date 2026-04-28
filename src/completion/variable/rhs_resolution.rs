@@ -286,7 +286,20 @@ fn resolve_rhs_expression_inner<'b>(
             }
             vec![]
         }
-        Expression::ArrayAccess(array_access) => resolve_rhs_array_access(array_access, expr, ctx),
+        Expression::ArrayAccess(array_access) => {
+            // Check if the scope has a narrowed type for this array
+            // access (e.g. `$a["test"]` narrowed through null checks).
+            if let Some(resolver) = ctx.scope_var_resolver
+                && let Some(key) = crate::completion::types::narrowing::expr_to_subject_key(expr)
+                && key.contains("[\"")
+            {
+                let from_scope = resolver(&key);
+                if !from_scope.is_empty() {
+                    return from_scope;
+                }
+            }
+            resolve_rhs_array_access(array_access, expr, ctx)
+        }
         Expression::Call(call) => resolve_rhs_call(call, expr, ctx),
         Expression::Access(access) => {
             // Check if the scope has a narrowed type for this property
@@ -1166,30 +1179,50 @@ fn resolve_rhs_array_access<'b>(
     // Resolve the base expression's raw type string.
     // For bare variables (`$var['key']`), use docblock or assignment scanning.
     // For property chains (`$obj->prop['key']`), resolve the property type.
-    let raw_type: Option<PhpType> =
-        if let Expression::Variable(Variable::Direct(base_dv)) = current_expr {
-            let base_var = base_dv.name.to_string();
-            docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var)
-                .map(|t| crate::util::resolve_php_type_names(&t, ctx.class_loader))
-                .or_else(|| {
-                    let resolved = resolve_var_types(&base_var, ctx, access_offset as u32);
-                    if resolved.is_empty() {
-                        None
-                    } else {
-                        Some(ResolvedType::types_joined(&resolved))
-                    }
-                })
-        } else {
-            // Non-variable base (e.g. property access `$obj->prop['key']`,
-            // method call `$obj->getItems()['key']`, etc.).
-            // Resolve the base expression to get its type.
-            let base_resolved = resolve_rhs_expression(current_expr, ctx);
-            if base_resolved.is_empty() {
+    let raw_type: Option<PhpType> = if let Expression::Variable(Variable::Direct(base_dv)) =
+        current_expr
+    {
+        let base_var = base_dv.name.to_string();
+        // When a scope_var_resolver is available (forward walk),
+        // prefer it over the docblock scan.  The forward walk
+        // already incorporates @var annotations AND applies
+        // condition-based narrowing (e.g. null stripping on array
+        // shape keys through guard clauses).  Falling back to the
+        // raw docblock would discard that narrowing.
+        let scope_result = if ctx.scope_var_resolver.is_some() {
+            let resolved = resolve_var_types(&base_var, ctx, access_offset as u32);
+            if resolved.is_empty() {
                 None
             } else {
-                Some(ResolvedType::types_joined(&base_resolved))
+                Some(ResolvedType::types_joined(&resolved))
             }
+        } else {
+            None
         };
+        scope_result
+            .or_else(|| {
+                docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var)
+                    .map(|t| crate::util::resolve_php_type_names(&t, ctx.class_loader))
+            })
+            .or_else(|| {
+                let resolved = resolve_var_types(&base_var, ctx, access_offset as u32);
+                if resolved.is_empty() {
+                    None
+                } else {
+                    Some(ResolvedType::types_joined(&resolved))
+                }
+            })
+    } else {
+        // Non-variable base (e.g. property access `$obj->prop['key']`,
+        // method call `$obj->getItems()['key']`, etc.).
+        // Resolve the base expression to get its type.
+        let base_resolved = resolve_rhs_expression(current_expr, ctx);
+        if base_resolved.is_empty() {
+            None
+        } else {
+            Some(ResolvedType::types_joined(&base_resolved))
+        }
+    };
 
     let Some(mut current) = raw_type else {
         return vec![];

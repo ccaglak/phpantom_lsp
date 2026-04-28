@@ -9134,6 +9134,31 @@ function test(int|string $x): void {
 }
 
 #[test]
+fn hover_array_shape_key_null_guard_clause() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function test(): void {
+    /** @var array{test: ?int} $a */
+    $a = ["test" => null];
+    if ($a["test"] === null) {
+        return;
+    }
+    $a;
+}
+"#;
+    // Hover on $a after the guard clause to check if shape was narrowed
+    let hover = hover_at(&backend, uri, content, 7, 4).expect("expected hover");
+    let text = hover_text(&hover);
+    eprintln!("DEBUG: $a type after guard clause: {}", text);
+    assert!(
+        text.contains("array{test: int}"),
+        "after null guard clause, $a should be array{{test: int}}, got: {}",
+        text
+    );
+}
+
+#[test]
 fn hover_is_string_narrows_union_to_string() {
     let backend = create_test_backend();
     let uri = "file:///test.php";

@@ -1368,6 +1368,50 @@ impl PhpType {
         }
     }
 
+    /// Look up the value type for a specific key in an array shape,
+    /// returning an owned `PhpType`.
+    ///
+    /// Unlike [`shape_value_type`](Self::shape_value_type), this method
+    /// accounts for optional entries: when a key is marked optional
+    /// (`key?: type`), the returned type is wrapped in `Nullable` so
+    /// that downstream narrowing can strip `null` when the key is
+    /// known to be present.
+    ///
+    /// Returns `None` if this is not an array shape or the key is not
+    /// found.
+    pub fn extract_shape_key_type(&self, key: &str) -> Option<PhpType> {
+        match self {
+            PhpType::ArrayShape(entries) => {
+                if let Some(entry) = entries.iter().find(|e| e.key.as_deref() == Some(key)) {
+                    return if entry.optional {
+                        Some(PhpType::Nullable(Box::new(entry.value_type.clone())))
+                    } else {
+                        Some(entry.value_type.clone())
+                    };
+                }
+                if let Ok(idx) = key.parse::<usize>() {
+                    let mut positional_idx = 0usize;
+                    for entry in entries {
+                        if entry.key.is_none() {
+                            if positional_idx == idx {
+                                return if entry.optional {
+                                    Some(PhpType::Nullable(Box::new(entry.value_type.clone())))
+                                } else {
+                                    Some(entry.value_type.clone())
+                                };
+                            }
+                            positional_idx += 1;
+                        }
+                    }
+                }
+                None
+            }
+            PhpType::Nullable(inner) => inner.extract_shape_key_type(key),
+            PhpType::Union(members) => members.iter().find_map(|m| m.extract_shape_key_type(key)),
+            _ => None,
+        }
+    }
+
     /// Return the shape entries if this is an `ArrayShape` or `ObjectShape`.
     ///
     /// Also handles nullable shapes by delegating to the inner type.

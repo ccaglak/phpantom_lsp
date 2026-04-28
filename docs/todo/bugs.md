@@ -7,26 +7,6 @@ pipeline so it produces correct data. Downstream consumers
 (diagnostics, hover, completion, definition) should never need
 to second-guess upstream output.
 
-## B4. Array shape key not narrowed through conditional reassignment
-
-**Discovered:** Psalm `TypeReconciliation/ConditionalTest.php` porting.
-
-```php
-/** @var array{test: ?int} */
-$a = ["test" => null];
-if ($a["test"] === null) { $a = $dummy; }
-$var = $a["test"];
-```
-After the conditional, `$var` should be `int` (null was either
-replaced by `$dummy` which has `int`, or was not null to begin with).
-Currently resolves as `?int`.
-
-**Test:** `tests/phpstan_nsrt/psalm-conditional.php` (SKIP on
-`ArrayAssignmentPropagation`).
-
-**When fixed:** Remove the `// SKIP` from the `int` assertion in
-`tests/phpstan_nsrt/psalm-conditional.php` and verify it passes.
-
 ## B5. Type not restored to base class after instanceof + reassignment
 
 **Discovered:** Psalm `TypeReconciliation/ConditionalTest.php` porting.

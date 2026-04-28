@@ -4759,6 +4759,13 @@ fn process_if_statement_body<'b>(
     // their variable assignments flow to the post-loop scope, so
     // they must be included in the merge alongside truly surviving
     // branches.
+    //
+    // When there is no else clause, the pre-if scope represents the
+    // implicit "condition was false" path.  We apply inverse condition
+    // narrowing to it so that information from the condition (e.g.
+    // `$a["test"] === null` → `$a["test"]` is NOT null in the else
+    // path) is reflected in the merge.
+    let mut implicit_else_scope;
     let mut surviving_scopes: Vec<&ScopeState> = Vec::new();
 
     let then_exits_via_loop = exits_via_loop_control(body.statement);
@@ -4776,7 +4783,19 @@ fn process_if_statement_body<'b>(
         }
     } else {
         // No else clause — the pre-if scope is an implicit surviving path.
-        surviving_scopes.push(&pre_if_scope);
+        // When the then-body does NOT exit, apply inverse condition
+        // narrowing so that information from the condition (e.g.
+        // `$a["test"] === null` → `$a["test"]` is NOT null in the
+        // implicit else path) is reflected in the merge.
+        //
+        // When the then-body DOES exit (guard clause), skip inverse
+        // narrowing here — the dedicated guard clause section below
+        // handles it.  Applying it in both places would double-narrow.
+        implicit_else_scope = pre_if_scope.clone();
+        if !then_exits {
+            apply_condition_narrowing_inverse(if_stmt.condition, &mut implicit_else_scope, ctx);
+        }
+        surviving_scopes.push(&implicit_else_scope);
     }
 
     if surviving_scopes.is_empty() {
@@ -6721,7 +6740,7 @@ fn apply_condition_narrowing_inverse<'b>(
         // Type guard, null, phpstan-assert, and in_array narrowing
         // operate on the full condition expression.
         apply_type_guard_narrowing_inverse(condition, scope);
-        apply_null_narrowing_inverse(condition, scope);
+        apply_null_narrowing_inverse(condition, scope, ctx);
         apply_phpstan_assert_condition_narrowing(condition, scope, ctx, true);
         apply_in_array_narrowing(condition, scope, ctx, true);
         return;
@@ -6733,7 +6752,7 @@ fn apply_condition_narrowing_inverse<'b>(
     apply_type_guard_narrowing_inverse(condition, scope);
 
     // Inverse null narrowing: `if ($x === null)` after guard → remove null.
-    apply_null_narrowing_inverse(condition, scope);
+    apply_null_narrowing_inverse(condition, scope, ctx);
 
     // Inverse @phpstan-assert-if-true / -if-false narrowing.
     apply_phpstan_assert_condition_narrowing(condition, scope, ctx, true);
@@ -7197,28 +7216,49 @@ fn apply_type_guard_on_operands(condition: &Expression<'_>, scope: &mut ScopeSta
 fn apply_null_narrowing_truthy<'b>(
     condition: &'b Expression<'b>,
     scope: &mut ScopeState,
-    _ctx: &ForwardWalkCtx<'_>,
+    ctx: &ForwardWalkCtx<'_>,
 ) {
     // Check for `$x !== null` or `$x != null` or `null !== $x` etc.
     if let Some(var_name) = extract_non_null_check_var(condition) {
-        strip_null_from_scope(&var_name, scope);
+        // For array access keys, narrow the shape on the base variable.
+        if let Some((base, key)) = split_array_access_key(&var_name) {
+            strip_null_from_array_shape_key(base, key, scope);
+        } else {
+            seed_synthetic_key_if_needed(&var_name, scope, ctx);
+            strip_null_from_scope(&var_name, scope);
+        }
     }
     // Check for `$x === null` or `$x == null` — narrow to null only.
     if let Some(var_name) = extract_null_equality_check_var(condition) {
+        seed_synthetic_key_if_needed(&var_name, scope, ctx);
         narrow_to_null_in_scope(&var_name, scope);
     }
 }
 
 /// Apply inverse null narrowing (for guard clause: `if ($x === null) { return; }`).
-fn apply_null_narrowing_inverse<'b>(condition: &'b Expression<'b>, scope: &mut ScopeState) {
+fn apply_null_narrowing_inverse<'b>(
+    condition: &'b Expression<'b>,
+    scope: &mut ScopeState,
+    ctx: &ForwardWalkCtx<'_>,
+) {
     // When the condition is `$x === null` (equality check for null),
     // the inverse (else/guard) means $x is NOT null.
     if let Some(var_name) = extract_null_equality_check_var(condition) {
-        strip_null_from_scope(&var_name, scope);
+        // For array access keys like `$a["test"]`, narrow the array
+        // shape on the base variable directly rather than using a
+        // synthetic scope entry.  This ensures the narrowed shape
+        // survives scope merges.
+        if let Some((base, key)) = split_array_access_key(&var_name) {
+            strip_null_from_array_shape_key(base, key, scope);
+        } else {
+            seed_synthetic_key_if_needed(&var_name, scope, ctx);
+            strip_null_from_scope(&var_name, scope);
+        }
     }
     // When the condition is `$x !== null`, the inverse (else/guard)
     // means $x IS null — narrow to null only.
     if let Some(var_name) = extract_non_null_check_var(condition) {
+        seed_synthetic_key_if_needed(&var_name, scope, ctx);
         narrow_to_null_in_scope(&var_name, scope);
     }
     // When the condition is `!$x` or `empty($x)`, the inverse means
@@ -7243,10 +7283,12 @@ fn extract_non_null_check_var(expr: &Expression<'_>) -> Option<String> {
                 || (is_identical || is_equal) && negated
             {
                 if is_null_expr(bin.rhs) {
-                    return expr_to_var_name(bin.lhs);
+                    return expr_to_var_name(bin.lhs)
+                        .or_else(|| narrowing::expr_to_subject_key(bin.lhs));
                 }
                 if is_null_expr(bin.lhs) {
-                    return expr_to_var_name(bin.rhs);
+                    return expr_to_var_name(bin.rhs)
+                        .or_else(|| narrowing::expr_to_subject_key(bin.rhs));
                 }
             }
             None
@@ -7281,10 +7323,12 @@ fn extract_null_equality_check_var(expr: &Expression<'_>) -> Option<String> {
 
             if (is_identical || is_equal) && !negated {
                 if is_null_expr(bin.rhs) {
-                    return expr_to_var_name(bin.lhs);
+                    return expr_to_var_name(bin.lhs)
+                        .or_else(|| narrowing::expr_to_subject_key(bin.lhs));
                 }
                 if is_null_expr(bin.lhs) {
-                    return expr_to_var_name(bin.rhs);
+                    return expr_to_var_name(bin.rhs)
+                        .or_else(|| narrowing::expr_to_subject_key(bin.rhs));
                 }
             }
             None
@@ -7435,15 +7479,90 @@ fn strip_falsy_from_scope(var_name: &str, scope: &mut ScopeState) {
 }
 
 /// Apply guard-clause null narrowing.
+/// Split an array access key like `$a["test"]` into base variable and
+/// key name.  Returns `None` for non-array-access keys.
+fn split_array_access_key(key: &str) -> Option<(&str, &str)> {
+    let bracket_pos = key.find("[\"")?;
+    let base = &key[..bracket_pos];
+    let key_name = key[bracket_pos + 2..].strip_suffix("\"]")?;
+    Some((base, key_name))
+}
+
+/// Strip `null` from a specific array shape key on a variable.
+///
+/// Given variable `$a` typed as `array{test: ?int}` and key `"test"`,
+/// rewrites the variable's type to `array{test: int}`.  This modifies
+/// the base variable's type directly so the narrowed shape survives
+/// scope merges (unlike synthetic scope entries which are stripped).
+fn strip_null_from_array_shape_key(base_var: &str, key_name: &str, scope: &mut ScopeState) {
+    let types = scope.get(base_var).to_vec();
+    if types.is_empty() {
+        return;
+    }
+    let narrowed: Vec<ResolvedType> = types
+        .into_iter()
+        .map(|mut rt| {
+            rt.type_string = strip_null_from_shape_key(&rt.type_string, key_name);
+            rt
+        })
+        .collect();
+    scope.set(base_var.to_string(), narrowed);
+}
+
+/// Recursively strip `null` from a specific key in an array shape type.
+fn strip_null_from_shape_key(ty: &crate::php_type::PhpType, key: &str) -> crate::php_type::PhpType {
+    use crate::php_type::{PhpType, ShapeEntry};
+    match ty {
+        PhpType::ArrayShape(entries) => {
+            let new_entries: Vec<ShapeEntry> = entries
+                .iter()
+                .map(|e| {
+                    if e.key.as_deref() == Some(key) {
+                        let non_null = e
+                            .value_type
+                            .non_null_type()
+                            .unwrap_or_else(|| e.value_type.clone());
+                        ShapeEntry {
+                            key: e.key.clone(),
+                            value_type: non_null,
+                            optional: false, // known to be present (was checked)
+                        }
+                    } else {
+                        e.clone()
+                    }
+                })
+                .collect();
+            PhpType::ArrayShape(new_entries)
+        }
+        PhpType::Nullable(inner) => {
+            // `?array{test: ?int}` → `?array{test: int}`
+            PhpType::Nullable(Box::new(strip_null_from_shape_key(inner, key)))
+        }
+        PhpType::Union(members) => {
+            let new_members: Vec<PhpType> = members
+                .iter()
+                .map(|m| strip_null_from_shape_key(m, key))
+                .collect();
+            PhpType::Union(new_members)
+        }
+        other => other.clone(),
+    }
+}
+
 fn apply_guard_clause_null_narrowing<'b>(
     if_stmt: &'b If<'b>,
     scope: &mut ScopeState,
-    _ctx: &ForwardWalkCtx<'_>,
+    ctx: &ForwardWalkCtx<'_>,
 ) {
     // When `if ($x === null) { return; }`, strip null from $x after.
     // When `if (!$x) { return; }`, strip null from $x after.
     if let Some(var_name) = extract_null_equality_check_var(if_stmt.condition) {
-        strip_null_from_scope(&var_name, scope);
+        if let Some((base, key)) = split_array_access_key(&var_name) {
+            strip_null_from_array_shape_key(base, key, scope);
+        } else {
+            seed_synthetic_key_if_needed(&var_name, scope, ctx);
+            strip_null_from_scope(&var_name, scope);
+        }
     }
     if let Some(var_name) = extract_falsy_check_var(if_stmt.condition) {
         strip_falsy_from_scope(&var_name, scope);
@@ -7512,12 +7631,117 @@ fn collect_condition_var_names(expr: &Expression<'_>) -> Vec<String> {
     names
 }
 
-/// Remove synthetic property access keys (entries containing `->`)
-/// from the scope.  Called after loop merges and other scope
-/// transitions where condition-based property narrowing no longer
-/// holds.
+/// Remove synthetic property/array access keys from the scope.
+/// Called after loop merges and other scope transitions where
+/// condition-based narrowing no longer holds.
+///
+/// Synthetic keys contain `->` (property access) or `["` (array access).
 fn strip_synthetic_property_keys(scope: &mut ScopeState) {
-    scope.locals.retain(|key, _| !key.contains("->"));
+    scope
+        .locals
+        .retain(|key, _| !key.contains("->") && !key.contains("[\""));
+}
+
+/// Seed a synthetic scope entry for a compound key (property access
+/// or array access) if it isn't already present.  Simple variable
+/// names (no `->` or `["`) are skipped since they are already tracked.
+fn seed_synthetic_key_if_needed(key: &str, scope: &mut ScopeState, ctx: &ForwardWalkCtx<'_>) {
+    // Only seed compound keys (property access or array access).
+    let is_property = key.contains("->");
+    let is_array = key.contains("[\"");
+    if !is_property && !is_array {
+        return;
+    }
+    if scope.contains(key) {
+        return;
+    }
+
+    if is_property {
+        // Property access: delegate to existing seeding logic via a
+        // one-key call (seed_property_keys_into_scope expects a
+        // condition expression, but we already have the key).
+        if let Some(arrow_pos) = key.rfind("->") {
+            let obj_var = &key[..arrow_pos];
+            let prop_name = &key[arrow_pos + 2..];
+            let obj_types = scope.get(obj_var);
+            if obj_types.is_empty() {
+                return;
+            }
+            let mut prop_results: Vec<ResolvedType> = Vec::new();
+            for rt in obj_types {
+                if let Some(ref cls) = rt.class_info {
+                    let type_hint = crate::inheritance::resolve_property_type_hint(
+                        cls,
+                        prop_name,
+                        ctx.class_loader,
+                    );
+                    if let Some(hint) = type_hint {
+                        let resolved_classes =
+                            crate::completion::type_resolution::type_hint_to_classes_typed(
+                                &hint,
+                                &ctx.current_class.name,
+                                ctx.all_classes,
+                                ctx.class_loader,
+                            );
+                        if resolved_classes.is_empty() {
+                            ResolvedType::extend_unique(
+                                &mut prop_results,
+                                vec![ResolvedType::from_type_string(hint)],
+                            );
+                        } else {
+                            ResolvedType::extend_unique(
+                                &mut prop_results,
+                                ResolvedType::from_classes_with_hint(resolved_classes, hint),
+                            );
+                        }
+                    }
+                }
+            }
+            if !prop_results.is_empty() {
+                scope.set(key.to_string(), prop_results);
+            }
+        }
+    } else if is_array {
+        // Array access key: `$a["test"]`.
+        // Extract the base variable and key name.
+        if let Some(bracket_pos) = key.find("[\"") {
+            let base_var = &key[..bracket_pos];
+            let key_name = key[bracket_pos + 2..]
+                .strip_suffix("\"]")
+                .unwrap_or(&key[bracket_pos + 2..]);
+            let base_types = scope.get(base_var);
+            if base_types.is_empty() {
+                return;
+            }
+            // Look up the array key's type from the array shape.
+            let mut key_results: Vec<ResolvedType> = Vec::new();
+            for rt in base_types {
+                if let Some(element_type) = rt.type_string.extract_shape_key_type(key_name) {
+                    let resolved_classes =
+                        crate::completion::type_resolution::type_hint_to_classes_typed(
+                            &element_type,
+                            &ctx.current_class.name,
+                            ctx.all_classes,
+                            ctx.class_loader,
+                        );
+                    if resolved_classes.is_empty() {
+                        ResolvedType::extend_unique(
+                            &mut key_results,
+                            vec![ResolvedType::from_type_string(element_type)],
+                        );
+                    } else {
+                        ResolvedType::extend_unique(
+                            &mut key_results,
+                            ResolvedType::from_classes_with_hint(resolved_classes, element_type),
+                        );
+                    }
+                }
+            }
+            if !key_results.is_empty() {
+                scope.set(key.to_string(), key_results);
+            }
+        }
+    }
 }
 
 /// Collect property access keys (e.g. `$a->foo`) from conditions that

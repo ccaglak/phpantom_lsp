@@ -93,12 +93,19 @@ pub(crate) fn resolve_variable_type(
     // *after* the assignment completes, so hovering over `$data` in
     // `/** @var T */ $data = $data->toArray()` should show the
     // previous type, not the cast.
-    if let Some(var_type) =
+    //
+    // We no longer return early here.  The `@var` type is saved as
+    // `var_override` and used as a fallback after the forward walk
+    // (step 5) has a chance to apply condition-based narrowing (e.g.
+    // array shape key null stripping through guard clauses).
+    let var_override: Option<PhpType> = if let Some(var_type) =
         docblock::find_var_raw_type_in_source(content, cursor_offset as usize, var_name)
         && !is_cursor_in_self_assignment_rhs(content, cursor_offset as usize, var_name)
     {
-        return Some(crate::util::resolve_php_type_names(&var_type, class_loader));
-    }
+        Some(crate::util::resolve_php_type_names(&var_type, class_loader))
+    } else {
+        None
+    };
 
     // 2–4. AST-based: parameter, foreach, catch
     let closure_ctx = HoverClosureCtx {
@@ -175,6 +182,22 @@ pub(crate) fn resolve_variable_type(
     );
     if !resolved.is_empty() {
         let joined = ResolvedType::types_joined(&resolved);
+
+        // When the forward walk produced a result and we have a @var
+        // override, prefer the forward walk when it narrowed the type
+        // (e.g. array shape key null stripped through a guard clause).
+        // Detect this by checking whether the @var type has array
+        // shape structure and the forward walk result differs — the
+        // forward walk already incorporates the @var as the base type
+        // and applies condition-based narrowing on top.  For non-shape
+        // types the @var annotation is authoritative.
+        if let Some(ref vo) = var_override {
+            if !vo.equivalent(&joined) && vo.shape_entries().is_some() {
+                return Some(joined);
+            }
+            return Some(vo.clone());
+        }
+
         // When the AST-based result (step 2–4) carries richer type
         // information than the unified pipeline (e.g. the docblock
         // says `Generator<int, Pencil>` but the pipeline only
@@ -216,7 +239,10 @@ pub(crate) fn resolve_variable_type(
         return Some(joined);
     }
 
-    // Fall back to the AST-based parameter/foreach/catch type.
+    // Fall back to the @var override or AST-based parameter/foreach/catch type.
+    if var_override.is_some() {
+        return var_override;
+    }
     ast_result
 }
 
