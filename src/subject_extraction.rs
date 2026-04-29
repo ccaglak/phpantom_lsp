@@ -234,7 +234,38 @@ fn extract_new_expression_inside_parens(
     }
     let class_name: String = chars[name_start..k].iter().collect();
     let name = strip_fqn_prefix(&class_name);
-    Some(name.to_string())
+
+    // Skip whitespace after the class name.
+    while k < inner_end && chars[k] == ' ' {
+        k += 1;
+    }
+
+    // If constructor args follow (a `(` ... `)` group), include them.
+    if k < inner_end && chars[k] == '(' {
+        let mut depth: u32 = 0;
+        let mut p = k;
+        let mut found = None;
+        while p < inner_end {
+            match chars[p] {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        found = Some(p);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            p += 1;
+        }
+        if let Some(arg_close) = found {
+            let args: String = chars[k + 1..arg_close].iter().collect();
+            return Some(format!("new {}({})", name, args));
+        }
+    }
+
+    Some(format!("new {}", name))
 }
 
 // ─── Subject extraction ─────────────────────────────────────────────────────
@@ -521,7 +552,12 @@ fn extract_call_subject(chars: &[char], paren_end: usize) -> Option<String> {
     // ── `new ClassName()` instantiation ──
     // Check if the `new` keyword immediately precedes the class name.
     if let Some(class_name) = check_new_keyword_before(chars, i, &func_name) {
-        return Some(class_name);
+        // Preserve constructor args so that template inference can use them.
+        if args_text.is_empty() {
+            return Some(format!("new {}", class_name));
+        } else {
+            return Some(format!("new {}({})", class_name, args_text));
+        }
     }
 
     // Build the right-hand side of the call expression, preserving

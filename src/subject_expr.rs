@@ -548,11 +548,20 @@ pub(crate) fn parse_new_expression_class(s: &str) -> Option<String> {
     // If there is a `->` chain after the constructor call (e.g.
     // `new Decimal($x)->toFixed(2)`), bail out so that the call
     // expression / property chain parsers handle the full expression.
+    // Also bail out when the constructor has non-empty arguments so
+    // that the `CallExpr` parser preserves them for template inference
+    // (e.g. `new C("foo")` should become `CallExpr { callee: NewExpr, args_text }`).
     if let Some(paren_start) = rest[end..].find('(') {
         let after_class = &rest[end + paren_start..];
         if let Some(close) = find_matching_paren(after_class) {
             let remainder = after_class[close + 1..].trim_start();
             if remainder.starts_with("->") {
+                return None;
+            }
+            // Non-empty constructor args: bail out so CallExpr
+            // parser wraps NewExpr and preserves the arguments.
+            let args_inner = &after_class[1..close];
+            if !args_inner.trim().is_empty() {
                 return None;
             }
         }

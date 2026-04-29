@@ -1291,12 +1291,218 @@ impl Backend {
 
             // ── Constructor call: new ClassName(…) ──────────────────
             // A `NewExpr` callee means the call is `new Foo(…)` — the
-            // return type is always the class itself.
-            SubjectExpr::NewExpr { class_name } => find_class_by_name(ctx.all_classes, class_name)
-                .map(Arc::clone)
-                .or_else(|| (ctx.class_loader)(class_name))
-                .into_iter()
-                .collect(),
+            // return type is always the class itself.  When the class
+            // has `@template` params and the constructor binds them,
+            // infer concrete types from `text_args` and apply the
+            // substitution so that chained method calls like
+            // `(new C("foo"))->get()` propagate generics correctly.
+            SubjectExpr::NewExpr { class_name } => {
+                let cls_arc = find_class_by_name(ctx.all_classes, class_name)
+                    .map(Arc::clone)
+                    .or_else(|| (ctx.class_loader)(class_name));
+                let cls_arc = match cls_arc {
+                    Some(c) => c,
+                    None => return vec![],
+                };
+
+                // Fast path: no template params, no inference needed.
+                if cls_arc.template_params.is_empty() || text_args.is_empty() {
+                    return vec![cls_arc];
+                }
+
+                // Find the constructor (on this class or an ancestor).
+                let ancestor_arc;
+                let ctor_inherited;
+                let ctor_ref = if let Some(c) = cls_arc.get_method("__construct") {
+                    ctor_inherited = false;
+                    Some(c)
+                } else {
+                    let mut found: Option<Arc<ClassInfo>> = None;
+                    let mut cur = cls_arc.parent_class.as_ref().map(|p| p.to_string());
+                    for _ in 0..15 {
+                        let parent_name = match cur {
+                            Some(ref n) => n.clone(),
+                            None => break,
+                        };
+                        if let Some(parent) = (ctx.class_loader)(&parent_name) {
+                            if parent.get_method("__construct").is_some() {
+                                found = Some(parent);
+                                break;
+                            }
+                            cur = parent.parent_class.as_ref().map(|p| p.to_string());
+                        } else {
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(arc) => {
+                            ancestor_arc = arc;
+                            ctor_inherited = true;
+                            ancestor_arc.get_method("__construct")
+                        }
+                        None => {
+                            ctor_inherited = false;
+                            None
+                        }
+                    }
+                };
+
+                if let Some(ctor) = ctor_ref
+                    && !ctor.template_bindings.is_empty()
+                {
+                    let arg_texts: Vec<String> =
+                        crate::completion::conditional_resolution::split_text_args(text_args)
+                            .into_iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                    if !arg_texts.is_empty() {
+                        let mut subs = std::collections::HashMap::new();
+                        for (tpl_name, param_name) in &ctor.template_bindings {
+                            let param_idx = match ctor
+                                .parameters
+                                .iter()
+                                .position(|p| p.name == param_name.as_str())
+                            {
+                                Some(idx) => idx,
+                                None => continue,
+                            };
+                            let arg_text = match arg_texts.get(param_idx) {
+                                Some(text) => text.trim(),
+                                None => continue,
+                            };
+                            let param_hint = ctor
+                                .parameters
+                                .get(param_idx)
+                                .and_then(|p| p.type_hint.as_ref());
+                            let binding_mode =
+                                super::variable::rhs_resolution::classify_template_binding(
+                                    tpl_name, param_hint,
+                                );
+                            use super::variable::rhs_resolution::TemplateBindingMode;
+                            match binding_mode {
+                                TemplateBindingMode::Direct => {
+                                    if let Some(resolved_type) =
+                                        Backend::resolve_arg_text_to_type(arg_text, ctx)
+                                    {
+                                        subs.insert(tpl_name.to_string(), resolved_type);
+                                    }
+                                }
+                                TemplateBindingMode::ClassStringInner => {
+                                    if let Some(resolved_type) =
+                                        Backend::resolve_arg_text_to_type(arg_text, ctx)
+                                    {
+                                        let unwrapped = match resolved_type {
+                                            PhpType::ClassString(Some(inner)) => *inner,
+                                            _ => resolved_type,
+                                        };
+                                        subs.insert(tpl_name.to_string(), unwrapped);
+                                    }
+                                }
+                                TemplateBindingMode::ArrayElement => {
+                                    if arg_text.starts_with('[') && arg_text.ends_with(']') {
+                                        let inner = arg_text[1..arg_text.len() - 1].trim();
+                                        if !inner.is_empty() {
+                                            let elems =
+                                                crate::completion::conditional_resolution::split_text_args(inner);
+                                            if let Some(elem) = elems.first()
+                                                && let Some(resolved_type) =
+                                                    Backend::resolve_arg_text_to_type(
+                                                        elem.trim(),
+                                                        ctx,
+                                                    )
+                                            {
+                                                subs.insert(
+                                                    tpl_name.to_string(),
+                                                    resolved_type,
+                                                );
+                                            }
+                                        }
+                                    } else if let Some(resolved_type) =
+                                        Backend::resolve_arg_text_to_type(arg_text, ctx)
+                                    {
+                                        subs.insert(tpl_name.to_string(), resolved_type);
+                                    }
+                                }
+                                TemplateBindingMode::CallableReturnType => {
+                                    if let Some(ret_type) =
+                                        crate::completion::source::helpers::extract_closure_return_type_from_text(arg_text)
+                                    {
+                                        subs.insert(tpl_name.to_string(), ret_type);
+                                    }
+                                }
+                                TemplateBindingMode::CallableParamType(position) => {
+                                    if let Some(param_type) =
+                                        crate::completion::source::helpers::extract_closure_param_type_from_text(
+                                            arg_text, position,
+                                        )
+                                    {
+                                        subs.insert(tpl_name.to_string(), param_type);
+                                    }
+                                }
+                                TemplateBindingMode::GenericWrapper(_, _) => {
+                                    // GenericWrapper requires VarResolutionCtx which
+                                    // is not available here.  Skip for now — this is
+                                    // a rare edge case in chained instantiation.
+                                }
+                            }
+                        }
+
+                        // Remap inherited constructor subs to the child's
+                        // template param names via the @extends chain.
+                        let effective_subs = if ctor_inherited && !subs.is_empty() {
+                            super::variable::rhs_resolution::remap_inherited_ctor_subs(
+                                &cls_arc,
+                                &subs,
+                                ctx.class_loader,
+                            )
+                        } else {
+                            subs
+                        };
+
+                        if !effective_subs.is_empty() {
+                            let type_args: Vec<PhpType> = cls_arc
+                                .template_params
+                                .iter()
+                                .map(|p| {
+                                    let p_str: &str = p.as_ref();
+                                    effective_subs.get(p_str).cloned().unwrap_or_else(|| {
+                                        cls_arc
+                                            .template_param_bounds
+                                            .get(p)
+                                            .cloned()
+                                            .unwrap_or_else(PhpType::mixed)
+                                    })
+                                })
+                                .collect();
+                            let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
+                                &cls_arc,
+                                ctx.class_loader,
+                                ctx.resolved_class_cache,
+                            );
+                            let substituted =
+                                crate::inheritance::apply_generic_args(&resolved, &type_args);
+                            if let Some(ref mut hint_out) = return_type_hint_out {
+                                **hint_out =
+                                    Some(PhpType::Generic(substituted.name.to_string(), type_args));
+                            }
+                            return vec![Arc::new(substituted)];
+                        }
+                    }
+                }
+
+                // Fallback: resolve unbound template params to bounds.
+                let type_args = crate::inheritance::default_type_args(&cls_arc);
+                let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
+                    &cls_arc,
+                    ctx.class_loader,
+                    ctx.resolved_class_cache,
+                );
+                let substituted = crate::inheritance::apply_generic_args(&resolved, &type_args);
+                if let Some(ref mut hint_out) = return_type_hint_out {
+                    **hint_out = Some(PhpType::Generic(substituted.name.to_string(), type_args));
+                }
+                vec![Arc::new(substituted)]
+            }
 
             // ── Any other callee form (e.g. a nested CallExpr used as
             //    a callee, a PropertyChain for `($this->prop)()`, or a

@@ -8618,3 +8618,232 @@ async fn test_static_return_preserves_generic_parameters() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// Chained instantiation `(new C("foo"))->get()` should propagate
+/// constructor-inferred generic args to the method call so that `get()`
+/// returns the concrete type (`string`) instead of `mixed`.
+#[tokio::test]
+async fn test_chained_new_expression_propagates_constructor_generics() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///chained_new_generic.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                        // 0
+        "/**\n",                                                          // 1
+        " * @template T\n",                                               // 2
+        " */\n",                                                          // 3
+        "class Box {\n",                                                  // 4
+        "    /** @var T */\n",                                            // 5
+        "    private $val;\n",                                            // 6
+        "    /** @param T $val */\n",                                     // 7
+        "    public function __construct($val) { $this->val = $val; }\n", // 8
+        "    /** @return T */\n",                                         // 9
+        "    public function get() { return $this->val; }\n",             // 10
+        "}\n",                                                            // 11
+        "\n",                                                             // 12
+        "class Product {\n",                                              // 13
+        "    public function getPrice(): float {}\n",                     // 14
+        "    public function getTitle(): string {}\n",                    // 15
+        "}\n",                                                            // 16
+        "\n",                                                             // 17
+        "function demo() {\n",                                            // 18
+        "    (new Box(new Product()))->get()->\n",                        // 19
+        "}\n",                                                            // 20
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 19,
+                character: 39,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getPrice"),
+                "Chained (new Box(new Product()))->get()-> should resolve T→Product and show 'getPrice', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getTitle"),
+                "Chained (new Box(new Product()))->get()-> should resolve T→Product and show 'getTitle', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Chained instantiation with a string literal: `(new Box("hello"))->get()`
+/// should infer T=string so that `get()` returns `string`.
+#[tokio::test]
+async fn test_chained_new_expression_string_literal_generic() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///chained_new_string.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                        // 0
+        "/**\n",                                                          // 1
+        " * @template T\n",                                               // 2
+        " */\n",                                                          // 3
+        "class Wrapper {\n",                                              // 4
+        "    /** @var T */\n",                                            // 5
+        "    private $val;\n",                                            // 6
+        "    /** @param T $val */\n",                                     // 7
+        "    public function __construct($val) { $this->val = $val; }\n", // 8
+        "    /** @return T */\n",                                         // 9
+        "    public function unwrap() { return $this->val; }\n",          // 10
+        "}\n",                                                            // 11
+        "\n",                                                             // 12
+        "class StringHelper {\n",                                         // 13
+        "    public function toUpper(): string {}\n",                     // 14
+        "}\n",                                                            // 15
+        "\n",                                                             // 16
+        "function demo() {\n",                                            // 17
+        "    (new Wrapper(new StringHelper()))->unwrap()->\n",            // 18
+        "}\n",                                                            // 19
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 18,
+                character: 51,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"toUpper"),
+                "Chained (new Wrapper(new StringHelper()))->unwrap()-> should resolve T→StringHelper and show 'toUpper', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Bare `new Box(new Product())->get()->` (PHP 8.4 style, no parens)
+/// should also propagate constructor generics.
+#[tokio::test]
+async fn test_bare_new_expression_chain_propagates_constructor_generics() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///bare_new_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                                        // 0
+        "/**\n",                                                          // 1
+        " * @template T\n",                                               // 2
+        " */\n",                                                          // 3
+        "class Container {\n",                                            // 4
+        "    /** @var T */\n",                                            // 5
+        "    private $val;\n",                                            // 6
+        "    /** @param T $val */\n",                                     // 7
+        "    public function __construct($val) { $this->val = $val; }\n", // 8
+        "    /** @return T */\n",                                         // 9
+        "    public function value() { return $this->val; }\n",           // 10
+        "}\n",                                                            // 11
+        "\n",                                                             // 12
+        "class Item {\n",                                                 // 13
+        "    public function getSku(): string {}\n",                      // 14
+        "}\n",                                                            // 15
+        "\n",                                                             // 16
+        "function demo() {\n",                                            // 17
+        "    new Container(new Item())->value()->\n",                     // 18
+        "}\n",                                                            // 19
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 18,
+                character: 43,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getSku"),
+                "Bare new Container(new Item())->value()-> should resolve T→Item and show 'getSku', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

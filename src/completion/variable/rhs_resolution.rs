@@ -686,7 +686,55 @@ fn resolve_rhs_instantiation(
         // the class so that methods returning `T` resolve correctly.
         if classes.len() == 1 && !classes[0].template_params.is_empty() {
             let cls = &classes[0];
-            if let Some(ctor) = cls.get_method("__construct")
+            // Look for the constructor on the raw class first; if not
+            // found (child class without its own constructor), walk up
+            // the parent chain to find the original declaring class and
+            // use its unsubstituted constructor.  This preserves the
+            // original template param names in `template_bindings` so
+            // that `classify_template_binding` can match them against
+            // the parameter type hints (e.g. `array<T>` with binding
+            // `("T", "$arr")`).
+            let ancestor_cls_arc;
+            let ctor_owner: &ClassInfo;
+            let ctor_inherited;
+            let ctor_ref = if let Some(c) = cls.get_method("__construct") {
+                ctor_inherited = false;
+                ctor_owner = cls;
+                Some(c)
+            } else {
+                // Walk parent chain to find the raw ancestor that declares __construct.
+                let mut found: Option<std::sync::Arc<ClassInfo>> = None;
+                let mut cur = cls.parent_class.as_ref().map(|p| p.to_string());
+                for _ in 0..15 {
+                    let parent_name = match cur {
+                        Some(ref n) => n.clone(),
+                        None => break,
+                    };
+                    if let Some(parent) = (ctx.class_loader)(&parent_name) {
+                        if parent.get_method("__construct").is_some() {
+                            found = Some(parent);
+                            break;
+                        }
+                        cur = parent.parent_class.as_ref().map(|p| p.to_string());
+                    } else {
+                        break;
+                    }
+                }
+                match found {
+                    Some(arc) => {
+                        ancestor_cls_arc = arc;
+                        ctor_inherited = true;
+                        ctor_owner = &ancestor_cls_arc;
+                        ancestor_cls_arc.get_method("__construct")
+                    }
+                    None => {
+                        ctor_inherited = false;
+                        ctor_owner = cls;
+                        None
+                    }
+                }
+            };
+            if let Some(ctor) = ctor_ref
                 && !ctor.template_bindings.is_empty()
                 && let Some(ref arg_list) = inst.argument_list
             {
@@ -694,7 +742,16 @@ fn resolve_rhs_instantiation(
                     super::raw_type_inference::extract_arg_texts_from_ast(arg_list, ctx.content);
                 if !arg_texts.is_empty() {
                     let rctx = ctx.as_resolution_ctx();
-                    let subs = build_constructor_template_subs(cls, ctor, &arg_texts, &rctx, ctx);
+                    let raw_subs =
+                        build_constructor_template_subs(ctor_owner, ctor, &arg_texts, &rctx, ctx);
+                    // When the constructor is inherited, its template_bindings
+                    // reference the ancestor's template param names.  Remap
+                    // them to the child's template params via the @extends chain.
+                    let subs = if ctor_inherited && !raw_subs.is_empty() {
+                        remap_inherited_ctor_subs(cls, &raw_subs, ctx.class_loader)
+                    } else {
+                        raw_subs
+                    };
                     if !subs.is_empty() {
                         let type_args: Vec<PhpType> = cls
                             .template_params
@@ -835,6 +892,212 @@ fn extract_class_string_inner(resolved: &[ResolvedType]) -> Option<String> {
         }),
         _ => None,
     })
+}
+
+/// Extract a generic type argument from a class's ancestor chain.
+///
+/// Given an argument type (e.g. `FooContainer`) and a target wrapper class
+/// (e.g. `Container`), walks the `@extends` chain to find where the argument
+/// type (or one of its ancestors) extends the wrapper class, then extracts the
+/// generic argument at `tpl_position`.
+///
+/// For example, if `FooContainer` has `@extends Container<Foo>`, calling
+/// `extract_generic_arg_from_ancestor(FooContainer, "Container", 0, ...)` returns `Foo`.
+fn extract_generic_arg_from_ancestor(
+    arg_type: &PhpType,
+    wrapper_name: &str,
+    tpl_position: usize,
+    rctx: &crate::completion::resolver::ResolutionCtx<'_>,
+) -> Option<PhpType> {
+    // Get the class name from the argument type.
+    let class_name = match arg_type {
+        PhpType::Named(n) => n.as_str(),
+        PhpType::Generic(n, _) => n.as_str(),
+        _ => return None,
+    };
+
+    // If the arg type itself is already generic with the wrapper name,
+    // extract directly.  E.g. argument type is `Container<Foo>`.
+    if let PhpType::Generic(n, args) = arg_type {
+        let n_short = crate::util::short_name(n);
+        let wrapper_short = crate::util::short_name(wrapper_name);
+        if n_short.eq_ignore_ascii_case(wrapper_short) {
+            return args.get(tpl_position).cloned();
+        }
+    }
+
+    let class_loader = rctx.class_loader;
+    let cls = class_loader(class_name)?;
+
+    // Check the class's own @extends generics for the wrapper.
+    let wrapper_short = crate::util::short_name(wrapper_name);
+    if let Some(arg) = find_extends_generic_arg(&cls, wrapper_short, tpl_position) {
+        return Some(arg);
+    }
+
+    // Walk parent chain.
+    let mut current = cls;
+    for _ in 0..15 {
+        let parent_name = current.parent_class.as_ref()?;
+        let parent = class_loader(parent_name)?;
+
+        // Check if the parent's @extends generics reference the wrapper.
+        // But first, build a substitution map from current → parent so
+        // template params in the parent's @extends are resolved.
+        if let Some(arg) = find_extends_generic_arg(&parent, wrapper_short, tpl_position) {
+            // The arg might reference the parent's template params — substitute
+            // through the chain to get concrete types.
+            let subs = build_extends_sub_map(&current, &parent);
+            let resolved = if subs.is_empty() {
+                arg
+            } else {
+                arg.substitute(&subs)
+            };
+            return Some(resolved);
+        }
+
+        current = parent;
+    }
+
+    None
+}
+
+/// Find a generic arg at `position` from a class's `@extends` generics
+/// matching a target short name.
+fn find_extends_generic_arg(
+    cls: &ClassInfo,
+    target_short: &str,
+    position: usize,
+) -> Option<PhpType> {
+    for (name, args) in cls
+        .extends_generics
+        .iter()
+        .chain(cls.implements_generics.iter())
+    {
+        if crate::util::short_name(name) == target_short {
+            return args.get(position).cloned();
+        }
+    }
+    None
+}
+
+/// Build a simple substitution map from a child class to its parent based
+/// on `@extends` generics.
+fn build_extends_sub_map(child: &ClassInfo, parent: &ClassInfo) -> HashMap<String, PhpType> {
+    if parent.template_params.is_empty() {
+        return HashMap::new();
+    }
+    let parent_short = crate::util::short_name(&parent.name);
+    let type_args = child
+        .extends_generics
+        .iter()
+        .chain(child.implements_generics.iter())
+        .find(|(name, _)| crate::util::short_name(name) == parent_short)
+        .map(|(_, args)| args);
+    let mut map = HashMap::new();
+    if let Some(args) = type_args {
+        for (i, param) in parent.template_params.iter().enumerate() {
+            if let Some(arg) = args.get(i) {
+                map.insert(param.to_string(), arg.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Remap constructor template substitutions from ancestor param names to child
+/// param names when a constructor is inherited.
+///
+/// When `CollectionChild<T, V>` extends `Collection<V>` and `Collection` has
+/// `@template T` with constructor `@param array<T> $arr`, the inherited
+/// constructor's `template_bindings` map `("T", "$arr")` where `T` is
+/// `Collection`'s template param.  After inference, `raw_subs` contains
+/// `{"T" => Dog}`.  We need to translate this to `{"V" => Dog}` because
+/// `Collection.T` maps to `CollectionChild.V` via `@extends Collection<V>`.
+pub(crate) fn remap_inherited_ctor_subs(
+    child: &ClassInfo,
+    raw_subs: &HashMap<String, PhpType>,
+    class_loader: &dyn Fn(&str) -> Option<std::sync::Arc<ClassInfo>>,
+) -> HashMap<String, PhpType> {
+    // Walk up the extends chain to find the class that originally declares
+    // the constructor, building a cumulative mapping from ancestor template
+    // params to child template params.
+    //
+    // Start with an identity map for the child's own template params.
+    let mut ancestor_to_child: HashMap<String, PhpType> = child
+        .template_params
+        .iter()
+        .map(|p| (p.to_string(), PhpType::Named(p.to_string())))
+        .collect();
+
+    // Track the current node's extends info as owned data so we don't
+    // need a reference across loop iterations.
+    let mut cur_parent_class = child.parent_class;
+    let mut cur_extends_generics = child.extends_generics.clone();
+
+    for _ in 0..15 {
+        let parent_name = match cur_parent_class {
+            Some(ref p) => *p,
+            None => break,
+        };
+        let parent = match class_loader(&parent_name) {
+            Some(p) => p,
+            None => break,
+        };
+
+        // Find @extends generics for this parent (e.g. @extends Collection<V>).
+        let parent_short = crate::util::short_name(&parent.name);
+        if let Some((_, type_args)) = cur_extends_generics
+            .iter()
+            .find(|(name, _)| crate::util::short_name(name) == parent_short)
+        {
+            // Build a mapping: parent.template_params[i] → type_args[i],
+            // then resolve type_args through ancestor_to_child to get
+            // parent param → child param.
+            let mut new_mapping = HashMap::new();
+            for (i, parent_param) in parent.template_params.iter().enumerate() {
+                if let Some(arg) = type_args.get(i) {
+                    let resolved = arg.substitute(&ancestor_to_child);
+                    new_mapping.insert(parent_param.to_string(), resolved);
+                }
+            }
+            ancestor_to_child = new_mapping;
+        } else {
+            // No @extends generics — can't map further.
+            break;
+        }
+
+        // If the parent has the constructor, we've found our ancestor.
+        if parent.get_method("__construct").is_some() {
+            break;
+        }
+
+        cur_parent_class = parent.parent_class;
+        cur_extends_generics = parent.extends_generics.clone();
+    }
+
+    // Now remap: for each entry in raw_subs (keyed by ancestor param name),
+    // find which child param it maps to via ancestor_to_child.
+    let mut result = HashMap::new();
+    for (ancestor_param, inferred_type) in raw_subs {
+        if let Some(child_type) = ancestor_to_child.get(ancestor_param) {
+            // child_type is typically PhpType::Named("V") — extract the name.
+            match child_type {
+                PhpType::Named(child_param) => {
+                    result.insert(child_param.clone(), inferred_type.clone());
+                }
+                _ => {
+                    // Complex mapping (e.g. mapped to a concrete type, not a
+                    // param name) — keep the original key as fallback.
+                    result.insert(ancestor_param.clone(), inferred_type.clone());
+                }
+            }
+        } else {
+            // No mapping found — keep the original key.
+            result.insert(ancestor_param.clone(), inferred_type.clone());
+        }
+    }
+    result
 }
 
 /// Build a template substitution map from constructor arguments.
@@ -1037,6 +1300,19 @@ fn classify_from_php_type(tpl_name: &str, ty: &PhpType) -> TemplateBindingMode {
         }
         PhpType::Named(n) if n == tpl_name => TemplateBindingMode::Direct,
         PhpType::Generic(wrapper_name, args) => {
+            // `array<T>` (single arg) should be treated as ArrayElement,
+            // not GenericWrapper — "array" is not a real class that can
+            // be resolved for constructor inference.  Multi-arg forms
+            // like `array<TKey, TValue>` stay as GenericWrapper so that
+            // function-level template inference can extract each arg
+            // from a concrete generic type (e.g. `array<int, Foo>`).
+            let is_array_like = matches!(
+                wrapper_name.to_ascii_lowercase().as_str(),
+                "array" | "list" | "non-empty-array" | "non-empty-list"
+            );
+            if is_array_like && args.len() == 1 && args[0].is_named(tpl_name) {
+                return TemplateBindingMode::ArrayElement;
+            }
             for (i, arg) in args.iter().enumerate() {
                 if arg.is_named(tpl_name) {
                     return TemplateBindingMode::GenericWrapper(wrapper_name.clone(), i);
@@ -1485,6 +1761,25 @@ pub(crate) fn build_function_template_subs(
                     } else {
                         subs.insert(tpl_name.to_string(), resolved_type);
                     }
+                }
+                // ── Class generic wrapper resolution ────────────────
+                // For `@param Container<TItem> $c` where the argument
+                // is a subclass like `FooContainer extends Container<Foo>`,
+                // resolve the argument type and walk its @extends chain
+                // to find the wrapper class's generic arg at the right
+                // position.
+                if !is_array_like_wrapper(wrapper_name)
+                    && wrapper_name != "class-string"
+                    && let Some(resolved_type) = Backend::resolve_arg_text_to_type(arg_text, rctx)
+                    && let Some(concrete) = extract_generic_arg_from_ancestor(
+                        &resolved_type,
+                        wrapper_name,
+                        tpl_position,
+                        rctx,
+                    )
+                {
+                    subs.insert(tpl_name.to_string(), concrete);
+                    continue;
                 }
                 // When array-type extraction fails (e.g. bare `array`
                 // property without generic annotation), do NOT fall back
@@ -2244,8 +2539,8 @@ fn resolve_rhs_method_call_inner<'b>(
             ctx.class_loader,
             ctx.resolved_class_cache,
         );
-        let owner_method = owner.get_method(&method_name);
-        let merged_method = merged.get_method(&method_name);
+        let owner_method = owner.get_method_ci(&method_name);
+        let merged_method = merged.get_method_ci(&method_name);
         // Prefer the merged method's return type when the owner's method
         // has no docblock override (return_type == native_return_type).
         // The merged method carries inherited types from interfaces/parents
@@ -2310,7 +2605,7 @@ fn resolve_rhs_method_call_inner<'b>(
             // the type hint would be misleading.  Skip it so that
             // `from_classes` uses the resolved class names instead.
             let has_conditional = merged
-                .get_method(&method_name)
+                .get_method_ci(&method_name)
                 .is_some_and(|m| m.conditional_return.is_some());
             let effective_hint = if has_conditional {
                 None
@@ -2512,8 +2807,8 @@ fn resolve_rhs_static_call(
                 ctx.resolved_class_cache,
             );
             let method_ref = owner
-                .get_method(&method_name)
-                .or_else(|| merged.get_method(&method_name));
+                .get_method_ci(&method_name)
+                .or_else(|| merged.get_method_ci(&method_name));
             let ret_type_string = method_ref.and_then(|m| m.return_type.as_ref()).map(|ret| {
                 let substituted = if !template_subs.is_empty() {
                     ret.substitute(&template_subs)
@@ -2536,7 +2831,7 @@ fn resolve_rhs_static_call(
                 // Using the method's declared return type (typically
                 // `mixed`) as the type hint would be misleading.
                 let has_conditional = merged
-                    .get_method(&method_name)
+                    .get_method_ci(&method_name)
                     .is_some_and(|m| m.conditional_return.is_some());
                 let effective_hint = if has_conditional {
                     None

@@ -504,8 +504,8 @@ fn test_inline_new_expression_method_chain() {
     let (subject, kind) = result.unwrap();
     assert_eq!(kind, AccessKind::Arrow);
     assert_eq!(
-        subject, "Foo->bar()",
-        "Expected subject 'Foo->bar()', got: {subject}"
+        subject, "new Foo->bar()",
+        "Expected subject 'new Foo->bar()', got: {subject}"
     );
 }
 

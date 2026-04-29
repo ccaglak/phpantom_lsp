@@ -174,7 +174,7 @@ namespace PsalmTest_template_class_template_extends_3 {
 
     assertType('FooContainer', $fc);
     assertType('Foo', $f1);
-    assertType('Foo', $f2); // SKIP — function-level @template not substituted from concrete argument type
+    assertType('Foo', $f2); // SKIP — function lookup by bare name fails in multi-namespace single-file test
 }
 
 // Test: supportBareExtends
@@ -224,7 +224,7 @@ namespace PsalmTest_template_class_template_extends_4 {
 
     assertType('FooContainer', $fc);
     assertType('Foo', $f1);
-    assertType('Foo', $f2); // SKIP — function-level @template not substituted from concrete argument type
+    assertType('Foo', $f2); // SKIP — function lookup by bare name fails in multi-namespace single-file test
 }
 
 // Test: extendsWithNonTemplateWithoutImplementing
@@ -263,7 +263,7 @@ namespace PsalmTest_template_class_template_extends_5 {
     $id = $au->getId();
 
     assertType('AppUser', $au);
-    assertType('int', $id); // SKIP — template substitution not propagated through @template-extends User<int>
+    assertType('int', $id);
 }
 
 // Test: extendsTwiceSameNameCorrect
@@ -308,7 +308,7 @@ namespace PsalmTest_template_class_template_extends_6 {
     $fc = new GrandChildContainer(5);
     $a = $fc->getValue();
 
-    assertType('int', $a); // SKIP — template not resolved through two-level @template-extends chain
+    assertType('int', $a);
 }
 
 // Test: extendsTwiceDifferentNameUnbrokenChain
@@ -355,7 +355,7 @@ namespace PsalmTest_template_class_template_extends_7 {
     $fc = new GrandChildContainer(5);
     $a = $fc->getValue();
 
-    assertType('int', $a); // SKIP — template not resolved through two-level @extends chain with different param names
+    assertType('int', $a);
 }
 
 // Test: templateExtendsOnceAndBound
@@ -767,7 +767,7 @@ namespace PsalmTest_template_class_template_extends_18 {
 
     $dogs = new CollectionChild([new Dog(), new Dog()]);
 
-    assertType('CollectionChild<mixed, Dog>', $dogs); // SKIP — constructor generic inference not propagated to child class without own constructor
+    assertType('CollectionChild<mixed, Dog>', $dogs);
 }
 
 // Test: inheritTemplateParamViaConstructorDifferentName
@@ -799,7 +799,7 @@ namespace PsalmTest_template_class_template_extends_19 {
 
     $dogs = new CollectionChild([new Dog(), new Dog()]);
 
-    assertType('CollectionChild<mixed, Dog>', $dogs); // SKIP — constructor generic inference not propagated to child class without own constructor
+    assertType('CollectionChild<mixed, Dog>', $dogs);
 }
 
 // Test: implementsTemplatedTwice
@@ -840,7 +840,7 @@ namespace PsalmTest_template_class_template_extends_20 {
 
     $foo = (new C("foo"))->get();
 
-    assertType('string', $foo); // SKIP — template not resolved through interface chain B extends A then class implements B
+    assertType('string', $foo); // SKIP — multi-namespace file: bare `C` resolves to wrong class (see B13 namespace resolution gap)
 }
 
 // Test: templateInheritedPropertyCorrectly
@@ -1080,8 +1080,8 @@ namespace PsalmTest_template_class_template_extends_24 {
 
     assertType('a<int, RealE>', $a);
     assertType('RealE', $resultA);
-    assertType('b<int, RealE>', $b); // SKIP — child class template params not inferred from parent constructor
-    assertType('RealE', $resultB); // SKIP — template substitution not propagated through child class extending generic parent
+    assertType('b<int, RealE>', $b);
+    assertType('RealE', $resultB);
     assertType('c1<RealE>', $c1);
     assertType('RealE', $resultC1);
     assertType('c2<RealE, false>', $c2); // SKIP — literal false not preserved as template argument, widened to bool

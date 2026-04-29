@@ -11,32 +11,30 @@ to second-guess upstream output.
 
 
 
-## B13. Template substitution through multi-level `@extends` chains
+## B13. Remaining template inference gaps
 
 **Discovered:** SKIP audit of
 `tests/psalm_assertions/template_class_template_extends.php`.
 
-Template parameters are not resolved through certain inheritance
-patterns:
+Constructor generic inference through inherited constructors,
+case-insensitive method lookup, and function-level `@template`
+inference through generic wrapper params are now fixed.
+Remaining gaps:
 
-- Function-level `@template` not substituted from concrete argument
-  types at call sites
-- Two-level `@template-extends` chains (grandchild → child → parent)
-  lose substitution
-- `@extends Pair<TValue, string>` where the child swaps parameter
-  order maps them incorrectly
-- Constructor generic inference not propagated to child classes that
-  lack their own constructor
-- `@template-implements IteratorAggregate<int, Foo>` not used to
-  infer `getIterator()` return type
-- `ArrayObject::getIterator` not substituting template params from
-  `@template-extends`
-- `__get` magic method not applying template substitution
-- Literal `false` widened to `bool` when used as template argument
+- **Function name resolution in multi-namespace files**: bare
+  function names in namespaced code are not resolved to their FQN,
+  so function-level template inference fails in single-file tests
+  with multiple namespaces. Works correctly in real projects.
+- **`array<TKey, TValue>` constructor inference**: multi-arg array
+  generic params in constructors (e.g. `@param array<TKey,TValue> $kv`)
+  do not infer key/value types separately.
+- **`key-of<T>` and indexed access types** (`T[K]`): advanced type
+  operators not yet supported.
+- **Literal `false` preserved as template argument**: currently
+  widened to `bool`.
 
 **Tests:** SKIPs in `tests/psalm_assertions/template_class_template_extends.php`
-(lines 177, 227, 266, 311, 358, 427, 500, 681-682, 737-738,
-770, 802, 843, 980-981, 1083-1084, 1087).
+(lines 177, 227, 427, 500, 681-682, 737-738, 843 (namespace), 1087).
 
 
 ## B14. Template/generic resolution in namespace-level and complex scenarios

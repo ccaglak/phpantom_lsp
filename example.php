@@ -543,6 +543,9 @@ class MethodTemplateDemo
 
         $mapper->wrap(new Product())->first()->getPrice(); // new expression arg → Product
 
+        // Chained instantiation preserves constructor-inferred generics
+        (new ObjectMapper())->wrap(new Pen())->first()->write(); // (new ...)->method() chain with generics
+
         // Variadic class-string<T> → union return type
         $locator2 = new ServiceLocator();
         $union = $locator2->getAny(Pen::class, Marker::class);
