@@ -129,7 +129,7 @@ namespace PsalmTest_return_type_7 {
 
     $obj = (object)returnsInt();
 
-    assertType('object{scalar:int}', $obj); // SKIP — object cast of scalar not inferred as object shape
+    assertType('object{scalar:int}', $obj);
 }
 
 // Test: infersObjectShapeOfCastArray
@@ -143,6 +143,6 @@ namespace PsalmTest_return_type_8 {
 
     $obj = (object)returnsArray();
 
-    assertType('object{a:int}', $obj); // SKIP — object cast of array not inferred as object shape
+    assertType('object{a:int}', $obj);
 }
 

@@ -52,7 +52,7 @@ use crate::atom::{Atom, AtomMap, atom};
 use crate::completion::resolver::{Loaders, VarResolutionCtx};
 use crate::completion::types::narrowing;
 use crate::parser::{extract_hint_type, with_parsed_program};
-use crate::php_type::PhpType;
+use crate::php_type::{PhpType, ShapeEntry};
 use crate::types::{AccessKind, ClassInfo, ResolvedType};
 
 // ─── Hover scope cache (Phase 3) ────────────────────────────────────────────
@@ -4403,7 +4403,37 @@ fn resolve_rhs_with_scope<'b>(
                 Some(PhpType::bool())
             }
             UnaryPrefixOperator::ArrayCast(..) => Some(PhpType::array()),
-            UnaryPrefixOperator::ObjectCast(..) => Some(PhpType::Named("stdClass".into())),
+            UnaryPrefixOperator::ObjectCast(..) => {
+                // Resolve the operand type to produce an object shape:
+                // - scalar → object{scalar: <type>}
+                // - array shape → object{key: type, ...}
+                // - otherwise → stdClass
+                let operand_types = resolve_rhs_with_scope(prefix.operand, scope, ctx);
+                let inner = operand_types.first().map(|rt| &rt.type_string).cloned();
+                let obj_type = match inner {
+                    Some(PhpType::ArrayShape(entries)) => {
+                        // Widen literal types to their base types:
+                        // PHP (object) cast doesn't preserve literal precision.
+                        let widened = entries
+                            .into_iter()
+                            .map(|mut e| {
+                                e.value_type = widen_literal(&e.value_type);
+                                e
+                            })
+                            .collect();
+                        PhpType::ObjectShape(widened)
+                    }
+                    Some(ref ty) if matches!(ty, PhpType::Named(s) if matches!(s.to_ascii_lowercase().as_str(), "int" | "integer" | "string" | "float" | "double" | "bool" | "boolean")) => {
+                        PhpType::ObjectShape(vec![ShapeEntry {
+                            key: Some("scalar".to_string()),
+                            value_type: ty.clone(),
+                            optional: false,
+                        }])
+                    }
+                    _ => PhpType::Named("stdClass".into()),
+                };
+                Some(obj_type)
+            }
             UnaryPrefixOperator::UnsetCast(..) => Some(PhpType::Named("null".into())),
             UnaryPrefixOperator::Negation(_) | UnaryPrefixOperator::Plus(_) => {
                 // Unary +/- preserves int or float; conservatively
@@ -9207,5 +9237,22 @@ fn infer_callable_params_for_call(
                 vec![]
             }
         }
+    }
+}
+
+/// Widen a literal type to its base type (e.g. `1` → `int`, `'foo'` → `string`).
+/// Non-literal types are returned unchanged.
+fn widen_literal(ty: &PhpType) -> PhpType {
+    match ty {
+        PhpType::Literal(s) if s.parse::<i64>().is_ok() => PhpType::int(),
+        PhpType::Literal(s)
+            if (s.starts_with('\'') && s.ends_with('\''))
+                || (s.starts_with('"') && s.ends_with('"')) =>
+        {
+            PhpType::string()
+        }
+        PhpType::Literal(s) if s.parse::<f64>().is_ok() => PhpType::float(),
+        PhpType::Literal(s) if s == "true" || s == "false" => PhpType::bool(),
+        _ => ty.clone(),
     }
 }

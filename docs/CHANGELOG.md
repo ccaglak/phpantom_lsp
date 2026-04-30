@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`__get` magic method template resolution.** Property access on a class whose `__get` uses method-level `@template` with `key-of<T>` bounds and `T[K]` return types now infers the concrete type from the property name. For example, `$bag->a` on a `DataBag<array{a: int, b: string}>` resolves to `int`.
+- **`(object)` cast type inference.** Casting a scalar to object now resolves to `object{scalar: <type>}` and casting a typed array shape resolves to an object shape with matching properties.
 - **Literal `true`/`false` preserved in template inference.** Passing `true` or `false` to a generic constructor now keeps the precise type as the template argument (e.g. `C<false>`) instead of widening to `bool`.
 - **`@psalm-method` overrides `@method`.** When a class has both `@method int foo()` and `@psalm-method string foo()`, the vendor-prefixed tag now takes priority instead of using whichever appeared first in the docblock.
 - **Multi-namespace class resolution.** In files with multiple `namespace` blocks, short class names now resolve against the correct namespace for the current scope instead of picking the first same-named class in the file.

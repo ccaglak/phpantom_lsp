@@ -109,17 +109,6 @@ resolution:
 (lines 59, 79, 95-96).
 
 
-## B19. Object cast type inference
-
-**Discovered:** SKIP audit of
-`tests/psalm_assertions/return_type.php`.
-
-`(object)` cast of scalar or array not inferred as object shape
-(`object{scalar:int}`, `object{a:int}`).
-
-**Tests:** SKIPs in `tests/psalm_assertions/return_type.php`
-(lines 132, 146).
-
 
 ## B21. Remaining static-late-binding and generics gaps
 

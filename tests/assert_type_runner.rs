@@ -381,6 +381,42 @@ fn normalize_type(ty: &str) -> String {
     // Normalize callable return type syntax: `Closure(int): bool` → `Closure(int):bool`.
     s = s.replace("): ", "):");
 
+    // Normalize shape syntax: `object{key: type}` → `object{key:type}`.
+    // Remove spaces after colons inside curly braces.
+    {
+        let mut normalized = String::with_capacity(s.len());
+        let mut brace_depth = 0i32;
+        let mut cs = s.chars().peekable();
+        while let Some(ch) = cs.next() {
+            match ch {
+                '{' => {
+                    brace_depth += 1;
+                    normalized.push(ch);
+                }
+                '}' => {
+                    brace_depth -= 1;
+                    normalized.push(ch);
+                }
+                ':' if brace_depth > 0 => {
+                    normalized.push(':');
+                    // Skip whitespace after colon inside shapes.
+                    while cs.peek() == Some(&' ') {
+                        cs.next();
+                    }
+                }
+                ',' if brace_depth > 0 => {
+                    normalized.push(',');
+                    // Skip whitespace after comma inside shapes.
+                    while cs.peek() == Some(&' ') {
+                        cs.next();
+                    }
+                }
+                _ => normalized.push(ch),
+            }
+        }
+        s = normalized;
+    }
+
     // Normalize `array<int, string>` vs `array<int,string>` etc.
     // Remove spaces after commas inside angle brackets.
     let mut result = String::with_capacity(s.len());
