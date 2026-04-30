@@ -485,7 +485,7 @@ impl Backend {
         cursor_offset: u32,
     ) -> Option<Hover> {
         let kind = &symbol.kind;
-        let ctx = self.file_context(uri);
+        let ctx = self.file_context_at(uri, cursor_offset);
         let current_class = find_class_at_offset(&ctx.classes, cursor_offset);
         let class_loader = self.class_loader(&ctx);
         let function_loader = self.function_loader(&ctx);

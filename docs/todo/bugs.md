@@ -73,15 +73,17 @@ only by this infrastructure limitation.
 **Discovered:** SKIP audit of `tests/psalm_assertions/loop_do.php`,
 `loop_while.php`, `loop_foreach.php`.
 
-After a loop exits (via condition failure or break), some variable
-types are not properly narrowed. Remaining issues:
+Loop exit truthiness narrowing (e.g. `while ($a) { ... }` narrowing
+`$a` to `null` after the loop) works correctly in single-namespace
+files. Remaining issues are type inference limitations:
 
-- Cross-namespace class resolution in multi-namespace test files:
-  when multiple namespaces define a class `A`, property type
-  resolution picks up the wrong class, preventing nullable
-  propagation through the loop
+- Multi-namespace short-name ambiguity: `resolve_class_name` picks
+  the first class matching a short name regardless of namespace
+  context, causing property type resolution to fail in
+  multi-namespace test files (SKIPs in loop_do, loop_while)
 - `foreach` loop variable not narrowed away from initial `null`
-  after non-empty iteration
+  after non-empty iteration (would require tracking iterable
+  emptiness)
 - Break-in-else branch type not merged with loop variable
 - Assignment from untyped array value inside null check not
   widened to `mixed`
@@ -90,8 +92,9 @@ Related to T20 (type narrowing reconciliation engine) and T29
 (definite vs possible variable existence tracking).
 
 **Tests:** SKIPs in `tests/psalm_assertions/loop_do.php` (line 80),
-`loop_while.php` (lines 91, 115, 152),
+`loop_while.php` (lines 40, 67, 91, 115, 152),
 `loop_foreach.php` (lines 81, 128, 156, 188, 208).
+
 
 
 ## B16. PDOStatement fetch mode-dependent return types

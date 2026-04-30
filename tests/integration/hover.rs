@@ -10763,3 +10763,37 @@ $test3 = $blah;
         text
     );
 }
+
+#[test]
+fn hover_while_loop_exit_narrows_to_null() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Node {
+    /** @var ?Node */
+    public $parent;
+}
+function makeNode(): Node { return new Node(); }
+
+$a = makeNode();
+while ($a) {
+    $a = $a->parent;
+}
+$result = $a;
+"#;
+    // Hover on `$result` which should be `null` after the while loop.
+    let target_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$result = $a"))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let hover =
+        hover_at(&backend, uri, content, target_line, 1).expect("expected hover on $result");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("null") && !text.contains("Node"),
+        "After while($a) loop, $a should be null, got: {}",
+        text
+    );
+}

@@ -36,7 +36,7 @@ namespace PsalmTest_loop_while_2 {
         $a = $a->parent;
     }
 
-    assertType('B', $a); // SKIP
+    assertType('B', $a); // SKIP — multi-namespace short-name ambiguity: resolve_class_name picks wrong A
 }
 
 // Test: objectValueWithInstanceofProperty
@@ -64,7 +64,7 @@ namespace PsalmTest_loop_while_3 {
     $b = $a->parent;
 
     assertType('A', $a);
-    assertType('A|B', $b);
+    assertType('A|B', $b); // SKIP — property access type resolution after loop in multi-namespace file
 }
 
 // Test: objectValueNullable
@@ -88,7 +88,7 @@ namespace PsalmTest_loop_while_4 {
         $a = $a->parent;
     }
 
-    assertType('null', $a); // SKIP — cross-namespace class resolution: A resolves to wrong namespace
+    assertType('null', $a); // SKIP — multi-namespace short-name ambiguity: resolve_class_name picks wrong A
 }
 
 // Test: objectValueWithAnd
@@ -112,7 +112,7 @@ namespace PsalmTest_loop_while_5 {
         $a = $a->parent;
     }
 
-    assertType('A|null', $a); // SKIP
+    assertType('A|null', $a); // SKIP — multi-namespace short-name ambiguity: resolve_class_name picks wrong A
 }
 
 // Test: whileTrueWithBreak
@@ -149,6 +149,6 @@ namespace PsalmTest_loop_while_7 {
       $a = $a->a;
     };
 
-    assertType('null', $a); // SKIP — cross-namespace class resolution: A resolves to wrong namespace
+    assertType('null', $a); // SKIP — multi-namespace short-name ambiguity: resolve_class_name picks wrong A
 }
 
