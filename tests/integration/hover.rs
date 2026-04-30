@@ -10685,3 +10685,81 @@ $b = $iter->index(0);
         text
     );
 }
+
+#[test]
+fn hover_method_return_type_on_child_class() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    // Test 1: array<int, static> substitution
+    let content = r#"<?php
+abstract class ParentClass {
+    /** @return array<int, static> */
+    public static function loadMultiple() {
+        return [new static()];
+    }
+}
+class ChildClass extends ParentClass {}
+$items = ChildClass::loadMultiple();
+$test = $items;
+"#;
+    let target_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$test = $items"))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let hover = hover_at(&backend, uri, content, target_line, 1).expect("hover 1");
+    let text = hover_text(&hover);
+    assert!(text.contains("ChildClass"), "Test 1 failed: {}", text);
+
+    // Test 2: overridden return type
+    let content2 = r#"<?php
+class A {
+    /** @return string|null */
+    public function blah() { return null; }
+}
+class B extends A {
+    /** @return string */
+    public function blah() { return "blah"; }
+}
+$blah = (new B())->blah();
+$test2 = $blah;
+"#;
+    let target_line = content2
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$test2 = $blah"))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let hover = hover_at(&backend, uri, content2, target_line, 1).expect("hover 2");
+    let text = hover_text(&hover);
+    assert!(text.contains("string"), "Test 2 failed: {}", text);
+
+    // Test 3: interface method return type
+    let content3 = r#"<?php
+interface Iface {
+    /** @return string|null */
+    public function blah();
+}
+class Impl implements Iface {
+    /** @return string|null */
+    public function blah() { return null; }
+}
+$blah = (new Impl())->blah();
+$test3 = $blah;
+"#;
+    let target_line = content3
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$test3 = $blah"))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let hover = hover_at(&backend, uri, content3, target_line, 1).expect("hover 3");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("string") || text.contains("null"),
+        "Test 3 failed: {}",
+        text
+    );
+}

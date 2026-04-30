@@ -160,25 +160,16 @@ resolution:
 (lines 59, 79, 95-96).
 
 
-## B19. Return type resolution edge cases
+## B19. Object cast type inference
 
 **Discovered:** SKIP audit of
 `tests/psalm_assertions/return_type.php`.
 
-Several return type patterns are not resolved:
-
-- `static` return type inside an array generic
-  (`@return array<int, static>`)
-- Overridden return type not resolved through child class when
-  parent declares `@return static`
-- Interface method return type not resolved on implementing class
-- Arrow function return type inference (`fn(int $x): bool => ...`
-  should produce `Closure(int):bool`)
-- `(object)` cast of scalar or array not inferred as object shape
-  (`object{scalar:int}`, `object{a:int}`)
+`(object)` cast of scalar or array not inferred as object shape
+(`object{scalar:int}`, `object{a:int}`).
 
 **Tests:** SKIPs in `tests/psalm_assertions/return_type.php`
-(lines 43, 64, 83, 121, 132, 146).
+(lines 132, 146).
 
 
 ## B21. Remaining static-late-binding and generics gaps
@@ -217,6 +208,23 @@ Miscellaneous type resolution gaps:
   (`template_function_class_string_template.php` lines 62, 90, 117)
 
 **Tests:** Referenced in-line above.
+
+
+## B23. Multi-namespace file class resolution ambiguity
+
+**Discovered:** While investigating B19.
+
+`namespace_map` stores a single `Option<String>` per file. In files
+with multiple `namespace Foo { ... }` blocks, the class_loader
+resolves unqualified class names against the wrong namespace
+(whichever was stored last). This causes `find_class_by_name` to
+return the first class matching the short name regardless of which
+namespace block the cursor is in.
+
+Real-world impact is low (multi-namespace files are extremely rare
+in PHP projects), but it affects the assert_type_runner test
+infrastructure. The workaround is to use globally unique class
+names in multi-namespace test files.
 
 
 ## Bulk un-SKIP after fixes

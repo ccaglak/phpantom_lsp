@@ -378,6 +378,9 @@ fn normalize_type(ty: &str) -> String {
     // Normalize whitespace around `|` and `&`.
     s = s.replace(" | ", "|").replace(" & ", "&");
 
+    // Normalize callable return type syntax: `Closure(int): bool` → `Closure(int):bool`.
+    s = s.replace("): ", "):");
+
     // Normalize `array<int, string>` vs `array<int,string>` etc.
     // Remove spaces after commas inside angle brackets.
     let mut result = String::with_capacity(s.len());

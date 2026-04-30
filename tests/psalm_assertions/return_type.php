@@ -8,19 +8,19 @@ namespace PsalmTest_return_type_1 {
     /**
      * @psalm-consistent-constructor
      */
-    abstract class A {
+    abstract class BaseLoad {
         /** @return static */
         public static function load() {
             return new static();
         }
     }
 
-    class B extends A {
+    class LoadChild extends BaseLoad {
     }
 
-    $b = B::load();
+    $b = LoadChild::load();
 
-    assertType('B', $b);
+    assertType('LoadChild', $b);
 }
 
 // Test: extendsStaticCallArrayReturnType
@@ -28,59 +28,59 @@ namespace PsalmTest_return_type_2 {
     /**
      * @psalm-consistent-constructor
      */
-    abstract class A {
+    abstract class BaseMulti {
         /** @return array<int,static> */
         public static function loadMultiple() {
             return [new static()];
         }
     }
 
-    class B extends A {
+    class MultiChild extends BaseMulti {
     }
 
-    $bees = B::loadMultiple();
+    $bees = MultiChild::loadMultiple();
 
-    assertType('array<int, B>', $bees); // SKIP — static return type not substituted in array generic
+    assertType('array<int, MultiChild>', $bees);
 }
 
 // Test: overrideReturnType
 namespace PsalmTest_return_type_3 {
-    class A {
+    class ParentBlah {
         /** @return string|null */
         public function blah() {
             return rand(0, 10) === 4 ? "blah" : null;
         }
     }
 
-    class B extends A {
+    class ChildBlah extends ParentBlah {
         /** @return string */
         public function blah() {
             return "blah";
         }
     }
 
-    $blah = (new B())->blah();
+    $blah = (new ChildBlah())->blah();
 
-    assertType('string', $blah); // SKIP — overridden return type not resolved through child class
+    assertType('string', $blah);
 }
 
 // Test: interfaceReturnType
 namespace PsalmTest_return_type_4 {
-    interface A {
+    interface Blahable {
         /** @return string|null */
         public function blah();
     }
 
-    class B implements A {
+    class BlahImpl implements Blahable {
         /** @return string|null */
         public function blah() {
             return rand(0, 10) === 4 ? "blah" : null;
         }
     }
 
-    $blah = (new B())->blah();
+    $blah = (new BlahImpl())->blah();
 
-    assertType('null|string', $blah); // SKIP — interface method return type not resolved on implementing class
+    assertType('null|string', $blah);
 }
 
 // Test: overrideReturnTypeInGrandparent
@@ -118,7 +118,7 @@ namespace PsalmTest_return_type_6 {
 
     $res = reflexive(fn(int $a, int $b): bool => $a === $b);
 
-    assertType('Closure(int):bool', $res); // SKIP — arrow closure return type inference not supported
+    assertType('Closure(int):bool', $res);
 }
 
 // Test: infersObjectShapeOfCastScalar
