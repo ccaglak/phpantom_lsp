@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Foreach element type from untyped arrays.** Variables bound in a `foreach` over an untyped `array` (e.g. from a function returning bare `array`) now resolve to `mixed` instead of empty, so assignments from the loop variable propagate correctly.
 - **Foreach target type after non-empty literal array.** When iterating a non-empty literal array such as `["a", "b", "c"]`, the pre-loop sentinel value of the target variable (e.g. `null` from `$tag = null`) no longer survives as a possible post-loop type.
 - **Object cast type inference.** `(object)$scalar` now resolves to `object{scalar:T}` and `(object)$array` resolves to an object shape matching the array's keys, instead of bare `stdClass`.
+- **Foreach `@var` annotations for key and value variables.** Multi-line docblocks with multiple `@var` tags before a `foreach` now correctly override the inferred key and value types. Previously only single-`@var` docblocks were recognized, and only for the value variable.
+- **Template union inference from multiple arguments.** When multiple arguments bind to the same `@template T` parameter (e.g. `pick($int, $float)`), the resolved type is now the union of all inferred argument types instead of only the last one.
+- **Static method calls on class-string unions.** `$variable::method()` where `$variable` holds a union of class-strings now resolves through all possible classes and unions their return types.
 
 ### Changed
 

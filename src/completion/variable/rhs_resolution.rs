@@ -1711,6 +1711,48 @@ fn classify_array_index(index: &Expression<'_>) -> ArrayBracketSegment {
     }
 }
 
+/// Insert a template substitution, unioning with any existing entry.
+/// When two arguments bind to the same `@template T`, the resolved type
+/// is the union of all inferred argument types (e.g. `T` from `$a: int`
+/// and `$b: float` becomes `int|float`).
+pub(crate) fn insert_or_union(subs: &mut HashMap<String, PhpType>, key: String, value: PhpType) {
+    use std::collections::hash_map::Entry;
+    match subs.entry(key) {
+        Entry::Vacant(e) => {
+            e.insert(value);
+        }
+        Entry::Occupied(mut e) => {
+            let existing = e.get().clone();
+            if existing == value {
+                return;
+            }
+            let mut parts = match existing {
+                PhpType::Union(parts) => parts,
+                other => vec![other],
+            };
+            match value {
+                PhpType::Union(new_parts) => {
+                    for p in new_parts {
+                        if !parts.contains(&p) {
+                            parts.push(p);
+                        }
+                    }
+                }
+                other => {
+                    if !parts.contains(&other) {
+                        parts.push(other);
+                    }
+                }
+            }
+            e.insert(if parts.len() == 1 {
+                parts.into_iter().next().unwrap()
+            } else {
+                PhpType::Union(parts)
+            });
+        }
+    }
+}
+
 /// Build a template substitution map for a function-level `@template` call.
 ///
 /// Uses the function's `template_bindings` to match template parameters to
@@ -1753,7 +1795,7 @@ pub(crate) fn build_function_template_subs(
         match binding_mode {
             TemplateBindingMode::Direct => {
                 if let Some(resolved_type) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
-                    subs.insert(tpl_name.to_string(), resolved_type);
+                    insert_or_union(&mut subs, tpl_name.to_string(), resolved_type);
                 }
             }
             TemplateBindingMode::CallableReturnType => {
@@ -1764,7 +1806,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text,
                     )
                 {
-                    subs.insert(tpl_name.to_string(), ret_type);
+                    insert_or_union(&mut subs, tpl_name.to_string(), ret_type);
                 }
             }
             TemplateBindingMode::CallableParamType(position) => {
@@ -1775,7 +1817,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text, position,
                     )
                 {
-                    subs.insert(tpl_name.to_string(), param_type);
+                    insert_or_union(&mut subs, tpl_name.to_string(), param_type);
                 }
             }
             TemplateBindingMode::ArrayElement => {
@@ -1811,7 +1853,7 @@ pub(crate) fn build_function_template_subs(
                         PhpType::ClassString(Some(inner)) => *inner,
                         _ => resolved_type,
                     };
-                    subs.insert(tpl_name.to_string(), unwrapped);
+                    insert_or_union(&mut subs, tpl_name.to_string(), unwrapped);
                 }
             }
             TemplateBindingMode::GenericWrapper(ref wrapper_name, tpl_position) => {

@@ -3920,40 +3920,41 @@ fn parse_all_inline_var_docblocks(
     results
 }
 
-fn parse_inline_var_docblock(
-    doc_text: &str,
-    _ctx: &ForwardWalkCtx<'_>,
-) -> Option<(String, PhpType)> {
+/// Parse ALL `@var Type $varName` annotations from a docblock.
+/// Supports both single-line (`/** @var Type $var */`) and multi-line
+/// docblocks with multiple `@var` tags.
+fn parse_all_var_docblock_annotations(doc_text: &str) -> Vec<(String, PhpType)> {
+    let mut results = Vec::new();
     // Strip `/**` and `*/`
-    let inner = doc_text.strip_prefix("/**")?.strip_suffix("*/")?.trim();
-
-    // Look for `@var Type $varName`
-    let inner = inner
-        .strip_prefix("@var")
-        .or_else(|| inner.strip_prefix("* @var"))?;
-    let inner = inner.trim_start();
-
-    // Split into type and variable parts.
-    // The type may contain spaces (e.g. `array<string, int>`) so we need
-    // to find the `$` that starts the variable name.
-    let dollar_pos = inner.find('$')?;
-    if dollar_pos == 0 {
-        // `@var $var Type` format — variable comes first.
-        // Not the typical format, skip for now.
-        return None;
+    let inner = match doc_text
+        .strip_prefix("/**")
+        .and_then(|s| s.strip_suffix("*/"))
+    {
+        Some(s) => s,
+        None => return results,
+    };
+    // Scan each line for `@var`
+    for line in inner.lines() {
+        let trimmed = line.trim().trim_start_matches('*').trim();
+        if let Some(rest) = trimmed.strip_prefix("@var") {
+            let rest = rest.trim_start();
+            // Find the `$` that starts the variable name.
+            if let Some(dollar_pos) = rest.find('$') {
+                if dollar_pos == 0 {
+                    // `@var $var Type` format — skip.
+                    continue;
+                }
+                let type_str = rest[..dollar_pos].trim();
+                let var_part = &rest[dollar_pos..];
+                let var_name = var_part.split_whitespace().next().unwrap_or("");
+                if !type_str.is_empty() && !var_name.is_empty() {
+                    let php_type = PhpType::parse(type_str);
+                    results.push((var_name.to_string(), php_type));
+                }
+            }
+        }
     }
-
-    let type_str = inner[..dollar_pos].trim();
-    let rest = &inner[dollar_pos..];
-    let var_name = rest.split_whitespace().next()?;
-
-    if type_str.is_empty() || var_name.is_empty() {
-        return None;
-    }
-
-    let php_type = PhpType::parse(type_str);
-
-    Some((var_name.to_string(), php_type))
+    results
 }
 
 /// Parse `/** @var Type */` (without variable name) and return the PhpType.
@@ -6098,48 +6099,68 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
         }
     }
 
-    // Docblock fallback: when `bind_foreach_value` could not determine
-    // the element type from the iterable (e.g. the iterable is `mixed`
-    // or unresolvable), check for an inline `/** @var Type $var */`
-    // docblock preceding the foreach keyword and use it to seed the
-    // value variable.  This handles the common PHP pattern:
-    //   /** @var Mandate $mandate */
-    //   foreach ($mandates as $mandate) { ... }
+    // Docblock fallback: when `bind_foreach_value`/`bind_foreach_key`
+    // could not determine the element type from the iterable (e.g. the
+    // iterable is `mixed` or a bare `array`), check for inline
+    // `/** @var Type $var */` docblock(s) preceding the foreach keyword
+    // and use them to seed the key and/or value variables.  @var
+    // annotations are explicit developer overrides that take priority
+    // over types inferred from the iterable.
     let value_var_name = match &foreach.target {
         ForeachTarget::Value(val) => extract_foreach_var_name(val.value),
         ForeachTarget::KeyValue(kv) => extract_foreach_var_name(kv.value),
     };
-    if let Some(ref vn) = value_var_name
-        && scope.get(vn).is_empty()
+    let key_var_name = match &foreach.target {
+        ForeachTarget::Value(_) => None,
+        ForeachTarget::KeyValue(kv) => extract_foreach_var_name(kv.key),
+    };
+
+    // Collect resolved docblock overrides for key/value variables.
+    let mut value_docblock_override: Option<Vec<ResolvedType>> = None;
+    let mut key_docblock_override: Option<Vec<ResolvedType>> = None;
+    let foreach_offset = foreach.foreach.span().start.offset as usize;
+    let before = &ctx.content[..foreach_offset.min(ctx.content.len())];
+    let trimmed = before.trim_end();
+    if trimmed.ends_with("*/")
+        && let Some(doc_start) = trimmed.rfind("/**")
     {
-        let foreach_offset = foreach.foreach.span().start.offset as usize;
-        let before = &ctx.content[..foreach_offset.min(ctx.content.len())];
-        let trimmed = before.trim_end();
-        let mut docblock_matched = false;
-        if trimmed.ends_with("*/")
-            && let Some(doc_start) = trimmed.rfind("/**")
-        {
-            let doc_text = &trimmed[doc_start..trimmed.len()];
-            // Only use the named-variable form `/** @var Type $var */`
-            // and only when the variable name matches the foreach
-            // value variable.  The no-var form `/** @var Type */`
-            // must NOT be used here — it would incorrectly override
-            // the iterable variable or other unrelated variables.
-            if let Some((doc_var, php_type)) = parse_inline_var_docblock(doc_text, ctx)
-                && doc_var == *vn
+        let doc_text = &trimmed[doc_start..trimmed.len()];
+        let var_annotations = parse_all_var_docblock_annotations(doc_text);
+        for (doc_var, php_type) in &var_annotations {
+            if let Some(ref vn) = value_var_name
+                && doc_var == vn
             {
-                let resolved = resolve_type_to_resolved_types(&php_type, ctx);
-                scope.set(vn, resolved);
-                docblock_matched = true;
+                value_docblock_override = Some(resolve_type_to_resolved_types(php_type, ctx));
+            }
+            if let Some(ref kn) = key_var_name
+                && doc_var == kn
+            {
+                key_docblock_override = Some(resolve_type_to_resolved_types(php_type, ctx));
             }
         }
-        // When the iterable is a bare `array` (no generic parameters)
-        // and no @var docblock provided a concrete type, the element
-        // type is `mixed`.  Seed it so that assignments from the loop
-        // variable propagate `mixed` correctly through the body.
-        if !docblock_matched && iter_type.as_ref().is_some_and(|it| it.is_bare_array()) {
-            scope.set(vn, vec![ResolvedType::from_type_string(PhpType::mixed())]);
-        }
+    }
+
+    // Apply docblock overrides (overwrites bind_foreach_key/value results).
+    if let Some(ref resolved) = value_docblock_override
+        && let Some(ref vn) = value_var_name
+    {
+        scope.set(vn, resolved.clone());
+    }
+    if let Some(ref resolved) = key_docblock_override
+        && let Some(ref kn) = key_var_name
+    {
+        scope.set(kn, resolved.clone());
+    }
+    // When the iterable is a bare `array` (no generic parameters)
+    // and no @var docblock provided a concrete type, the element
+    // type is `mixed`.  Seed it so that assignments from the loop
+    // variable propagate `mixed` correctly through the body.
+    if let Some(ref vn) = value_var_name
+        && value_docblock_override.is_none()
+        && scope.get(vn).is_empty()
+        && iter_type.as_ref().is_some_and(|it| it.is_bare_array())
+    {
+        scope.set(vn, vec![ResolvedType::from_type_string(PhpType::mixed())]);
     }
 
     // ── Assignment-depth-bounded loop iteration ─────────────────
@@ -6194,6 +6215,17 @@ fn process_foreach<'b>(foreach: &'b Foreach<'b>, scope: &mut ScopeState, ctx: &F
                 bind_foreach_key(kv.key, &iter_type, &mut next_scope, ctx);
                 bind_foreach_value(kv.value, &iter_type, &mut next_scope, ctx);
             }
+        }
+        // Re-apply docblock overrides after re-binding.
+        if let Some(ref resolved) = value_docblock_override
+            && let Some(ref vn) = value_var_name
+        {
+            next_scope.set(vn, resolved.clone());
+        }
+        if let Some(ref resolved) = key_docblock_override
+            && let Some(ref kn) = key_var_name
+        {
+            next_scope.set(kn, resolved.clone());
         }
         *scope = next_scope;
 

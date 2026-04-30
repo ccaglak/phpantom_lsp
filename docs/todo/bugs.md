@@ -105,19 +105,10 @@ Miscellaneous type resolution gaps:
   union return type (`static-late-binding.php` lines 88, 97)
 - `static` keyword not preserved through first-class callable
   invocation (`static-late-binding.php` lines 92-95)
-- `@template T of (A|B)` union bound not used as return type for
-  `pick()` (`generics.php` line 344)
-- Template not resolved through `unbox()` generic function
-  (`generics.php` lines 482, 485)
 - PHPStan's `T (function traced(), argument)` display format
   (`generics.php` line 499) — out of scope for an LSP
-- Loop variable union includes array key type (`annotation.php`
-  line 33)
-- Loop variable resolves to `null` instead of `null|stdClass`
-  (`annotation.php` line 34)
 - Escaped backslash in array shape key not normalized
   (`annotation.php` line 71)
-- Generator variable hover (`generator.php` lines 40, 87)
 - `NoRewindIterator` wrapping generator (`generator.php` line 102)
 - Trait method returning `new static()` resolves to trait user
   instead of trait definer (`trait.php` line 46)

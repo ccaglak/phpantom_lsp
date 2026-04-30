@@ -341,7 +341,7 @@ function testFunctionTemplates($int, $string, $float): void
 	assertType('int', identity($int));
 	assertType('string', identity($string));
 	assertType('DateTime', identity(new \DateTime()));
-	assertType('float|int', pick($int, $float)); // SKIP
+	assertType('float|int', pick($int, $float));
 	assertType('int', pick($int, $int));
 }
 
@@ -479,10 +479,10 @@ function unbox($box)
 function testGenericParamResolution(): void
 {
 	$dtBox = new DateTimeBox();
-	assertType('DateTime', unbox($dtBox)); // SKIP
+	assertType('DateTime', unbox($dtBox));
 
 	$intBox = new IntBox();
-	assertType('int', unbox($intBox)); // SKIP
+	assertType('int', unbox($intBox));
 }
 
 // ============================================================

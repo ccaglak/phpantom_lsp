@@ -122,8 +122,8 @@ namespace PsalmTest_magic_method_annotation_4 {
     $c = $child->setBool("hello", "true");
     $child->setAnotherArray(["boo"]);
 
-    assertType('bool', $b); // SKIP — cross-namespace $b variable shadowing in single-file test runner
-    assertType('bool', $c); // SKIP — cross-namespace $c variable shadowing in single-file test runner
+    assertType('bool', $b); 
+    assertType('bool', $c); 
 }
 
 // Test: magicMethodReturnSelf
@@ -156,7 +156,7 @@ namespace PsalmTest_magic_method_annotation_6 {
     $c = (new C)->getStatic();
     $d = (new D)->getStatic();
 
-    assertType('C', $c); // SKIP — cross-namespace $c variable shadowing in single-file test runner
+    assertType('C', $c); 
     assertType('D', $d);
 }
 
@@ -285,6 +285,6 @@ namespace PsalmTest_magic_method_annotation_10 {
 
     assertType('B', $b); // SKIP — cross-namespace $b variable shadowing in single-file test runner
     assertType('B', $c);
-    assertType('B', $e); // SKIP — cross-namespace $e variable shadowing in single-file test runner
+    assertType('B', $e); // SKIP — cross-namespace $e variable shadowing in single-file test runner 
 }
 

@@ -1012,13 +1012,53 @@ impl Backend {
 
                 let owner_class = if class.starts_with('$') {
                     // Variable holding a class-string (e.g. `$cls::make()`).
-                    ResolvedType::into_arced_classes(super::resolver::resolve_target_classes(
-                        class,
-                        AccessKind::DoubleColon,
-                        ctx,
-                    ))
-                    .into_iter()
-                    .next()
+                    // May resolve to multiple classes for union class-strings.
+                    let all_owners: Vec<Arc<ClassInfo>> =
+                        ResolvedType::into_arced_classes(super::resolver::resolve_target_classes(
+                            class,
+                            AccessKind::DoubleColon,
+                            ctx,
+                        ));
+                    // When there are multiple possible classes, resolve the
+                    // method return type through each and union the results.
+                    if all_owners.len() > 1 {
+                        let mut union_results: Vec<Arc<ClassInfo>> = Vec::new();
+                        for owner in &all_owners {
+                            let split_args = split_text_args(text_args);
+                            let arg_refs = split_args.to_vec();
+                            let template_subs = Self::build_method_template_subs(
+                                owner,
+                                method_name,
+                                &arg_refs,
+                                ctx,
+                            );
+                            let var_resolver = build_var_resolver(ctx);
+                            let mr_ctx = MethodReturnCtx {
+                                all_classes: ctx.all_classes,
+                                class_loader: ctx.class_loader,
+                                template_subs: &template_subs,
+                                var_resolver: Some(&var_resolver),
+                                cache: ctx.resolved_class_cache,
+                                calling_class_name: ctx.current_class.map(|c| c.name.as_str()),
+                                is_static: true,
+                            };
+                            let results = Self::resolve_method_return_types_with_args(
+                                owner,
+                                method_name,
+                                text_args,
+                                &mr_ctx,
+                            );
+                            for r in results {
+                                if !union_results.iter().any(|existing| existing.name == r.name) {
+                                    union_results.push(r);
+                                }
+                            }
+                        }
+                        if !union_results.is_empty() {
+                            return union_results;
+                        }
+                    }
+                    all_owners.into_iter().next()
                 } else {
                     super::resolver::resolve_static_owner_class(class, ctx)
                 };
@@ -1990,7 +2030,11 @@ impl Backend {
             match binding_mode {
                 TemplateBindingMode::Direct => {
                     if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
-                        subs.insert(tpl_name.to_string(), resolved_type);
+                        crate::completion::variable::rhs_resolution::insert_or_union(
+                            &mut subs,
+                            tpl_name.to_string(),
+                            resolved_type,
+                        );
                     }
                 }
                 TemplateBindingMode::GenericWrapper(ref wrapper_name, tpl_position) => {

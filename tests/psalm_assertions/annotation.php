@@ -30,8 +30,8 @@ namespace PsalmTest_annotation_2 {
         $_b = $_value;
     }
 
-    assertType('null|string', $_a); // SKIP — loop variable union includes int from array key
-    assertType('null|stdClass', $_b); // SKIP — loop variable resolves to null instead of null|stdClass
+    assertType('null|string', $_a);
+    assertType('null|stdClass', $_b);
 }
 
 // Test: spreadOperatorByRefAnnotation

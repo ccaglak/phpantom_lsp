@@ -439,6 +439,14 @@ fn types_match(expected: &str, actual: &str) -> bool {
         return true;
     }
 
+    // Generator<K, V> is semantically equivalent to Generator<K, V, mixed, mixed>.
+    // Normalize both sides to compare without trailing `mixed` params.
+    let ne_gen = normalize_generator_params(&ne);
+    let na_gen = normalize_generator_params(&na);
+    if ne_gen == na_gen {
+        return true;
+    }
+
     // PHPStan uses FQN in expected types but PHPantom may use short names.
     // Try matching against just the short name of each component.
     let ne_short = shorten_fqn_components(&ne);
@@ -483,6 +491,41 @@ fn shorten_fqn_components(ty: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// Strip trailing `, mixed` params from Generator types so that
+/// `Generator<int, stdClass>` matches `Generator<int, stdClass, mixed, mixed>`.
+fn normalize_generator_params(ty: &str) -> String {
+    // Simple regex-free approach: find `Generator<...>` and strip trailing `, mixed` entries.
+    let mut result = ty.to_string();
+    while let Some(start) = result.find("Generator<") {
+        let gen_start = start + "Generator<".len();
+        // Find matching `>`.
+        let mut depth = 1i32;
+        let mut end = gen_start;
+        for (i, ch) in result[gen_start..].char_indices() {
+            match ch {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = gen_start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let inner = &result[gen_start..end];
+        let trimmed = inner.trim_end_matches(", mixed").trim_end_matches(",mixed");
+        if trimmed != inner {
+            let new = format!("Generator<{}>", trimmed);
+            result = format!("{}{}{}", &result[..start], new, &result[end + 1..]);
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 // ─── Hover helpers ──────────────────────────────────────────────────────────
