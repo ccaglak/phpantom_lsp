@@ -205,19 +205,21 @@ impl Backend {
         // ── 2. namespace_map (already-opened files) ─────────────────
         {
             let nmap = self.namespace_map.read();
-            for ns in nmap.values().flatten() {
-                insert_if_under_psr4(ns, &mut namespaces, &psr4_prefixes);
+            for spans in nmap.values() {
+                for span in spans {
+                    if let Some(ns) = &span.namespace {
+                        insert_if_under_psr4(ns, &mut namespaces, &psr4_prefixes);
+                    }
+                }
             }
         }
 
         // ── 3. ast_map namespace portions ───────────────────────────
         {
             let amap = self.ast_map.read();
-            let nmap = self.namespace_map.read();
-            for (uri, classes) in amap.iter() {
-                let file_ns = nmap.get(uri).and_then(|opt| opt.as_deref());
-                if let Some(ns) = file_ns {
-                    for cls in classes {
+            for (_uri, classes) in amap.iter() {
+                for cls in classes {
+                    if let Some(ns) = &cls.file_namespace {
                         let fqn = format!("{}\\{}", ns, cls.name);
                         if let Some(ns_end) = fqn.rfind('\\') {
                             insert_if_under_psr4(&fqn[..ns_end], &mut namespaces, &psr4_prefixes);

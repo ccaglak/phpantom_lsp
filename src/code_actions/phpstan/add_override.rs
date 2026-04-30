@@ -133,7 +133,7 @@ impl Backend {
 
         // Look up the use_map and namespace_map for the URI.
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         // Decide whether to use the short form `#[Override]` with a
         // `use Override;` import, or the FQN `#[\Override]`.

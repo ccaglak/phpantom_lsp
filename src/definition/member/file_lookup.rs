@@ -88,7 +88,9 @@ impl Backend {
                         // Fall back to file-level namespace_map for
                         // classes that don't have file_namespace set
                         // (e.g. single-namespace files, stubs).
-                        let file_ns = nmap.get(file_uri).and_then(|opt| opt.as_deref());
+                        let file_ns = nmap
+                            .get(file_uri)
+                            .and_then(|spans| spans.first().and_then(|s| s.namespace.as_deref()));
                         file_ns == Some(exp) && classes.iter().any(|c| c.name == last_segment)
                     }
                 }

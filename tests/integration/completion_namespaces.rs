@@ -516,3 +516,86 @@ async fn test_goto_definition_use_as_alias() {
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
 }
+
+/// Verify that completion in a multi-namespace file resolves the correct
+/// namespace for each block.  In `namespace B { }`, a `new` expression
+/// for class `Bar` (declared in the same namespace block) should resolve
+/// to `B\Bar`, not `A\Bar`.
+#[tokio::test]
+async fn test_completion_multi_namespace_blocks() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///multi_ns.php").unwrap();
+    let text = r#"<?php
+namespace A {
+    class Foo {
+        public function fromA(): string { return 'a'; }
+    }
+}
+namespace B {
+    class Bar {
+        public function fromB(): int { return 1; }
+    }
+    class Consumer {
+        public function test() {
+            $b = new Bar();
+            $b->
+        }
+    }
+}
+"#
+    .to_string();
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.clone(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Find the line containing `$b->`
+    let trigger_line = text
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$b->"))
+        .map(|(i, _)| i as u32)
+        .expect("trigger line not found");
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: trigger_line,
+                character: 17, // after `$b->`
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    let items = match result {
+        Some(CompletionResponse::List(list)) => list.items,
+        Some(CompletionResponse::Array(items)) => items,
+        None => panic!("Expected completions, got None"),
+    };
+
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+    // $b is `Bar` from namespace B, so `fromB` must be present.
+    assert!(
+        labels.iter().any(|l| l.starts_with("fromB")),
+        "Expected 'fromB' from B\\Bar, got: {:?}",
+        labels
+    );
+    // `fromA` belongs to A\Foo and must NOT appear.
+    assert!(
+        !labels.iter().any(|l| l.starts_with("fromA")),
+        "'fromA' from A\\Foo should not appear in B\\Bar completions, got: {:?}",
+        labels
+    );
+}

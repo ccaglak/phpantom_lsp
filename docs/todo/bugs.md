@@ -210,23 +210,6 @@ Miscellaneous type resolution gaps:
 **Tests:** Referenced in-line above.
 
 
-## B23. Multi-namespace file class resolution ambiguity
-
-**Discovered:** While investigating B19.
-
-`namespace_map` stores a single `Option<String>` per file. In files
-with multiple `namespace Foo { ... }` blocks, the class_loader
-resolves unqualified class names against the wrong namespace
-(whichever was stored last). This causes `find_class_by_name` to
-return the first class matching the short name regardless of which
-namespace block the cursor is in.
-
-Real-world impact is low (multi-namespace files are extremely rare
-in PHP projects), but it affects the assert_type_runner test
-infrastructure. The workaround is to use globally unique class
-names in multi-namespace test files.
-
-
 ## Bulk un-SKIP after fixes
 
 There are `// SKIP` markers across `tests/phpstan_nsrt/*.php` and

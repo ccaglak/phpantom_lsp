@@ -429,7 +429,7 @@ impl Backend {
             // the legacy use_map lazily for identifiers not tracked by
             // mago-names (e.g. docblock-sourced references).
             let resolved_names = self.resolved_names.read().get(file_uri).cloned();
-            let file_namespace = self.namespace_map.read().get(file_uri).cloned().flatten();
+            let file_namespace = self.first_file_namespace(file_uri);
             let file_use_map = std::cell::OnceCell::new();
 
             let parsed_uri = match Url::parse(file_uri) {
@@ -691,7 +691,7 @@ impl Backend {
             // Prefer mago-names resolved_names; lazy-load use_map only
             // when an offset is not tracked (e.g. docblock references).
             let resolved_names = self.resolved_names.read().get(file_uri).cloned();
-            let file_namespace = self.namespace_map.read().get(file_uri).cloned().flatten();
+            let file_namespace = self.first_file_namespace(file_uri);
             let file_use_map = std::cell::OnceCell::new();
 
             let parsed_uri = match Url::parse(file_uri) {

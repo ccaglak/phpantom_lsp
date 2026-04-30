@@ -45,7 +45,7 @@ impl Backend {
         };
 
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         for diag in &phpstan_diags {
             if !ranges_overlap(&diag.range, &params.range) {
@@ -133,7 +133,7 @@ impl Backend {
         let type_name_str = type_name.to_string();
 
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         let docblock = find_docblock_above_line(content, line)?;
         let throws_edit = build_remove_throws_edit(

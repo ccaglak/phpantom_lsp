@@ -414,9 +414,14 @@ impl Backend {
             .write()
             .insert(uri.to_owned(), arc_classes.clone());
         self.use_map.write().insert(uri.to_owned(), file_use_map);
-        self.namespace_map
-            .write()
-            .insert(uri.to_owned(), file_namespace);
+        self.namespace_map.write().insert(
+            uri.to_owned(),
+            vec![crate::types::NamespaceSpan {
+                namespace: file_namespace.clone(),
+                start: 0,
+                end: content.len() as u32,
+            }],
+        );
 
         // Populate the fqn_index so that `find_class_in_ast_map` can
         // resolve these classes via O(1) hash lookup.

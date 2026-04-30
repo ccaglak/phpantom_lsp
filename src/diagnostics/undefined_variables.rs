@@ -98,7 +98,7 @@ impl Backend {
         // Gather file-level context for FQN resolution of function and
         // class names inside the by-ref resolver.
         let file_use_map: std::collections::HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         // Build a by-ref resolver that uses Backend to look up function
         // and method signatures.  This lets the scope collector mark

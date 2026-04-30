@@ -440,14 +440,11 @@ impl Backend {
     fn collect_loaded_fqns(&self) -> HashSet<String> {
         let mut loaded = HashSet::new();
         let amap = self.ast_map.read();
-        let nmap = self.namespace_map.read();
-        for (uri, classes) in amap.iter() {
-            let file_ns = nmap.get(uri).and_then(|opt| opt.as_deref());
+        for (_uri, classes) in amap.iter() {
             for cls in classes {
-                let fqn = if let Some(ns) = file_ns {
-                    format!("{}\\{}", ns, cls.name)
-                } else {
-                    cls.name.to_string()
+                let fqn = match &cls.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                    _ => cls.name.to_string(),
                 };
                 loaded.insert(fqn);
             }
@@ -590,14 +587,11 @@ impl Backend {
             let nmap = self.namespace_map.read();
             let same_ns_uris: Vec<String> = nmap
                 .iter()
-                .filter_map(|(uri, opt_ns)| {
-                    let uri_ns = opt_ns.as_deref();
-                    let file_ns = file_namespace.as_deref();
-                    if uri_ns == file_ns {
-                        Some(uri.clone())
-                    } else {
-                        None
-                    }
+                .filter_map(|(uri, spans)| {
+                    let has_ns = spans
+                        .iter()
+                        .any(|s| s.namespace.as_deref() == file_namespace.as_deref());
+                    if has_ns { Some(uri.clone()) } else { None }
                 })
                 .collect();
             drop(nmap);

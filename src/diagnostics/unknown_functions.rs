@@ -73,7 +73,7 @@ impl Backend {
 
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
 
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         // ── Compute byte ranges of `use` statement lines ────────────────
         let use_line_ranges = compute_use_line_ranges(content);

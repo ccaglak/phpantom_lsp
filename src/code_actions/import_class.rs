@@ -42,7 +42,7 @@ impl Backend {
         // ── Gather file context ─────────────────────────────────────────
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
 
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         let symbol_map = match self.symbol_maps.read().get(uri) {
             Some(sm) => sm.clone(),
@@ -367,14 +367,12 @@ impl Backend {
         // ── 3. ast_map (already-parsed files) ───────────────────────────
         {
             let amap = self.ast_map.read();
-            let nmap = self.namespace_map.read();
-            for (file_uri, classes) in amap.iter() {
-                let ns = nmap.get(file_uri).and_then(|o| o.as_deref());
+            for (_file_uri, classes) in amap.iter() {
                 for cls in classes {
                     if cls.name.to_lowercase() == name_lower {
-                        let fqn = match ns {
-                            Some(ns) => format!("{}\\{}", ns, cls.name),
-                            None => cls.name.to_string(),
+                        let fqn = match &cls.file_namespace {
+                            Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                            _ => cls.name.to_string(),
                         };
                         if !candidates
                             .iter()
@@ -493,7 +491,7 @@ impl Backend {
         // resolve step.  Don't show the action if fewer than 2 names
         // are unambiguously importable.
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
         let affinity_table = crate::completion::class_completion::build_affinity_table(
             &file_use_map,
             &file_namespace,
@@ -554,7 +552,7 @@ impl Backend {
         params: &CodeActionParams,
     ) -> bool {
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         let symbol_map = match self.symbol_maps.read().get(uri) {
             Some(sm) => sm.clone(),
@@ -640,12 +638,7 @@ impl Backend {
         }
 
         let file_use_map: HashMap<String, String> = self.file_use_map(&data.uri);
-        let file_namespace: Option<String> = self
-            .namespace_map
-            .read()
-            .get(&data.uri as &str)
-            .cloned()
-            .flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(&data.uri);
         let affinity_table = crate::completion::class_completion::build_affinity_table(
             &file_use_map,
             &file_namespace,
@@ -769,7 +762,7 @@ impl Backend {
         content: &str,
     ) -> Vec<(String, ClassRefContext)> {
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         let symbol_map = match self.symbol_maps.read().get(uri) {
             Some(sm) => sm.clone(),

@@ -277,7 +277,10 @@ impl Backend {
 
             // Gather per-file context (classes, use-map, namespace) in one
             // call instead of three separate lock-and-unwrap blocks.
-            let ctx = self.file_context(&uri);
+            // Use the cursor offset for position-aware namespace resolution
+            // so that multi-namespace files resolve to the correct namespace.
+            let cursor_offset = crate::util::position_to_offset(&content, position);
+            let ctx = self.file_context_at(&uri, cursor_offset);
 
             // ── Suppress completion inside non-doc comments ─────────
             if crate::completion::comment_position::is_inside_non_doc_comment(&content, position) {

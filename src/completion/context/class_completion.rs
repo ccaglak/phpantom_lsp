@@ -1615,12 +1615,11 @@ impl Backend {
             // Find all URIs that share the same namespace
             let same_ns_uris: Vec<String> = nmap
                 .iter()
-                .filter_map(|(uri, opt_ns)| {
-                    if opt_ns.as_deref() == Some(ns.as_str()) {
-                        Some(uri.clone())
-                    } else {
-                        None
-                    }
+                .filter_map(|(uri, spans)| {
+                    let has_ns = spans
+                        .iter()
+                        .any(|s| s.namespace.as_deref() == Some(ns.as_str()));
+                    if has_ns { Some(uri.clone()) } else { None }
                 })
                 .collect();
             drop(nmap);
@@ -2021,9 +2020,11 @@ impl Backend {
         // 1. Some open file declares this FQN as its namespace.
         {
             let nmap = self.namespace_map.read();
-            for ns in nmap.values().flatten() {
-                if ns == fqn {
-                    return true;
+            for spans in nmap.values() {
+                for span in spans {
+                    if span.namespace.as_deref() == Some(fqn) {
+                        return true;
+                    }
                 }
             }
         }

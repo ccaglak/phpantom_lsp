@@ -716,10 +716,9 @@ impl Backend {
             // Build the FQN of this class in the current file and compare
             // against the requested FQN to avoid false matches when two
             // namespaces contain classes with the same short name.
-            let file_namespace = self.namespace_map.read().get(uri).cloned().flatten();
-            let class_fqn = match &file_namespace {
-                Some(ns) => format!("{}\\{}", ns, c.name),
-                None => c.name.to_string(),
+            let class_fqn = match &c.file_namespace {
+                Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
+                _ => c.name.to_string(),
             };
             class_fqn == fqn
         })?;

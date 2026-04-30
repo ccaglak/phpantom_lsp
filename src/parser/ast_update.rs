@@ -16,6 +16,7 @@ use crate::types::TypeAliasDef;
 
 use bumpalo::Bump;
 
+use mago_span::HasSpan;
 use mago_syntax::ast::*;
 use mago_syntax::parser::parse_file_content;
 
@@ -121,6 +122,7 @@ impl Backend {
         let mut classes_with_ns: Vec<(ClassInfo, Option<String>)> = Vec::new();
         let mut use_map = HashMap::new();
         let mut namespace: Option<String> = None;
+        let mut namespace_spans: Vec<crate::types::NamespaceSpan> = Vec::new();
 
         for statement in program.statements.iter() {
             match statement {
@@ -134,6 +136,14 @@ impl Backend {
                         .as_ref()
                         .map(|ident| ident.value().to_string())
                         .filter(|n| !n.is_empty());
+
+                    // Record the byte span of this namespace block.
+                    let ns_span = ns.span();
+                    namespace_spans.push(crate::types::NamespaceSpan {
+                        namespace: block_ns.clone(),
+                        start: ns_span.start.offset,
+                        end: ns_span.end.offset,
+                    });
 
                     // The file-level namespace is the FIRST non-empty one.
                     if namespace.is_none() {
@@ -493,7 +503,19 @@ impl Backend {
         self.resolved_names
             .write()
             .insert(uri_string.clone(), Arc::new(owned_resolved));
-        self.namespace_map.write().insert(uri_string, namespace);
+        // For files without any explicit namespace blocks, synthesize a
+        // single span covering the entire file with the detected namespace
+        // (which will be None for files without namespace declarations).
+        if namespace_spans.is_empty() {
+            namespace_spans.push(crate::types::NamespaceSpan {
+                namespace: namespace.clone(),
+                start: 0,
+                end: content.len() as u32,
+            });
+        }
+        self.namespace_map
+            .write()
+            .insert(uri_string, namespace_spans);
 
         // Selectively invalidate the resolved-class cache with
         // signature-level granularity.

@@ -61,7 +61,7 @@ impl Backend {
         };
 
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         for diag in &phpstan_diags {
             if !ranges_overlap(&diag.range, &params.range) {
@@ -176,7 +176,7 @@ impl Backend {
 
         // Look up the use_map and namespace_map for the URI.
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
-        let file_namespace: Option<String> = self.namespace_map.read().get(uri).cloned().flatten();
+        let file_namespace: Option<String> = self.first_file_namespace(uri);
 
         // Determine if an import is needed.
         let already_imported = file_use_map.iter().any(|(alias, fqn)| {

@@ -151,7 +151,7 @@ pub mod test_fixtures;
 // Re-export public types so that dependents (tests, main) can import them
 // from the crate root, e.g. `use phpantom_lsp::{Backend, AccessKind}`.
 pub use completion::target::extract_completion_target;
-pub use types::{AccessKind, ClassInfo, DefineInfo, FunctionInfo, Visibility};
+pub use types::{AccessKind, ClassInfo, DefineInfo, FunctionInfo, NamespaceSpan, Visibility};
 pub use virtual_members::resolve_class_fully;
 
 // ─── Backend ────────────────────────────────────────────────────────────────
@@ -226,9 +226,13 @@ pub struct Backend {
     /// `parse_and_cache_content_versioned` (those files are never queried
     /// by byte offset).
     pub(crate) resolved_names: Arc<RwLock<HashMap<String, Arc<names::OwnedResolvedNames>>>>,
-    /// Maps a file URI to its declared namespace (e.g. `"Klarna\Rest\Checkout"`).
-    /// Files without a namespace declaration map to `None`.
-    pub(crate) namespace_map: Arc<RwLock<HashMap<String, Option<String>>>>,
+    /// Maps a file URI to the namespace blocks declared in it.
+    ///
+    /// Each entry is a list of [`NamespaceSpan`] covering the byte ranges of
+    /// the namespace blocks in the file.  Single-namespace files have exactly
+    /// one entry; multi-namespace files (using `namespace Foo { }` blocks)
+    /// have one entry per block.
+    pub(crate) namespace_map: Arc<RwLock<HashMap<String, Vec<NamespaceSpan>>>>,
     /// Global function definitions indexed by function name (short name).
     ///
     /// The value is `(file_uri, FunctionInfo)` so we can jump to the definition.

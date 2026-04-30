@@ -1514,7 +1514,12 @@ impl Backend {
         // unreferenced imports.
         let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
 
-        let namespace = self.namespace_map.read().get(uri).cloned().flatten();
+        let namespace = self
+            .namespace_map
+            .read()
+            .get(uri)
+            .and_then(|spans| spans.first())
+            .and_then(|s| s.namespace.clone());
 
         let resolved_names = self.resolved_names.read().get(uri).cloned();
 
@@ -1524,6 +1529,61 @@ impl Backend {
             namespace,
             resolved_names,
         }
+    }
+
+    /// Like [`file_context`](Self::file_context) but resolves the namespace
+    /// for the namespace block that contains `byte_offset`.
+    ///
+    /// In single-namespace files this returns the same result as
+    /// `file_context`.  In multi-namespace files it picks the correct
+    /// namespace block for the cursor position.
+    pub(crate) fn file_context_at(&self, uri: &str, byte_offset: u32) -> FileContext {
+        let classes = self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let namespace = self.namespace_at_offset(uri, byte_offset);
+        let resolved_names = self.resolved_names.read().get(uri).cloned();
+
+        FileContext {
+            classes,
+            use_map,
+            namespace,
+            resolved_names,
+        }
+    }
+
+    /// Return the namespace that contains the given byte offset in a file.
+    ///
+    /// For single-namespace files (the common case) this returns the file's
+    /// only namespace.  For multi-namespace files it finds the namespace
+    /// block whose byte range contains `byte_offset`.  Returns `None` when
+    /// the offset is in the global namespace or the file has no namespace.
+    pub(crate) fn namespace_at_offset(&self, uri: &str, byte_offset: u32) -> Option<String> {
+        let nmap = self.namespace_map.read();
+        let spans = nmap.get(uri)?;
+        // Try to find the namespace block containing the offset.
+        for span in spans {
+            if byte_offset >= span.start && byte_offset <= span.end {
+                return span.namespace.clone();
+            }
+        }
+        // Fallback: if the offset is past all namespace blocks (e.g.
+        // code after the last closing brace), return the last namespace.
+        spans.last().and_then(|s| s.namespace.clone())
+    }
+
+    /// Return the first namespace declared in a file.
+    ///
+    /// For single-namespace files this is the file's namespace.  For
+    /// multi-namespace files this returns the first block's namespace,
+    /// which may not be correct for all positions in the file.  Prefer
+    /// [`namespace_at_offset`](Self::namespace_at_offset) when a cursor
+    /// position is available.
+    pub(crate) fn first_file_namespace(&self, uri: &str) -> Option<String> {
+        self.namespace_map
+            .read()
+            .get(uri)
+            .and_then(|spans| spans.first())
+            .and_then(|s| s.namespace.clone())
     }
 
     /// Return the import table (short name → FQN) for a file.

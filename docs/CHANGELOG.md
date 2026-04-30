@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Literal `true`/`false` preserved in template inference.** Passing `true` or `false` to a generic constructor now keeps the precise type as the template argument (e.g. `C<false>`) instead of widening to `bool`.
+- **Multi-namespace file resolution.** Files with multiple `namespace Foo { }` blocks now resolve class names against the correct namespace for the cursor position instead of always using the first namespace.
 
 - **False-positive diagnostics on startup.** Files opened while the project was still indexing could produce hundreds of spurious "class not found" and "function not found" errors. Diagnostics are now deferred until initialization completes.
 - **Chained instantiation preserves constructor-inferred generics.** Expressions like `(new Box(new Product()))->get()` and `new Box(new Product())->get()` now propagate template arguments inferred from constructor parameters to subsequent method calls, so `get()` returns the concrete type instead of `mixed`.

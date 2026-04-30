@@ -271,6 +271,22 @@ impl fmt::Display for PhpVersion {
     }
 }
 
+/// A namespace block within a PHP file, tracking which byte range it covers.
+///
+/// Files with a single `namespace Foo;` declaration produce one span covering
+/// the entire file.  Files with multiple `namespace Foo { ... }` blocks produce
+/// one span per block.  Files without any namespace declaration produce a single
+/// span with `namespace: None`.
+#[derive(Debug, Clone)]
+pub struct NamespaceSpan {
+    /// The namespace name (e.g. `"App\Models"`), or `None` for the global namespace.
+    pub namespace: Option<String>,
+    /// Byte offset of the start of this namespace block (inclusive).
+    pub start: u32,
+    /// Byte offset of the end of this namespace block (inclusive).
+    pub end: u32,
+}
+
 /// Members extracted from a class-like body by `Backend::extract_class_like_members`.
 pub struct ExtractedMembers {
     /// Methods declared directly in the class body.
