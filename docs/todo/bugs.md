@@ -18,29 +18,30 @@ to second-guess upstream output.
 
 Constructor generic inference through inherited constructors,
 case-insensitive method lookup, function-level `@template`
-inference through generic wrapper params, and function name
-resolution in multi-namespace files are now fixed.
+inference through generic wrapper params, function name
+resolution in multi-namespace files, `@extends` with swapped
+parameter order, `__get` magic method with `key-of<T>`/`T[K]`,
+`@template-implements` return type inheritance from stub
+interfaces, and class-level generic substitution in method
+call return types via `@var` annotations are now fixed.
 Remaining gaps:
 
-- **Multi-namespace file class/function shadowing**: class names
-  from earlier namespaces leak into later namespaces in single-file
-  tests, causing wrong resolution. Works correctly in real projects.
+- **Array-access assignment overwrites `@var` generic type on
+  `ArrayAccess` objects**: `$obj[$key] = $val` on an object that
+  implements `ArrayAccess` causes the forward walker to lose the
+  `@var` generic annotation on `$obj`. Works correctly when there
+  is no array-access assignment between the `@var` and the method
+  call.
 - **Method-level `@template` with `key-of<T>` bound and `T[K]` return**:
   `key-of<T>`, `value-of<T>`, and `T[K]` now evaluate correctly after
   class-level template substitution. However, inferring a method-level
   template parameter `K` from a string literal argument (to resolve
   `T[K]` at a specific call site) is not yet supported.
-- **`__get` magic method template resolution**: `$foo->a` on a class
-  using `__get` with `@template K as key-of<TData>` / `@return TData[K]`
-  does not infer `K` from the property name.
-- **`@template-implements` return type inheritance from stub interfaces**:
-  when a class implements a stub-loaded interface (e.g. `IteratorAggregate`)
-  with `@template-implements Interface<T>` and overrides a method without
-  a return type, the interface method's substituted return type is not
-  propagated. Works correctly for same-file interfaces.
 
 **Tests:** SKIPs in `tests/psalm_assertions/template_class_template_extends.php`
-(lines 427, 500, 682, 737-738, 843, 980-981).
+(line 500).
+
+
 
 
 ## B14. Template/generic resolution in namespace-level and complex scenarios

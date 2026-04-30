@@ -424,7 +424,7 @@ namespace PsalmTest_template_class_template_extends_10 {
 
     $i = (new SomeIterator())->getIterator();
 
-    assertType('Traversable<int, Foo>', $i); // SKIP — stub-loaded interface (IteratorAggregate) template resolution not propagating to child method
+    assertType('Traversable<int, Foo>|array<Foo>', $i);
 }
 
 // Test: extendClassThatParameterizesTemplatedParent
@@ -497,7 +497,7 @@ namespace PsalmTest_template_class_template_extends_12 {
     /** @psalm-suppress MixedAssignment */
     $b = $storage->offsetGet($c);
 
-    assertType('mixed', $b); // SKIP — SplObjectStorage::offsetGet return type resolved as ?SpecificEntity instead of mixed
+    assertType('mixed', $b); // SKIP — array-access assignment ($storage[$c] = ...) overwrites @var generic type on ArrayAccess objects
 }
 
 // Test: templateExtendsOnceWithSpecificStaticCall
@@ -679,7 +679,7 @@ namespace PsalmTest_template_class_template_extends_16 {
     $i = $c->getIterator();
 
     assertType('C<string, int>', $c);
-    assertType('ArrayIterator<string, int>', $i); // SKIP — multi-namespace: SomeIterator from earlier namespace shadows ArrayIterator resolution
+    assertType('ArrayIterator<string, int>', $i);
 }
 
 // Test: keyOfClassTemplateExtended
@@ -977,8 +977,8 @@ namespace PsalmTest_template_class_template_extends_23 {
     $b = $pair->two;
 
     assertType('StringKeyedPair<int>', $pair);
-    assertType('int', $a); // SKIP — @extends Pair<TValue, string> swaps params but substitution maps them incorrectly
-    assertType('string', $b); // SKIP — @extends Pair<TValue, string> swaps params but substitution maps them incorrectly
+    assertType('int', $a);
+    assertType('string', $b);
 }
 
 // Test: templateExtendsFewerTemplateParameters

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Multi-namespace function return type resolution.** In files with multiple `namespace { }` blocks, function return types were resolved against the first namespace instead of the function's own namespace. This caused incorrect type inference for variables assigned from function calls in later namespace blocks.
+- **Template inference through stub interfaces.** `@template-implements` on stub-loaded interfaces (e.g. `IteratorAggregate<int, Foo>`) now correctly propagates substituted return types to child methods that omit a return type annotation. Previously these resolved as untyped.
+- **Generic method return types from `@var` annotations.** When a variable is annotated with a generic type (e.g. `/** @var Collection<int, User> */ $items`), method calls on that variable now correctly substitute class-level template parameters into the return type. Previously, return types like `TValue` remained unsubstituted.
 - **Short class name resolution in type hints.** When resolving an unqualified class name from a property or return type annotation, the resolver now prefers the class in the same namespace as the owning type before falling back to first-match.
 - **Foreach narrowing with break in else.** When a foreach body contained an `if` with an `else { break; }` branch, the variable state from the break path was not included in the post-loop type, causing the merged type to be too narrow.
 - **Foreach element type from untyped arrays.** Variables bound in a `foreach` over an untyped `array` (e.g. from a function returning bare `array`) now resolve to `mixed` instead of empty, so assignments from the loop variable propagate correctly.

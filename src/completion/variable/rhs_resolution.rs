@@ -2626,9 +2626,40 @@ fn resolve_rhs_method_call_inner<'b>(
     let is_union = owner_classes.len() > 1;
     let mut union_results: Vec<ResolvedType> = Vec::new();
 
-    for owner in &owner_classes {
-        let template_subs =
+    for (idx, owner) in owner_classes.iter().enumerate() {
+        // Build class-level template substitutions from the receiver's
+        // generic type string (e.g. `Collection<int, User>` maps
+        // `TKey => int, TValue => User`).  This ensures method return
+        // types like `TValue` are concretised when the receiver was
+        // annotated with generic arguments via `@var`.
+        let class_level_subs: HashMap<String, PhpType> = receiver_resolved
+            .get(idx)
+            .or_else(|| receiver_resolved.first())
+            .and_then(|rt| match &rt.type_string {
+                PhpType::Generic(_, args)
+                    if !args.is_empty()
+                        && !owner.template_params.is_empty()
+                        && !args.iter().any(|a| a.is_self_like()) =>
+                {
+                    Some(
+                        owner
+                            .template_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(name, ty)| (name.to_string(), ty.clone()))
+                            .collect(),
+                    )
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let method_template_subs =
             Backend::build_method_template_subs(owner, &method_name, &arg_refs, &rctx);
+
+        // Merge class-level and method-level subs. Method-level takes precedence.
+        let mut template_subs = class_level_subs;
+        template_subs.extend(method_template_subs);
         let mr_ctx = MethodReturnCtx {
             all_classes: ctx.all_classes,
             class_loader: ctx.class_loader,

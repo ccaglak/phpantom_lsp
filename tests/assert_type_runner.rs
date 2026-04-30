@@ -24,25 +24,6 @@ use std::path::Path;
 use phpantom_lsp::Backend;
 use tower_lsp::lsp_types::*;
 
-// ─── Stubs ──────────────────────────────────────────────────────────────────
-
-/// Minimal UnitEnum stub so enum tests can resolve `$name`.
-static UNIT_ENUM_STUB: &str = r#"<?php
-interface UnitEnum {
-    public string $name;
-    public static function cases(): array;
-}
-"#;
-
-/// Minimal BackedEnum stub so enum tests can resolve `$value`.
-static BACKED_ENUM_STUB: &str = r#"<?php
-interface BackedEnum extends UnitEnum {
-    public int|string $value;
-    public static function from(int|string $value): static;
-    public static function tryFrom(int|string $value): ?static;
-}
-"#;
-
 // ─── Assertion extraction ───────────────────────────────────────────────────
 
 /// A single `assertType('expected', expr)` call found in the source.
@@ -580,11 +561,7 @@ fn extract_type_from_hover(hover_text: &str, var_name: &str) -> Option<String> {
 // ─── Test runner ────────────────────────────────────────────────────────────
 
 fn create_assert_type_backend() -> Backend {
-    let mut class_stubs: HashMap<&'static str, &'static str> = HashMap::new();
-    class_stubs.insert("UnitEnum", UNIT_ENUM_STUB);
-    class_stubs.insert("BackedEnum", BACKED_ENUM_STUB);
-
-    Backend::new_test_with_all_stubs(class_stubs, HashMap::new(), HashMap::new())
+    Backend::new_test_with_full_stubs()
 }
 
 fn run_assert_type(path: &Path, content: String) -> datatest_stable::Result<()> {
