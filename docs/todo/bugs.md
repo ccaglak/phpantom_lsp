@@ -49,14 +49,26 @@ Remaining gaps:
 **Discovered:** SKIP audit of
 `tests/psalm_assertions/template_class_template.php`.
 
-Remaining failures are all caused by the multi-namespace
-infrastructure limitation: `FileContext.namespace` stores only the
-first namespace, so the class loader resolves bare names (e.g.
-`Foo`, `Collection`) against the wrong namespace when the same
-short name appears in multiple namespace blocks within one file.
+Remaining failures have multiple root causes (the original
+multi-namespace theory was incorrect for most of them):
+
+- **Lines 16, 29, 41, 56, 68:** Generic constructor inference
+  through iterator decorators (`CachingIterator(new ArrayIterator(...))`)
+  does not propagate template parameters. Fails in single-namespace
+  files too.
+- **Line 602:** Union generic method resolution (`C<A>|C<B>` → `->get()`)
+  does not resolve per-branch template substitutions.
+- **Line 752:** `new ArrayCollection()` with no args infers
+  `ArrayCollection<array, array>` instead of `ArrayCollection<never, never>`.
+- **Line 788:** Static method call `Collection::fromClassString(A::class)`
+  does not propagate the method-level template to the return type.
+
+**Fixed:** Line 122 — `@var` docblocks with additional tags
+(e.g. `@psalm-suppress`) after the type corrupted the type string.
+Fixed in `parse_inline_var_docblock_no_var`.
 
 **Tests:** SKIPs in `tests/psalm_assertions/template_class_template.php`
-(lines 16, 29, 41, 56, 68, 122, 602, 752, 788).
+(lines 16, 29, 41, 56, 68, 602, 752, 788).
 
 
 

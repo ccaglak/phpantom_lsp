@@ -13,7 +13,7 @@ namespace PsalmTest_template_class_template_1 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP multi-namespace class resolution
+    assertType('null|string', $value); // SKIP generic iterator constructor inference
     assertType('bool', $next);
 }
 
@@ -26,7 +26,7 @@ namespace PsalmTest_template_class_template_2 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP multi-namespace class resolution
+    assertType('null|string', $value); // SKIP generic iterator constructor inference
 }
 
 // Test: limitIterator
@@ -38,7 +38,7 @@ namespace PsalmTest_template_class_template_3 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP multi-namespace class resolution
+    assertType('null|string', $value); // SKIP generic iterator constructor inference
 }
 
 // Test: callbackFilterIterator
@@ -53,7 +53,7 @@ namespace PsalmTest_template_class_template_4 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP multi-namespace class resolution
+    assertType('null|string', $value); // SKIP generic iterator constructor inference
 }
 
 // Test: noRewindIterator
@@ -65,7 +65,7 @@ namespace PsalmTest_template_class_template_5 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP multi-namespace class resolution
+    assertType('null|string', $value); // SKIP generic iterator constructor inference
 }
 
 // Test: classTemplate
@@ -119,7 +119,7 @@ namespace PsalmTest_template_class_template_6 {
     $cfoo_bar = $cfoo->bar();
 
     assertType('Foo<A>', $afoo);
-    assertType('A', $afoo_bar); // SKIP multi-namespace class resolution (Foo collision with ns6)
+    assertType('A', $afoo_bar); 
     assertType('Foo<B>', $bfoo);
     assertType('B', $bfoo_bar);
     assertType('Foo<C>', $cfoo);
@@ -599,7 +599,7 @@ namespace PsalmTest_template_class_template_18 {
     $a_or_b = $random_collection->get();
 
     assertType('C<A>|C<B>', $random_collection);
-    assertType('A|B', $a_or_b); // SKIP multi-namespace class resolution (C collision)
+    assertType('A|B', $a_or_b); // SKIP union generic method resolution
 }
 
 // Test: templatedGet
@@ -749,7 +749,7 @@ namespace PsalmTest_template_class_template_23 {
         }
     }
 
-    assertType('ArrayCollection<never, never>', $a); // SKIP multi-namespace class resolution (ArrayCollection collision)
+    assertType('ArrayCollection<never, never>', $a); // SKIP generic constructor inference (never)
 }
 
 // Test: unionClassStringInferenceAndDefaultEmptyArray
@@ -785,7 +785,7 @@ namespace PsalmTest_template_class_template_24 {
         }
     }
 
-    assertType('Collection<A>', $packages); // SKIP multi-namespace class resolution (Collection collision)
+    assertType('Collection<A>', $packages); // SKIP static method call generic inference
 }
 
 // Test: newWithoutInferredTemplate

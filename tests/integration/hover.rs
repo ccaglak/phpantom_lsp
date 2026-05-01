@@ -2,7 +2,8 @@
 
 use crate::common::{
     create_psr4_workspace, create_test_backend, create_test_backend_with_closure_stub,
-    create_test_backend_with_function_stubs, create_test_backend_with_stdclass_stub,
+    create_test_backend_with_full_stubs, create_test_backend_with_function_stubs,
+    create_test_backend_with_stdclass_stub,
 };
 use phpantom_lsp::Backend;
 use tower_lsp::lsp_types::*;
@@ -11124,6 +11125,75 @@ $result = $a;
     assert!(
         text.contains("null"),
         "After while($a) loop, $a should be null, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_multi_namespace_template_foo_collision() {
+    // Regression: when `@var Foo<A>` is followed by extra tags
+    // (e.g. `@psalm-suppress`) in the docblock, the type parser
+    // would include the extra lines in the type string, breaking
+    // resolution. This test verifies the fix works with multiple
+    // namespace blocks and Foo collisions across them.
+    let backend = create_test_backend_with_full_stubs();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+namespace NS6 {
+    class A {}
+
+    /**
+     * @template T as object
+     */
+    class Foo {
+        /** @var class-string<T> */
+        public $T;
+        /**
+         * @param class-string<T> $T
+         */
+        public function __construct(string $T) {
+            $this->T = $T;
+        }
+        /**
+         * @return T
+         */
+        public function bar() {
+            $t = $this->T;
+            return new $t();
+        }
+    }
+
+    /**
+     * @var Foo<A>
+     * @psalm-suppress ArgumentTypeCoercion
+     */
+    $afoo = new Foo('A');
+    $afoo_bar = $afoo->bar();
+}
+namespace NS7 {
+    /**
+     * @template T as object
+     */
+    class Foo {
+        /** @var T */
+        public $item;
+    }
+}
+"#;
+    let target_line = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("$afoo_bar = $afoo->bar()"))
+        .map(|(i, _)| i as u32)
+        .unwrap();
+    let line_text = content.lines().nth(target_line as usize).unwrap();
+    let col = line_text.find("$afoo_bar").unwrap() as u32;
+    let hover = hover_at(&backend, uri, content, target_line, col + 1)
+        .expect("expected hover on $afoo_bar");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("A"),
+        "$afoo_bar should resolve to A via Foo<A>::bar(), got: {}",
         text
     );
 }

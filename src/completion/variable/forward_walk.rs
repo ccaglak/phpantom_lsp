@@ -3966,6 +3966,13 @@ fn parse_inline_var_docblock_no_var(doc_text: &str, _ctx: &ForwardWalkCtx<'_>) -
         .or_else(|| inner.strip_prefix("* @var"))?;
     let inner = inner.trim();
 
+    // For multi-line docblocks, only take the type from the first line.
+    // Additional lines may contain other tags like @psalm-suppress that
+    // would corrupt the type string.
+    let inner = inner.lines().next().unwrap_or(inner).trim();
+    // Strip trailing `*` that may remain from `* @var Type  *` formatting.
+    let inner = inner.trim_end_matches('*').trim();
+
     // If there's a `$` it has a variable name — not the no-var form.
     if inner.contains('$') {
         return None;
