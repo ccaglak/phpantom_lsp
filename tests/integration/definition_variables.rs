@@ -3746,3 +3746,70 @@ async fn test_goto_definition_rhs_same_assignment_jumps_to_original() {
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
 }
+
+/// Conditional assignment inside if-block should not override the outer
+/// definition for variable references after the if-block.
+#[tokio::test]
+async fn test_goto_definition_conditional_does_not_override_outer() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_cond_override.php").unwrap();
+
+    // line 0: <?php
+    // line 1: function demo(): void {
+    // line 2:     $z = 'a';
+    // line 3:     if (random_int(0, 1)) {
+    // line 4:         $z = 'b';
+    // line 5:     }
+    // line 6:     echo $z;
+    // line 7: }
+    let text = concat!(
+        "<?php\n",
+        "function demo(): void {\n",
+        "    $z = 'a';\n",
+        "    if (random_int(0, 1)) {\n",
+        "        $z = 'b';\n",
+        "    }\n",
+        "    echo $z;\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor on `$z` in `echo $z;` (line 6, char 9)
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 6,
+                character: 9,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve $z to the outer assignment"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(
+                location.range.start.line, 2,
+                "$z should jump to line 2 (outer assignment), not line 4 (conditional)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}

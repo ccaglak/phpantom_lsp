@@ -324,6 +324,16 @@ pub(crate) struct VarDefSite {
     /// and **destructuring** definitions this equals `offset` (the
     /// definition is immediately visible).
     pub effective_from: u32,
+    /// How many conditional nesting levels deep this definition is
+    /// (if/else, switch, while, etc.) relative to the enclosing scope.
+    /// Top-level statements in the function body have depth 0.
+    /// Used to prefer outer-scope definitions over conditional ones.
+    pub nesting_depth: u16,
+    /// End byte offset of the innermost conditional block containing
+    /// this definition.  When the cursor is past this offset, this
+    /// definition should not override a shallower one.  `u32::MAX`
+    /// for top-level (depth 0) definitions.
+    pub block_end: u32,
 }
 
 /// A closure or arrow function passed as an argument to a callable-typed
@@ -580,9 +590,33 @@ impl SymbolMap {
         cursor_offset: u32,
         scope_start: u32,
     ) -> Option<&VarDefSite> {
-        self.var_defs.iter().rev().find(|d| {
-            d.name == var_name && d.scope_start == scope_start && d.effective_from <= cursor_offset
-        })
+        // Find all visible definitions for this variable in this scope.
+        // Prefer the most recent one, but if a shallower (outer) definition
+        // exists, prefer it over a deeper (conditional) one when the cursor
+        // is outside the conditional block.
+        let mut best: Option<&VarDefSite> = None;
+        for d in self.var_defs.iter() {
+            if d.name != var_name
+                || d.scope_start != scope_start
+                || d.effective_from > cursor_offset
+            {
+                continue;
+            }
+            match best {
+                None => best = Some(d),
+                Some(prev) => {
+                    if d.nesting_depth <= prev.nesting_depth {
+                        // Same or shallower depth: more recent wins.
+                        best = Some(d);
+                    } else if cursor_offset <= d.block_end {
+                        // Deeper, but cursor is inside the block: use it.
+                        best = Some(d);
+                    }
+                    // Deeper and cursor is past the block: keep prev.
+                }
+            }
+        }
+        best
     }
 
     /// Return the `effective_from` offset of the most recent definition

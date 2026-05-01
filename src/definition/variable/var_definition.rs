@@ -494,6 +494,15 @@ fn find_def_in_statement_list(
                         ExprDefResult::AtDefinition => return VarDefSearchResult::AtDefinition,
                         ExprDefResult::Found(site) => best = Some(site),
                     }
+                } else if best.is_none() {
+                    // Array access assignments only count as a definition
+                    // site when no prior definition exists — they implicitly
+                    // create the variable on first use.
+                    if let Some(site) =
+                        find_array_access_def(expr_stmt.expression, var_name, cursor_offset)
+                    {
+                        best = Some(site);
+                    }
                 }
             }
 
@@ -595,7 +604,12 @@ fn find_def_in_statement_list(
                         let inner_stmts = vec![inner];
                         let result =
                             find_def_in_statement_list(&inner_stmts, var_name, cursor_offset, best);
-                        if let VarDefSearchResult::FoundAt { offset, end_offset } = result {
+                        if let VarDefSearchResult::FoundAt { offset, end_offset } = result
+                            && best.is_none()
+                        {
+                            // Only update best if no prior definition exists.
+                            // Assignments inside conditional branches are
+                            // refinements, not new definitions.
                             best = Some(DefSite { offset, end_offset });
                         }
                     }
@@ -666,7 +680,9 @@ fn find_def_in_statement_list(
                     if starts_before_cursor {
                         let result =
                             find_def_in_statement_list(&case_stmts, var_name, cursor_offset, best);
-                        if let VarDefSearchResult::FoundAt { offset, end_offset } = result {
+                        if let VarDefSearchResult::FoundAt { offset, end_offset } = result
+                            && best.is_none()
+                        {
                             best = Some(DefSite { offset, end_offset });
                         }
                     }
@@ -930,5 +946,54 @@ fn check_foreach_def(
         }
     }
 
+    None
+}
+
+/// Walk through nested `ArrayAccess` and `ArrayAppend` expressions to
+/// find the base direct variable.  For example, given `$z['a']['x']`,
+/// this returns the `DirectVariable` node for `$z`.
+fn extract_base_variable<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
+    let mut current = expr;
+    loop {
+        match current {
+            Expression::ArrayAccess(aa) => current = aa.array,
+            Expression::ArrayAppend(ap) => current = ap.array,
+            Expression::Variable(Variable::Direct(dv)) => return Some(dv),
+            _ => return None,
+        }
+    }
+}
+
+/// Check if an expression is an array access/append assignment
+/// (`$var['key'] = …` or `$var[] = …`) and return the base variable's
+/// definition site.  Returns `None` if the cursor is on this very
+/// occurrence (so it won't self-reference).
+fn find_array_access_def(
+    expr: &Expression<'_>,
+    var_name: &str,
+    cursor_offset: u32,
+) -> Option<DefSite> {
+    if let Expression::Assignment(assignment) = expr
+        && assignment.operator.is_assign()
+        && matches!(
+            assignment.lhs,
+            Expression::ArrayAccess(_) | Expression::ArrayAppend(_)
+        )
+        && let Some(dv) = extract_base_variable(assignment.lhs)
+        && dv.name == var_name
+    {
+        let var_start = dv.span.start.offset;
+        let var_end = dv.span.end.offset;
+        // Skip if cursor is on this occurrence or inside the RHS.
+        if cursor_offset >= var_start && cursor_offset <= assignment.rhs.span().end.offset {
+            return None;
+        }
+        if var_start < cursor_offset {
+            return Some(DefSite {
+                offset: var_start,
+                end_offset: var_end,
+            });
+        }
+    }
     None
 }

@@ -66,6 +66,12 @@ struct ExtractionCtx<'a> {
     /// Closures and arrow functions passed as arguments to callable-typed
     /// parameters, used by inlay hints.
     untyped_closure_sites: Vec<UntypedClosureSite>,
+    /// Current conditional nesting depth (if/else, switch, while, for, etc.).
+    /// Incremented when entering a conditional block, decremented when leaving.
+    cond_nesting_depth: u16,
+    /// Stack of block-end offsets for each conditional nesting level.
+    /// The top of the stack is the end of the innermost conditional block.
+    cond_block_end_stack: Vec<u32>,
 }
 
 // ─── AST extraction ─────────────────────────────────────────────────────────
@@ -90,6 +96,8 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
         trivias: program.trivia.as_slice(),
         content,
         untyped_closure_sites: Vec::new(),
+        cond_nesting_depth: 0,
+        cond_block_end_stack: Vec::new(),
     };
 
     for stmt in program.statements.iter() {
@@ -269,6 +277,8 @@ fn extract_from_statement<'a>(
                         kind: VarDefKind::Foreach,
                         scope_start,
                         effective_from: offset,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                     });
                 }
             }
@@ -284,6 +294,8 @@ fn extract_from_statement<'a>(
                     kind: VarDefKind::Foreach,
                     scope_start,
                     effective_from: offset,
+                    nesting_depth: ctx.cond_nesting_depth,
+                    block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                 });
             }
             let body_span = foreach_stmt.body.span();
@@ -326,11 +338,16 @@ fn extract_from_statement<'a>(
                         kind: VarDefKind::Catch,
                         scope_start,
                         effective_from: catch_var_offset,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                     });
                 }
+                let catch_block_end = catch.block.span().end.offset;
+                push_cond_nesting(ctx, catch_block_end);
                 for s in catch.block.statements.iter() {
                     extract_from_statement(s, ctx, scope_start);
                 }
+                pop_cond_nesting(ctx);
             }
             if let Some(ref finally) = try_stmt.finally_clause {
                 for s in finally.block.statements.iter() {
@@ -360,6 +377,8 @@ fn extract_from_statement<'a>(
                         kind: VarDefKind::GlobalDecl,
                         scope_start,
                         effective_from: global_offset,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                     });
                 }
             }
@@ -381,6 +400,8 @@ fn extract_from_statement<'a>(
                     kind: VarDefKind::StaticDecl,
                     scope_start,
                     effective_from: static_offset,
+                    nesting_depth: ctx.cond_nesting_depth,
+                    block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                 });
             }
         }
@@ -434,6 +455,18 @@ fn record_loop_scope(start: u32, end: u32, ctx: &mut ExtractionCtx<'_>) {
     }
 }
 
+/// Push a new conditional nesting level with the given block end offset.
+fn push_cond_nesting(ctx: &mut ExtractionCtx<'_>, block_end: u32) {
+    ctx.cond_nesting_depth += 1;
+    ctx.cond_block_end_stack.push(block_end);
+}
+
+/// Pop the most recent conditional nesting level.
+fn pop_cond_nesting(ctx: &mut ExtractionCtx<'_>) {
+    ctx.cond_nesting_depth = ctx.cond_nesting_depth.saturating_sub(1);
+    ctx.cond_block_end_stack.pop();
+}
+
 fn extract_from_if_body<'a>(body: &'a IfBody<'a>, ctx: &mut ExtractionCtx<'a>, scope_start: u32) {
     match body {
         IfBody::Statement(stmt_body) => {
@@ -441,21 +474,27 @@ fn extract_from_if_body<'a>(body: &'a IfBody<'a>, ctx: &mut ExtractionCtx<'a>, s
             let then_span = stmt_body.statement.span();
             ctx.narrowing_blocks
                 .push((then_span.start.offset, then_span.end.offset));
+            push_cond_nesting(ctx, then_span.end.offset);
             extract_from_statement(stmt_body.statement, ctx, scope_start);
+            pop_cond_nesting(ctx);
             for else_if in stmt_body.else_if_clauses.iter() {
                 extract_from_expression(else_if.condition, ctx, scope_start);
                 // Record elseif-body as a narrowing block.
                 let ei_span = else_if.statement.span();
                 ctx.narrowing_blocks
                     .push((ei_span.start.offset, ei_span.end.offset));
+                push_cond_nesting(ctx, ei_span.end.offset);
                 extract_from_statement(else_if.statement, ctx, scope_start);
+                pop_cond_nesting(ctx);
             }
             if let Some(ref else_clause) = stmt_body.else_clause {
                 // Record else-body as a narrowing block.
                 let el_span = else_clause.statement.span();
                 ctx.narrowing_blocks
                     .push((el_span.start.offset, el_span.end.offset));
+                push_cond_nesting(ctx, el_span.end.offset);
                 extract_from_statement(else_clause.statement, ctx, scope_start);
+                pop_cond_nesting(ctx);
             }
         }
         IfBody::ColonDelimited(colon_body) => {
@@ -466,9 +505,16 @@ fn extract_from_if_body<'a>(body: &'a IfBody<'a>, ctx: &mut ExtractionCtx<'a>, s
                 ctx.narrowing_blocks
                     .push((first.span().start.offset, last.span().end.offset));
             }
+            let colon_end = colon_body
+                .statements
+                .last()
+                .map(|s| s.span().end.offset)
+                .unwrap_or(0);
+            push_cond_nesting(ctx, colon_end);
             for inner in colon_body.statements.iter() {
                 extract_from_statement(inner, ctx, scope_start);
             }
+            pop_cond_nesting(ctx);
             for else_if in colon_body.else_if_clauses.iter() {
                 extract_from_expression(else_if.condition, ctx, scope_start);
                 if let (Some(first), Some(last)) =
@@ -477,9 +523,16 @@ fn extract_from_if_body<'a>(body: &'a IfBody<'a>, ctx: &mut ExtractionCtx<'a>, s
                     ctx.narrowing_blocks
                         .push((first.span().start.offset, last.span().end.offset));
                 }
+                let ei_end = else_if
+                    .statements
+                    .last()
+                    .map(|s| s.span().end.offset)
+                    .unwrap_or(0);
+                push_cond_nesting(ctx, ei_end);
                 for inner in else_if.statements.iter() {
                     extract_from_statement(inner, ctx, scope_start);
                 }
+                pop_cond_nesting(ctx);
             }
             if let Some(ref else_clause) = colon_body.else_clause {
                 if let (Some(first), Some(last)) = (
@@ -489,9 +542,16 @@ fn extract_from_if_body<'a>(body: &'a IfBody<'a>, ctx: &mut ExtractionCtx<'a>, s
                     ctx.narrowing_blocks
                         .push((first.span().start.offset, last.span().end.offset));
                 }
+                let el_end = else_clause
+                    .statements
+                    .last()
+                    .map(|s| s.span().end.offset)
+                    .unwrap_or(0);
+                push_cond_nesting(ctx, el_end);
                 for inner in else_clause.statements.iter() {
                     extract_from_statement(inner, ctx, scope_start);
                 }
+                pop_cond_nesting(ctx);
             }
         }
     }
@@ -537,9 +597,16 @@ fn extract_from_switch_body<'a>(
         SwitchBody::ColonDelimited(b) => &b.cases,
     };
     for case in cases.iter() {
+        let case_end = case
+            .statements()
+            .last()
+            .map(|s| s.span().end.offset)
+            .unwrap_or(0);
+        push_cond_nesting(ctx, case_end);
         for inner in case.statements().iter() {
             extract_from_statement(inner, ctx, scope_start);
         }
+        pop_cond_nesting(ctx);
     }
 }
 
@@ -1053,6 +1120,8 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
                 kind: VarDefKind::DocblockParam,
                 scope_start: method_scope_start,
                 effective_from: file_offset,
+                nesting_depth: ctx.cond_nesting_depth,
+                block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
             });
         }
     }
@@ -1091,6 +1160,8 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
             kind: VarDefKind::Parameter,
             scope_start: method_scope_start,
             effective_from: param_offset,
+            nesting_depth: ctx.cond_nesting_depth,
+            block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
         });
         if let Some(ref default) = param.default_value {
             extract_from_expression(default.value, ctx, method_scope_start);
@@ -1163,6 +1234,8 @@ fn extract_from_property<'a>(property: &Property<'a>, ctx: &mut ExtractionCtx<'a
                     kind: VarDefKind::Property,
                     scope_start: 0,
                     effective_from: var_offset,
+                    nesting_depth: ctx.cond_nesting_depth,
+                    block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                 });
                 // Walk the default value expression so that class
                 // references like `Foo::class` in property defaults
@@ -1187,6 +1260,8 @@ fn extract_from_property<'a>(property: &Property<'a>, ctx: &mut ExtractionCtx<'a
                 kind: VarDefKind::Property,
                 scope_start: 0,
                 effective_from: var_offset,
+                nesting_depth: ctx.cond_nesting_depth,
+                block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
             });
             if let PropertyItem::Concrete(concrete) = &hooked.item {
                 extract_from_expression(concrete.value, ctx, 0);
@@ -1293,6 +1368,8 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
                 kind: VarDefKind::DocblockParam,
                 scope_start: func_scope_start,
                 effective_from: file_offset,
+                nesting_depth: ctx.cond_nesting_depth,
+                block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
             });
         }
     }
@@ -1333,6 +1410,8 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
             kind: VarDefKind::Parameter,
             scope_start: func_scope_start,
             effective_from: param_offset,
+            nesting_depth: ctx.cond_nesting_depth,
+            block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
         });
         if let Some(ref default) = param.default_value {
             extract_from_expression(default.value, ctx, func_scope_start);
@@ -1841,6 +1920,8 @@ fn extract_from_expression<'a>(
                         kind,
                         scope_start,
                         effective_from: effective,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                     });
                 }
                 // Array destructuring: `[$a, $b] = ...`
@@ -1961,6 +2042,8 @@ fn extract_from_expression<'a>(
                     kind: VarDefKind::Parameter,
                     scope_start: closure_scope_start,
                     effective_from: cp_offset,
+                    nesting_depth: ctx.cond_nesting_depth,
+                    block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                 });
                 if let Some(ref default) = param.default_value {
                     extract_from_expression(default.value, ctx, closure_scope_start);
@@ -1989,6 +2072,8 @@ fn extract_from_expression<'a>(
                         kind: VarDefKind::ClosureCapture,
                         scope_start: closure_scope_start,
                         effective_from: use_var_offset,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                     });
                 }
             }
@@ -2034,6 +2119,8 @@ fn extract_from_expression<'a>(
                     kind: VarDefKind::Parameter,
                     scope_start: arrow_scope_start,
                     effective_from: ap_offset,
+                    nesting_depth: ctx.cond_nesting_depth,
+                    block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
                 });
                 if let Some(ref default) = param.default_value {
                     extract_from_expression(default.value, ctx, arrow_scope_start);
@@ -2310,6 +2397,8 @@ fn collect_destructuring_var_defs(
                     kind: kind.clone(),
                     scope_start,
                     effective_from,
+                    nesting_depth: 0,
+                    block_end: u32::MAX,
                 });
             }
             // Nested destructuring: `[[$a, $b], $c] = ...`

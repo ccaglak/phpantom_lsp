@@ -52,6 +52,132 @@ fn at_definition_returns_at_definition() {
 }
 
 #[test]
+fn array_access_assignment_found() {
+    let php = "<?php\nfunction z() {\n    $z['a']['x'] = 'a';\n    $z['b']['y'] = 'a';\n    $z['c']['z'] = 'a';\n}\n";
+    // Cursor on `$z` in the 3rd assignment — should jump to the first (where $z is created).
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            let def_offset = find_offset(php, "$z", 0);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn array_access_after_direct_assignment() {
+    let php = "<?php\nfunction z() {\n    $z = [];\n    $z['a']['x'] = 'a';\n    $z['b']['y'] = 'a';\n}\n";
+    // Cursor on 3rd $z (last array access) — should jump to `$z = []`.
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            let def_offset = find_offset(php, "$z", 0);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn array_access_after_reassignment() {
+    // Direct assignment redefines: array accesses after it should jump to the reassignment.
+    let php = "<?php\nfunction z() {\n    $z['c']['z'] = 'a';\n    $z = [];\n    $z['a']['x'] = 'a';\n    $z['b']['y'] = 'a';\n}\n";
+    // Cursor on last $z — should jump to `$z = []` (the reassignment).
+    let cursor = find_offset(php, "$z", 3);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            // `$z = []` is the 2nd occurrence of $z
+            let def_offset = find_offset(php, "$z", 1);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn conditional_assignment_does_not_override_definition() {
+    // Assignment inside if-block should not override the outer definition.
+    let php = "<?php\nfunction z() {\n    $z = [];\n    if (random()) {\n        $z = ['a' => []];\n    }\n    $z['a']['x'] = 'a';\n}\n";
+    // Cursor on last $z — should jump to the first `$z = []`, not the one inside if.
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            let def_offset = find_offset(php, "$z", 0);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn conditional_direct_assignment_does_not_override() {
+    // Same principle for direct variable usage after conditional reassignment.
+    let php = "<?php\nfunction b() {\n    $z = 'a';\n    if (random()) {\n        $z = 'b';\n    }\n    echo $z;\n}\n";
+    // Cursor on `$z` in `echo $z` — should jump to `$z = 'a'`.
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            let def_offset = find_offset(php, "$z", 0);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn inner_scope_assignment_found_when_cursor_inside() {
+    // When cursor is inside the conditional block, the inner assignment is the definition.
+    let php = "<?php\nfunction b() {\n    $z = 'a';\n    if (random()) {\n        $z = 'b';\n        echo $z;\n    }\n}\n";
+    // Cursor on `$z` in `echo $z` inside the if block — should jump to `$z = 'b'`.
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            // `$z = 'b'` is the 2nd occurrence
+            let def_offset = find_offset(php, "$z", 1);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
+fn conditional_only_definition_found_from_outer_scope() {
+    // Variable only defined inside a conditional — usage after should still find it.
+    let php = "<?php\nfunction c() {\n    if (random()) {\n        $z = 'b';\n        echo $z;\n    }\n    echo $z;\n}\n";
+    // Cursor on `$z` in the outer `echo $z` — best match is `$z = 'b'` inside if.
+    let cursor = find_offset(php, "$z", 2);
+    match find_def(php, "$z", cursor) {
+        VarDefSearchResult::FoundAt { offset, .. } => {
+            let def_offset = find_offset(php, "$z", 0);
+            assert_eq!(offset, def_offset);
+        }
+        other => panic!(
+            "Expected FoundAt, got {:?}",
+            matches!(other, VarDefSearchResult::NotFound)
+        ),
+    }
+}
+
+#[test]
 fn parameter_found() {
     let php = "<?php\nfunction test($bar) {\n    echo $bar;\n}\n";
     let cursor = find_offset(php, "$bar", 1);
