@@ -297,4 +297,76 @@ mod tests {
         let result = backend.goto_definition(params).await.unwrap();
         let _ = result;
     }
+
+    #[tokio::test]
+    async fn test_blade_variable_completion_in_echo() {
+        let backend = create_test_backend();
+
+        let php_uri = Url::parse("file:///Item.php").unwrap();
+        let php_text = "<?php class Item { public string $name; public int $price; }";
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: php_uri.clone(),
+                    language_id: "php".to_string(),
+                    version: 1,
+                    text: php_text.to_string(),
+                },
+            })
+            .await;
+
+        let blade_uri = Url::parse("file:///shop.blade.php").unwrap();
+        // Line 0: @php $item = new Item(); @endphp
+        // Line 1: {{ $item-> }}
+        let blade_text = "@php $item = new Item(); @endphp\n{{ $item-> }}";
+
+        backend
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: blade_uri.clone(),
+                    language_id: "blade".to_string(),
+                    version: 1,
+                    text: blade_text.to_string(),
+                },
+            })
+            .await;
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: blade_uri.clone(),
+                },
+                position: Position {
+                    line: 1,
+                    character: 10, // after "$item->"
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: Some(CompletionContext {
+                trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                trigger_character: Some(">".to_string()),
+            }),
+        };
+
+        let result = backend.completion(params).await.unwrap();
+        assert!(result.is_some(), "Should return completions for $item->");
+
+        let items = match result.unwrap() {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"name"),
+            "Should complete 'name' property, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"price"),
+            "Should complete 'price' property, got: {:?}",
+            labels
+        );
+    }
 }

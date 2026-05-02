@@ -263,10 +263,22 @@ impl Backend {
         params: CompletionParams,
     ) -> Result<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri.to_string();
-        let position = params.text_document_position.position;
+        let mut position = params.text_document_position.position;
 
-        // Get file content for offset calculation
-        let content = self.get_file_content(&uri);
+        // Get file content for offset calculation.  For Blade files,
+        // use the virtual PHP content and translate the cursor position
+        // so that variable resolution walks the preprocessed AST.
+        let content = if crate::blade::is_blade_file(&uri) {
+            let vc = self.blade_virtual_content.read();
+            if let Some(virtual_php) = vc.get(&uri) {
+                position = self.translate_blade_to_php(&uri, position);
+                Some(virtual_php.clone())
+            } else {
+                self.get_file_content(&uri)
+            }
+        } else {
+            self.get_file_content(&uri)
+        };
 
         if let Some(content) = content {
             // Activate the chain resolution cache so that shared chain

@@ -62,17 +62,6 @@ translate the returned `Hover.range` back (php→blade). Other
 handlers (rename, highlights, linked editing) already do this
 translation.
 
-### Dynamic completion does not work inside echo expressions
-
-Static completion (class names, `Mysql::` members) works because it
-is resolved from the global symbol index without needing positional
-content. Dynamic completion (`$country->`) fails because it requires
-walking the AST to find variable assignments and infer types, which
-depends on the virtual PHP content and a correctly translated cursor
-position. The `handle_completion` method in `handler.rs` bypasses
-`with_file_content` and calls `get_file_content` directly, so it
-operates on the original Blade source with an untranslated position.
-
 ### Syntax coloring may not appear
 
 The semantic token provider correctly handles Blade files internally,
