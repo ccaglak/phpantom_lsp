@@ -33,6 +33,19 @@ impl Backend {
     /// changed (or a class was added/removed), meaning other open files
     /// that reference those classes may have stale diagnostics.
     pub fn update_ast(&self, uri: &str, content: &str) -> bool {
+        let content_to_parse = if crate::blade::is_blade_file(uri) {
+            let (virtual_php, source_map) = crate::blade::preprocessor::preprocess(content);
+            self.blade_source_maps
+                .write()
+                .insert(uri.to_string(), source_map);
+            self.blade_virtual_content
+                .write()
+                .insert(uri.to_string(), virtual_php.clone());
+            virtual_php
+        } else {
+            content.to_string()
+        };
+
         // The mago-syntax parser contains `unreachable!()` and `.expect()`
         // calls that can panic on malformed PHP (e.g. partially-written
         // heredocs/nowdocs, which are common while editing).  Wrap the
@@ -42,7 +55,7 @@ impl Backend {
         // On panic the file is simply skipped — no maps are updated, and
         // the user gets stale (but not missing) completions until the
         // file is saved in a parseable state.
-        let content_owned = content.to_string();
+        let content_owned = content_to_parse;
         let uri_owned = uri.to_string();
 
         let result = crate::util::catch_panic_unwind_safe("parse", uri, None, || {

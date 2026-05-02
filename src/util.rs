@@ -400,8 +400,14 @@ pub(crate) fn utf16_col_to_byte_offset(line: &str, utf16_col: u32) -> usize {
 /// Returns the total UTF-16 length of the line if `byte_offset` is past
 /// the end.
 pub(crate) fn byte_offset_to_utf16_col(line: &str, byte_offset: usize) -> u32 {
-    let clamped = byte_offset.min(line.len());
-    line[..clamped].encode_utf16().count() as u32
+    let mut col = 0u32;
+    for (i, ch) in line.char_indices() {
+        if i >= byte_offset {
+            return col;
+        }
+        col += ch.len_utf16() as u32;
+    }
+    col
 }
 
 /// Extract the short (unqualified) class name from a potentially

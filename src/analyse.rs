@@ -626,6 +626,12 @@ pub(crate) fn discover_user_files(
         .filter(|p| p.is_dir())
         .collect();
 
+    // Also scan Laravel Blade view directories (from config/view.php
+    // or the conventional resources/views fallback).
+    for view_dir in crate::blade::discover_view_paths(workspace_root) {
+        source_dirs.push(view_dir);
+    }
+
     source_dirs.sort();
     source_dirs.dedup();
 
