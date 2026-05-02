@@ -20,11 +20,12 @@ to second-guess upstream output.
 Remaining failures have multiple root causes (the original
 multi-namespace theory was incorrect for most of them):
 
-- **Lines 16, 29, 41, 56, 68:** SPL iterator stubs
-  (`CachingIterator`, `InfiniteIterator`, `LimitIterator`,
-  `CallbackFilterIterator`, `NoRewindIterator`) lack `@template`
-  annotations, so generic type propagation through iterator
-  decorator constructors is impossible with current stubs.
+- **Lines 16, 29, 41, 56, 68:** `range()` returns bare `array` in
+  phpstorm-stubs (no generic args), so the type information is lost
+  before it reaches the iterator constructors.  The iterator
+  decorator stub patches themselves work correctly when the input
+  array has generic type annotations (see
+  `tests/psalm_assertions/spl_iterator_patches.php`).
 - **Lines 602, 788:** Union generic method resolution and static
   method template inference work correctly in single-namespace
   files. The failures are caused by the multi-namespace test
@@ -42,6 +43,10 @@ multi-namespace theory was incorrect for most of them):
   `extract_param_raw_type_from_info` returned the first match in
   document order instead of respecting `@phpstan-param` >
   `@psalm-param` > `@param` priority.
+- SPL iterator decorator stubs (`CachingIterator`,
+  `InfiniteIterator`, `LimitIterator`, `CallbackFilterIterator`,
+  `FilterIterator`) and `ArrayIterator` constructor patched with
+  `@template` annotations matching PHPStan's stubs.
 
 **Tests:** SKIPs in `tests/psalm_assertions/template_class_template.php`
 (lines 16, 29, 41, 56, 68, 602, 788).
@@ -72,10 +77,10 @@ tests that may now pass. Run
 `cargo nextest run --test assert_type_runner --no-fail-fast` with
 the SKIP removed to verify.
 
-Remaining SKIPs (11) are:
-- `template_class_template.php` (7) — B14: SPL stubs lack
-  @template annotations (5), multi-namespace test runner
-  limitation (2)
+Remaining SKIPs (7) are:
+- `template_class_template.php` (5) — `range()` returns bare
+  `array`, no generic info to propagate through iterator chain;
+  (2) — multi-namespace test runner limitation
 - `magic_method_annotation.php` (3) — B14 cross-namespace
   resolution in single-file test runner
 - `mixin_annotation.php` (1) — `IteratorIterator` not in fixture

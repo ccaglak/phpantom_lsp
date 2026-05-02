@@ -13,7 +13,7 @@ namespace PsalmTest_template_class_template_1 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP SPL stubs lack @template annotations
+    assertType('null|string', $value); // SKIP range() returns bare array, no generic info to propagate
     assertType('bool', $next);
 }
 
@@ -26,7 +26,7 @@ namespace PsalmTest_template_class_template_2 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP SPL stubs lack @template annotations
+    assertType('null|string', $value); // SKIP range() returns bare array
 }
 
 // Test: limitIterator
@@ -38,7 +38,7 @@ namespace PsalmTest_template_class_template_3 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP SPL stubs lack @template annotations
+    assertType('null|string', $value); // SKIP range() returns bare array
 }
 
 // Test: callbackFilterIterator
@@ -53,7 +53,7 @@ namespace PsalmTest_template_class_template_4 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP SPL stubs lack @template annotations
+    assertType('null|string', $value); // SKIP range() returns bare array
 }
 
 // Test: noRewindIterator
@@ -65,7 +65,7 @@ namespace PsalmTest_template_class_template_5 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP SPL stubs lack @template annotations
+    assertType('null|string', $value); // SKIP range() returns bare array
 }
 
 

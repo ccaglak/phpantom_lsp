@@ -41,6 +41,18 @@
 //!    iterator available on the wrapper.
 //!    PHPStan ref: `stubs/iterable.stub`
 //!
+//! 3. **`FilterIterator`** -- extends `IteratorIterator` but stubs lack
+//!    `@template` params.  PHPStan adds the same three template params
+//!    and `@template-extends IteratorIterator<TKey, TValue, TIterator>`.
+//!
+//! 4. **`NoRewindIterator`**, **`CachingIterator`**, **`InfiniteIterator`**,
+//!    **`LimitIterator`** -- all extend `IteratorIterator`.  Same template
+//!    params + `@extends` generics + constructor binding `TIterator → $iterator`.
+//!
+//! 5. **`CallbackFilterIterator`** -- extends `FilterIterator`.
+//!    Same template params + `@extends FilterIterator<TKey, TValue, TIterator>`
+//!    + constructor binding.
+//!
 //! ## Removing patches
 //!
 //! When phpstorm-stubs gains proper annotations for a patched symbol,
@@ -82,7 +94,13 @@ pub fn apply_class_stub_patches(class: &mut ClassInfo) {
     match class.name.as_str() {
         "WeakMap" => patch_weak_map(class),
         "IteratorIterator" => patch_iterator_iterator(class),
+        "FilterIterator" => patch_filter_iterator(class),
         "NoRewindIterator" => patch_no_rewind_iterator(class),
+        "CachingIterator" => patch_caching_iterator(class),
+        "InfiniteIterator" => patch_infinite_iterator(class),
+        "LimitIterator" => patch_limit_iterator(class),
+        "CallbackFilterIterator" => patch_callback_filter_iterator(class),
+        "ArrayIterator" => patch_array_iterator(class),
         _ => {}
     }
 }
@@ -131,6 +149,13 @@ fn patch_iterator_iterator(class: &mut ClassInfo) {
     if !class.mixins.contains(&t_iter) {
         class.mixins.push(t_iter);
     }
+
+    // Patch current() → TValue and key() → TKey.
+    // phpstorm-stubs declare `current(): mixed` and `key(): mixed` which
+    // hides the generic type.  PHPStan's stubs override these.
+    patch_method_return_type(class, "current", PhpType::Named("TValue".to_string()));
+    patch_method_return_type(class, "key", PhpType::Named("TKey".to_string()));
+
     // Patch the constructor: add template binding TIterator → $iterator
     // so that `new IteratorIterator(new Subject())` infers TIterator = Subject.
     if let Some(ctor_idx) = class
@@ -153,16 +178,125 @@ fn patch_iterator_iterator(class: &mut ClassInfo) {
 }
 
 /// Add `@template TKey`, `@template TValue`,
-/// `@template TIterator of Iterator<TKey, TValue>`,
-/// `@extends IteratorIterator<TKey, TValue, TIterator>`,
-/// and constructor template binding `TIterator → $iterator`.
+/// `@template TIterator of Traversable<TKey, TValue>`,
+/// `@extends IteratorIterator<TKey, TValue, TIterator>`.
+///
+/// `FilterIterator` is abstract and extends `IteratorIterator`.
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_filter_iterator(class: &mut ClassInfo) {
+    if !class.template_params.is_empty() {
+        return;
+    }
+    patch_iterator_iterator_subclass(class, "IteratorIterator");
+    patch_method_return_type(class, "current", PhpType::Named("TValue".to_string()));
+    patch_method_return_type(class, "key", PhpType::Named("TKey".to_string()));
+}
+
+/// Patch `NoRewindIterator` with template params inherited from `IteratorIterator`.
 ///
 /// Without this patch, `new NoRewindIterator(generator())` resolves as
 /// bare `NoRewindIterator` without propagating the generator's type params.
+/// PHPStan ref: `stubs/iterable.stub`
 fn patch_no_rewind_iterator(class: &mut ClassInfo) {
     if !class.template_params.is_empty() {
         return;
     }
+    patch_iterator_iterator_subclass(class, "IteratorIterator");
+    patch_constructor_iterator_binding(class);
+}
+
+/// Patch `CachingIterator` with template params inherited from `IteratorIterator`.
+///
+/// `CachingIterator` extends `IteratorIterator` and wraps an iterator.
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_caching_iterator(class: &mut ClassInfo) {
+    if !class.template_params.is_empty() {
+        return;
+    }
+    patch_iterator_iterator_subclass(class, "IteratorIterator");
+    patch_method_return_type(class, "current", PhpType::Named("TValue".to_string()));
+    patch_method_return_type(class, "key", PhpType::Named("TKey".to_string()));
+    patch_constructor_iterator_binding(class);
+}
+
+/// Patch `InfiniteIterator` with template params inherited from `IteratorIterator`.
+///
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_infinite_iterator(class: &mut ClassInfo) {
+    if !class.template_params.is_empty() {
+        return;
+    }
+    patch_iterator_iterator_subclass(class, "IteratorIterator");
+    patch_constructor_iterator_binding(class);
+}
+
+/// Patch `LimitIterator` with template params inherited from `IteratorIterator`.
+///
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_limit_iterator(class: &mut ClassInfo) {
+    if !class.template_params.is_empty() {
+        return;
+    }
+    patch_iterator_iterator_subclass(class, "IteratorIterator");
+    patch_method_return_type(class, "current", PhpType::Named("TValue".to_string()));
+    patch_method_return_type(class, "key", PhpType::Named("TKey".to_string()));
+    patch_constructor_iterator_binding(class);
+}
+
+/// Patch `CallbackFilterIterator` with template params inherited from `FilterIterator`.
+///
+/// `CallbackFilterIterator` extends `FilterIterator` (not `IteratorIterator` directly).
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_callback_filter_iterator(class: &mut ClassInfo) {
+    if !class.template_params.is_empty() {
+        return;
+    }
+    patch_iterator_iterator_subclass(class, "FilterIterator");
+    patch_constructor_iterator_binding(class);
+}
+
+/// Patch `ArrayIterator` constructor to bind template params from the `$array` arg.
+///
+/// phpstorm-stubs declare `@template TKey of array-key` and `@template TValue`
+/// on the class, but the constructor's `@param` is just `object|array` with no
+/// generics.  PHPStan's stubs use `@param array<TKey, TValue> $array`.
+/// PHPStan ref: `stubs/iterable.stub`
+fn patch_array_iterator(class: &mut ClassInfo) {
+    if let Some(ctor_idx) = class
+        .methods
+        .iter()
+        .position(|m| m.name.as_str() == "__construct")
+    {
+        let mut ctor = (*class.methods[ctor_idx]).clone();
+
+        // Add template bindings: TKey → $array, TValue → $array
+        for tpl_name in ["TKey", "TValue"] {
+            let binding = (atom(tpl_name), atom("$array"));
+            if !ctor.template_bindings.iter().any(|(t, _)| t == &binding.0) {
+                ctor.template_bindings.push(binding);
+            }
+        }
+
+        // Set the parameter type hint to array<TKey, TValue> so that
+        // classify_template_binding can determine the GenericWrapper mode.
+        if let Some(param) = ctor.parameters.iter_mut().find(|p| p.name == "$array") {
+            param.type_hint = Some(PhpType::Generic(
+                "array".to_string(),
+                vec![
+                    PhpType::Named("TKey".to_string()),
+                    PhpType::Named("TValue".to_string()),
+                ],
+            ));
+        }
+
+        class.methods.make_mut()[ctor_idx] = std::sync::Arc::new(ctor);
+    }
+}
+
+/// Shared helper: add `@template TKey, TValue, TIterator` and
+/// `@extends <parent><TKey, TValue, TIterator>` to an `IteratorIterator`
+/// subclass (or sub-subclass like `CallbackFilterIterator`).
+fn patch_iterator_iterator_subclass(class: &mut ClassInfo, parent: &str) {
     add_templates(class, &[("TKey", None), ("TValue", None)]);
     let t_iter = atom("TIterator");
     if !class.template_params.contains(&t_iter) {
@@ -173,22 +307,21 @@ fn patch_no_rewind_iterator(class: &mut ClassInfo) {
         .entry(atom("TIterator"))
         .or_insert_with(|| {
             PhpType::Generic(
-                "Iterator".to_string(),
+                "Traversable".to_string(),
                 vec![
                     PhpType::Named("TKey".to_string()),
                     PhpType::Named("TValue".to_string()),
                 ],
             )
         });
-    // Add @extends generics so inheritance resolves TKey/TValue.
-    let iter_iter_atom = atom("IteratorIterator");
+    let parent_atom = atom(parent);
     if !class
         .extends_generics
         .iter()
-        .any(|(n, _)| *n == iter_iter_atom)
+        .any(|(n, _)| *n == parent_atom)
     {
         class.extends_generics.push((
-            iter_iter_atom,
+            parent_atom,
             vec![
                 PhpType::Named("TKey".to_string()),
                 PhpType::Named("TValue".to_string()),
@@ -196,7 +329,11 @@ fn patch_no_rewind_iterator(class: &mut ClassInfo) {
             ],
         ));
     }
-    // Patch constructor: bind TIterator from the $iterator parameter.
+}
+
+/// Shared helper: patch the constructor to bind `TIterator` from the
+/// `$iterator` parameter.
+fn patch_constructor_iterator_binding(class: &mut ClassInfo) {
     if let Some(ctor_idx) = class
         .methods
         .iter()
@@ -211,6 +348,22 @@ fn patch_no_rewind_iterator(class: &mut ClassInfo) {
             param.type_hint = Some(PhpType::Named("TIterator".to_string()));
         }
         class.methods.make_mut()[ctor_idx] = std::sync::Arc::new(ctor);
+    }
+}
+
+/// Override a method's return type on a class.
+///
+/// If the method exists, replaces its `return_type` with the given type.
+/// Used to patch stub methods like `current(): mixed` → `current(): TValue`.
+fn patch_method_return_type(class: &mut ClassInfo, method_name: &str, return_type: PhpType) {
+    if let Some(idx) = class
+        .methods
+        .iter()
+        .position(|m| m.name.as_str() == method_name)
+    {
+        let mut method = (*class.methods[idx]).clone();
+        method.return_type = Some(return_type);
+        class.methods.make_mut()[idx] = std::sync::Arc::new(method);
     }
 }
 

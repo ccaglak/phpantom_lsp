@@ -1450,7 +1450,16 @@ fn resolve_generic_wrapper_template(
         wrapper_name,
         "array" | "list" | "non-empty-array" | "non-empty-list"
     ) {
-        return resolve_array_literal_generic(tpl_position, arg_text, rctx);
+        // Try to infer from array literal first.
+        if let Some(result) = resolve_array_literal_generic(tpl_position, arg_text, rctx) {
+            return Some(result);
+        }
+        // If the argument is not a literal (e.g. a variable), resolve its
+        // type and extract the generic arg at the given position.
+        if let Some(resolved) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
+            return extract_generic_arg_at_position(&resolved, tpl_position);
+        }
+        return None;
     }
 
     // Load the wrapper class.
@@ -1488,7 +1497,7 @@ fn resolve_generic_wrapper_template(
     wrapper_subs.get(wrapper_tpl.as_str()).cloned()
 }
 
-/// Infer a generic type argument from an array literal.
+/// Extract a generic type argument from an array literal.
 ///
 /// For `@param array<TKey, TValue> $kv` with argument `["a" => 1]`:
 /// - `tpl_position == 0` → key type (`string`)
@@ -1554,6 +1563,19 @@ fn resolve_array_literal_generic(
             }
             _ => None,
         }
+    }
+}
+
+/// Extract the generic type argument at a given position from a resolved type.
+///
+/// For `array<int, string>` with position 0 → `int`, position 1 → `string`.
+/// For `list<User>` with position 0 → `User`.
+/// Also handles `PhpType::Array(inner)` as a single-arg generic.
+fn extract_generic_arg_at_position(ty: &PhpType, position: usize) -> Option<PhpType> {
+    match ty {
+        PhpType::Generic(_, args) => args.get(position).cloned(),
+        PhpType::Array(inner) if position == 0 => Some(inner.as_ref().clone()),
+        _ => None,
     }
 }
 
