@@ -8,21 +8,6 @@ pipeline so it produces correct data. Downstream consumers
 to second-guess upstream output.
 
 
-## B17. `range()` lacks conditional return type
-
-`range()` in phpstorm-stubs returns bare `array`. Psalm and
-PHPStan infer `list<int>`, `list<float>`, or `list<string>`
-depending on the argument types. Without a conditional return
-type (or a stub patch), generic information is lost when the
-result is passed to `new ArrayIterator(range(...))`.
-
-A stub patch with conditional return types would fix this.
-Alternatively, wait for phpstorm-stubs to add proper generics.
-
-**Tests:** SKIPs on lines 16, 29, 41, 56, 68 of
-`tests/psalm_assertions/template_class_template.php`.
-
-
 ## B18. Multi-namespace assertion runner does not resolve short names
 
 The `tests/assert_type_runner.rs` test harness opens a single file

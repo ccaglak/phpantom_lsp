@@ -440,7 +440,52 @@ pub fn resolve_conditional_with_text_args_and_defaults(
                 )
             } else {
                 // IsType equivalent: can't statically determine most
-                // conditions, but we handle `array` specially.
+                // conditions, but we handle scalar types and `array` specially.
+                if condition_is_scalar_type(condition.as_ref(), "string")
+                    && let Some(arg) = arg_text
+                    && arg_is_string_literal(arg)
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_text_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        text_args,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
+                if condition_is_scalar_type(condition.as_ref(), "int")
+                    && let Some(arg) = arg_text
+                    && arg_is_int_literal(arg)
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_text_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        text_args,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
+                if condition_is_scalar_type(condition.as_ref(), "float")
+                    && let Some(arg) = arg_text
+                    && arg_is_float_literal(arg)
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_text_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        text_args,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
                 // Check if the condition mentions `array` and the
                 // argument is an array literal (starts with `[`).
                 if condition_includes_array(condition.as_ref())
@@ -479,11 +524,36 @@ pub fn resolve_conditional_with_text_args_and_defaults(
     }
 }
 
+/// Checks whether a condition is a specific scalar type name.
+fn condition_is_scalar_type(condition: &PhpType, type_name: &str) -> bool {
+    match condition {
+        PhpType::Named(n) => n == type_name,
+        _ => false,
+    }
+}
+
+/// Checks whether the argument text is a quoted string literal.
+fn arg_is_string_literal(arg: &str) -> bool {
+    let t = arg.trim();
+    (t.starts_with('\'') && t.ends_with('\'')) || (t.starts_with('"') && t.ends_with('"'))
+}
+
+/// Checks whether the argument text is an integer literal.
+fn arg_is_int_literal(arg: &str) -> bool {
+    let t = arg.trim();
+    let t = t.strip_prefix('-').unwrap_or(t);
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Checks whether the argument text is a float literal.
+fn arg_is_float_literal(arg: &str) -> bool {
+    let t = arg.trim();
+    let t = t.strip_prefix('-').unwrap_or(t);
+    t.contains('.') && t.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
 /// Check whether a condition type includes `array` as one of its
 /// union members.
-///
-/// Checks whether the PhpType is `Named("array")`, `Generic("array", _)`,
-/// or a `Union` containing any such member.
 fn condition_includes_array(condition: &PhpType) -> bool {
     if condition.is_array_like() {
         return true;
@@ -827,7 +897,49 @@ pub fn resolve_conditional_with_args_and_defaults<'b>(
                     )
                 }
             } else {
-                // IsType equivalent
+                // IsType equivalent: check scalar types from AST literals.
+                if condition_is_scalar_type(condition.as_ref(), "string")
+                    && matches!(arg_expr, Some(Expression::Literal(Literal::String(_))))
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
+                if condition_is_scalar_type(condition.as_ref(), "int")
+                    && matches!(arg_expr, Some(Expression::Literal(Literal::Integer(_))))
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
+                if condition_is_scalar_type(condition.as_ref(), "float")
+                    && matches!(arg_expr, Some(Expression::Literal(Literal::Float(_))))
+                {
+                    let take_then = !*negated;
+                    return resolve_conditional_with_args_and_defaults(
+                        if take_then { then_type } else { else_type },
+                        params,
+                        argument_list,
+                        var_resolver,
+                        calling_class_name,
+                        class_loader,
+                        tpl,
+                    );
+                }
                 // Check if the condition mentions `array` and the
                 // argument is an array literal (`[...]`).
                 if condition_includes_array(condition.as_ref())

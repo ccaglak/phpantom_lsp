@@ -1573,7 +1573,24 @@ fn resolve_array_literal_generic(
 /// Also handles `PhpType::Array(inner)` as a single-arg generic.
 fn extract_generic_arg_at_position(ty: &PhpType, position: usize) -> Option<PhpType> {
     match ty {
-        PhpType::Generic(_, args) => args.get(position).cloned(),
+        PhpType::Generic(name, args) => {
+            // `list<T>` has a single arg (the value type).  When the
+            // binding expects position 1 (value position of `array<K, V>`),
+            // map it to position 0 of the list.  Position 0 of a list
+            // is implicitly `int` (sequential keys).
+            let is_list_like = matches!(
+                name.to_ascii_lowercase().as_str(),
+                "list" | "non-empty-list"
+            );
+            if is_list_like && args.len() == 1 {
+                return match position {
+                    0 => Some(PhpType::int()),
+                    1 => args.first().cloned(),
+                    _ => None,
+                };
+            }
+            args.get(position).cloned()
+        }
         PhpType::Array(inner) if position == 0 => Some(inner.as_ref().clone()),
         _ => None,
     }
@@ -2465,6 +2482,15 @@ fn resolve_rhs_function_call<'b>(
                 if !resolved.is_empty() {
                     return ResolvedType::from_classes_with_hint(resolved, ty.clone());
                 }
+                // The conditional resolved to a non-class type (e.g.
+                // `list<string>`, `int`).  Return it as a type-string-only
+                // entry so downstream consumers see the resolved type.
+                return vec![resolved_type_with_lookup(
+                    ty.clone(),
+                    current_class_name,
+                    all_classes,
+                    class_loader,
+                )];
             }
         }
 

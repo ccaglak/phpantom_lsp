@@ -13,7 +13,7 @@ namespace PsalmTest_template_class_template_1 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP B17: range() returns bare array
+    assertType('string', $value);
     assertType('bool', $next);
 }
 
@@ -26,7 +26,7 @@ namespace PsalmTest_template_class_template_2 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP B17: range() returns bare array
+    assertType('string', $value);
 }
 
 // Test: limitIterator
@@ -38,7 +38,7 @@ namespace PsalmTest_template_class_template_3 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP B17: range() returns bare array
+    assertType('string', $value);
 }
 
 // Test: callbackFilterIterator
@@ -53,7 +53,7 @@ namespace PsalmTest_template_class_template_4 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP B17: range() returns bare array
+    assertType('string', $value);
 }
 
 // Test: noRewindIterator
@@ -65,7 +65,7 @@ namespace PsalmTest_template_class_template_5 {
     $key = $decoratorIterator->key();
     $value = $decoratorIterator->current();
 
-    assertType('null|string', $value); // SKIP B17: range() returns bare array
+    assertType('string', $value);
 }
 
 

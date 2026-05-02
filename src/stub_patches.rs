@@ -25,7 +25,8 @@
 //!
 //! ### Function patches
 //!
-//! None. All function patches have been upstreamed to phpstorm-stubs.
+//! 1. **`range`** -- phpstorm-stubs return bare `array`.  We patch with a
+//!    conditional return type: `($start is string ? list<string> : list<int|float>)`.
 //!
 //! ### Class patches
 //!
@@ -74,8 +75,29 @@ use crate::types::{ClassInfo, FunctionInfo};
 /// `FunctionInfo` is parsed from embedded phpstorm-stubs, before it is
 /// cached in `global_functions`.  Only functions with known deficiencies
 /// are patched; all others pass through unchanged.
-pub fn apply_function_stub_patches(_func: &mut FunctionInfo) {
-    // All function patches have been upstreamed to phpstorm-stubs.
+pub fn apply_function_stub_patches(func: &mut FunctionInfo) {
+    if func.name.as_str() == "range" {
+        patch_range(func);
+    }
+}
+
+/// Patch `range()` to have a conditional return type.
+///
+/// phpstorm-stubs declare `range()` as returning bare `array`.
+/// PHPStan infers `list<int>`, `list<float>`, or `list<string>` depending
+/// on the argument types.  We approximate this with:
+/// `($start is string ? list<string> : list<int|float>)`.
+fn patch_range(func: &mut FunctionInfo) {
+    func.conditional_return = Some(PhpType::Conditional {
+        param: "$start".to_string(),
+        negated: false,
+        condition: Box::new(PhpType::Named("string".to_string())),
+        then_type: Box::new(PhpType::list(PhpType::string())),
+        else_type: Box::new(PhpType::list(PhpType::Union(vec![
+            PhpType::int(),
+            PhpType::float(),
+        ]))),
+    });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -477,6 +499,36 @@ mod tests {
         assert!(
             class.template_param_bounds.contains_key(&atom("TIterator")),
             "TIterator should have a bound"
+        );
+    }
+
+    #[test]
+    fn range_gets_conditional_return() {
+        let mut func = FunctionInfo {
+            name: atom("range"),
+            name_offset: 0,
+            parameters: Vec::new(),
+            return_type: None,
+            native_return_type: None,
+            description: None,
+            return_description: None,
+            links: Vec::new(),
+            see_refs: Vec::new(),
+            namespace: None,
+            conditional_return: None,
+            type_assertions: Vec::new(),
+            deprecation_message: None,
+            deprecated_replacement: None,
+            throws: Vec::new(),
+            template_params: Vec::new(),
+            template_param_bounds: Default::default(),
+            template_bindings: Vec::new(),
+            is_polyfill: false,
+        };
+        apply_function_stub_patches(&mut func);
+        assert!(
+            func.conditional_return.is_some(),
+            "range() should have a conditional return type after patching"
         );
     }
 }
