@@ -797,22 +797,33 @@ fn utf16_col_at(chars: &[char], pos: usize) -> u32 {
     chars[..pos].iter().map(|c| c.len_utf16() as u32).sum()
 }
 
-/// Convert a byte offset to an absolute line/character position and
-/// build an [`AbsoluteToken`].
+/// Convert a byte offset and byte length to an absolute line/character
+/// position and build an [`AbsoluteToken`].
+///
+/// `length` is a **byte** count (as stored in [`SymbolSpan`]).  This
+/// function converts it to a UTF-16 code-unit count as required by the
+/// LSP semantic token protocol.
 ///
 /// Returns `None` if the offset is beyond the content length.
 fn offset_to_absolute(
     content: &str,
     start_offset: u32,
-    length: u32,
+    byte_length: u32,
     token_type: u32,
     modifiers: u32,
 ) -> Option<AbsoluteToken> {
-    let pos = crate::util::offset_to_position(content, start_offset as usize);
+    let start = start_offset as usize;
+    let end = start + byte_length as usize;
+    let text = content.get(start..end)?;
+    let utf16_len: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
+    if utf16_len == 0 {
+        return None;
+    }
+    let pos = crate::util::offset_to_position(content, start);
     Some(AbsoluteToken {
         line: pos.line,
         start_char: pos.character,
-        length,
+        length: utf16_len,
         token_type,
         modifiers,
     })
@@ -850,11 +861,12 @@ fn encode_deltas(tokens: &[AbsoluteToken]) -> Vec<SemanticToken> {
 
 /// Split comment tokens around any non-comment tokens that fall inside them.
 ///
-/// Docblock comments like `/** @var \App\Foo $x */` produce a single
-/// `Comment` span covering the entire block, plus inner `Keyword` and
-/// `ClassReference` spans for `@var` and `\App\Foo`.  The LSP protocol
-/// does not support overlapping tokens, so we split the comment into
-/// fragments: one before each inner token and one after the last.
+/// Docblock comments emit inner `Keyword` and `ClassReference` spans for
+/// PHPDoc tags and type references (e.g. `@var \App\Foo`).  Because comment
+/// spans are already split to one-per-line by the extraction layer, all inner
+/// tokens are guaranteed to be on the same line as their enclosing comment
+/// fragment.  The LSP protocol does not support overlapping tokens, so we
+/// split each comment fragment around any inner tokens it contains.
 fn split_comments_around_inner(tokens: &mut Vec<AbsoluteToken>) {
     // Sort by (line, start_char) so we can detect containment.
     tokens.sort_by(|a, b| a.line.cmp(&b.line).then(a.start_char.cmp(&b.start_char)));
@@ -865,7 +877,7 @@ fn split_comments_around_inner(tokens: &mut Vec<AbsoluteToken>) {
     while i < tokens.len() {
         let tok = &tokens[i];
 
-        // Only split single-line comment tokens.
+        // Skip non-comment tokens — they don't need splitting.
         if tok.token_type != TT_COMMENT {
             new_tokens.push(tokens[i].clone());
             i += 1;

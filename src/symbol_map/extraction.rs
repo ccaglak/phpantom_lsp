@@ -162,13 +162,30 @@ pub(crate) fn extract_symbol_map(program: &Program<'_>, content: &str) -> Symbol
     // Emit comment spans for all comment trivia so semantic tokens
     // can highlight comments in Blade files.  For docblock comments,
     // also emit keyword spans for PHPDoc tags.
+    //
+    // Multi-line block comments are split into one span per line so that
+    // the semantic token layer can emit correct per-line lengths without
+    // any post-processing.  The LSP protocol requires token `length` to
+    // describe characters on a single line only.
     for t in program.trivia.iter() {
         if t.kind.is_comment() {
-            ctx.spans.push(SymbolSpan {
-                start: t.span.start.offset,
-                end: t.span.end.offset,
-                kind: SymbolKind::Comment,
-            });
+            let mut byte_cursor = t.span.start.offset as usize;
+            for line_text in t.value.split('\n') {
+                // `line_text` may end with '\r' on Windows; strip it for
+                // length calculation but keep the byte advance correct.
+                let display = line_text.trim_end_matches('\r');
+                let display_len = display.len() as u32;
+                if display_len > 0 {
+                    ctx.spans.push(SymbolSpan {
+                        start: byte_cursor as u32,
+                        end: byte_cursor as u32 + display_len,
+                        kind: SymbolKind::Comment,
+                    });
+                }
+                // Advance past this segment plus the '\n' (line_text
+                // includes '\r' if present, so +1 covers just the LF).
+                byte_cursor += line_text.len() + 1;
+            }
             if t.kind == TriviaKind::DocBlockComment {
                 emit_phpdoc_tag_keywords(t.value, t.span.start.offset, &mut ctx.spans);
             }

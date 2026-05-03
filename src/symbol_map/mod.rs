@@ -186,9 +186,10 @@ pub(crate) enum SymbolKind {
     /// `(string)$x`).  Tree-sitter marks these as `type.builtin`.
     CastType,
 
-    /// A comment token (single-line `//`, multi-line `/* */`, docblock
-    /// `/** */`, or hash `#`).  Emitted from AST trivia so that Blade
-    /// files get comment highlighting.
+    /// A comment token (single-line `//`, one line of a multi-line `/* */`
+    /// or docblock `/** */`, or hash `#`).  Emitted from AST trivia so that
+    /// Blade files get comment highlighting.  Multi-line block comments are
+    /// split into one span per source line at extraction time.
     Comment,
 
     /// A Laravel string-key literal (config key, route name, view name, etc.)
