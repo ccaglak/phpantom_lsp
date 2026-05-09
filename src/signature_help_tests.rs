@@ -1016,3 +1016,13 @@ fn defn_paren_suffix_not_keyword() {
     let chars: Vec<char> = "myfunction(".chars().collect();
     assert!(!is_function_definition_paren(&chars, 10));
 }
+
+#[test]
+fn fcc_extract_simple_function() {
+    let content = "<?php\nfunction makePen(string $ink): Pen { return new Pen(); }\nclass Pen {}\nclass Demo {\n    public function test() {\n        $fn = makePen(...);\n        $fn();\n    }\n}\n";
+    // cursor_offset should be somewhere on line 6 (`$fn();`)
+    // Find the offset of `$fn()` on line 6.
+    let cursor_offset = content.find("$fn();").unwrap() as u32 + 4; // inside parens
+    let result = Backend::extract_callable_target_from_variable("$fn", content, cursor_offset);
+    assert_eq!(result, Some("makePen".to_string()));
+}

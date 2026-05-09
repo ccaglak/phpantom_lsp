@@ -214,19 +214,6 @@ Each item must include:
 
 ## Outstanding items
 
-### R2. Mini expression resolver in `call_resolution.rs` 🔴
-
-`src/completion/call_resolution.rs` L2528 has `resolve_expression_to_type`, a
-separate expression-to-`PhpType` resolver for conditional return type argument
-matching. Handles `SubjectExpr::PropertyChain` and `SubjectExpr::Variable`
-through different code paths than the forward walker's `resolve_rhs_expression`.
-Fewer cases, different path, will diverge as features are added.
-
-**Action:** Route through the shared `resolve_rhs_expression` /
-`resolve_expression_type` pipeline.
-
-**Files:** `src/completion/call_resolution.rs`
-
 ### R3. Backward `@var` scanner in `docblock/tags.rs` 🟠
 
 `src/docblock/tags.rs` L520–620 (`find_var_raw_type_in_source`) and L1000–1100
@@ -242,17 +229,6 @@ unnecessary.
 
 **Files:** `src/docblock/tags.rs`, `src/completion/call_resolution.rs`,
 `src/completion/array_shape.rs`
-
-### R4. Backward callable scan in `signature_help.rs` 🟠
-
-`src/signature_help.rs` L438–470 (`extract_callable_target_from_variable`) uses
-raw `rfind` backward text scan to find `$fn = someTarget(...)` assignments,
-bypassing the forward walker which already tracks variable assignments.
-
-**Action:** Use the forward walker's assignment tracking instead of raw text
-scanning.
-
-**Files:** `src/signature_help.rs`
 
 ---
 

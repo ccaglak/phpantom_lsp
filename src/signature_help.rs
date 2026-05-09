@@ -316,6 +316,216 @@ impl From<crate::types::ResolvedCallableTarget> for ResolvedCallable {
     }
 }
 
+// ─── First-class callable target extraction (AST-based) ────────────────────
+
+use mago_span::HasSpan;
+use mago_syntax::ast::*;
+
+/// Walk statements looking for the last assignment to `var_name` (with
+/// `$` prefix) before `cursor_offset` where the RHS is a
+/// `PartialApplication` (first-class callable).  Returns the callable
+/// target text extracted from `content`.
+fn find_fcc_target_in_stmts<'a, I>(
+    stmts: I,
+    var_name: &str,
+    cursor_offset: u32,
+    content: &str,
+) -> Option<String>
+where
+    I: Iterator<Item = &'a Statement<'a>>,
+{
+    let mut best: Option<String> = None;
+    for stmt in stmts {
+        collect_fcc_targets(stmt, var_name, cursor_offset, content, &mut best);
+    }
+    best
+}
+
+/// Recursively collect first-class callable assignment targets from a
+/// statement, updating `best` with the latest match found.
+fn collect_fcc_targets(
+    stmt: &Statement<'_>,
+    var_name: &str,
+    cursor_offset: u32,
+    content: &str,
+    best: &mut Option<String>,
+) {
+    /// Helper macro: walk an iterable of statements.
+    macro_rules! walk {
+        ($iter:expr) => {
+            for s in $iter {
+                collect_fcc_targets(s, var_name, cursor_offset, content, best);
+            }
+        };
+    }
+
+    match stmt {
+        Statement::Expression(expr_stmt) => {
+            if let Some(found) =
+                find_fcc_target_in_expr(expr_stmt.expression, var_name, cursor_offset, content)
+            {
+                *best = Some(found);
+            }
+        }
+        Statement::Block(block) => walk!(block.statements.iter()),
+        Statement::Namespace(ns) => walk!(ns.statements().iter()),
+        Statement::Class(cls) => {
+            use mago_syntax::ast::class_like::member::ClassLikeMember;
+            use mago_syntax::ast::class_like::method::MethodBody;
+            for member in cls.members.iter() {
+                if let ClassLikeMember::Method(method) = member
+                    && let MethodBody::Concrete(block) = &method.body
+                {
+                    let span = method.span();
+                    if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
+                        walk!(block.statements.iter());
+                        return;
+                    }
+                }
+            }
+        }
+        Statement::Trait(t) => {
+            use mago_syntax::ast::class_like::member::ClassLikeMember;
+            use mago_syntax::ast::class_like::method::MethodBody;
+            for member in t.members.iter() {
+                if let ClassLikeMember::Method(method) = member
+                    && let MethodBody::Concrete(block) = &method.body
+                {
+                    let span = method.span();
+                    if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
+                        walk!(block.statements.iter());
+                        return;
+                    }
+                }
+            }
+        }
+        Statement::Function(func) => {
+            let span = func.body.span();
+            if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
+                walk!(func.body.statements.iter());
+            }
+        }
+        Statement::If(if_stmt) => match &if_stmt.body {
+            IfBody::Statement(body) => {
+                collect_fcc_targets(body.statement, var_name, cursor_offset, content, best);
+                for ei in body.else_if_clauses.iter() {
+                    collect_fcc_targets(ei.statement, var_name, cursor_offset, content, best);
+                }
+                if let Some(ref else_clause) = body.else_clause {
+                    collect_fcc_targets(
+                        else_clause.statement,
+                        var_name,
+                        cursor_offset,
+                        content,
+                        best,
+                    );
+                }
+            }
+            IfBody::ColonDelimited(body) => {
+                walk!(body.statements.iter());
+                for ei in body.else_if_clauses.iter() {
+                    walk!(ei.statements.iter());
+                }
+                if let Some(ref else_clause) = body.else_clause {
+                    walk!(else_clause.statements.iter());
+                }
+            }
+        },
+        Statement::Foreach(foreach) => match &foreach.body {
+            ForeachBody::Statement(inner) => {
+                collect_fcc_targets(inner, var_name, cursor_offset, content, best);
+            }
+            ForeachBody::ColonDelimited(body) => walk!(body.statements.iter()),
+        },
+        Statement::For(for_stmt) => match &for_stmt.body {
+            ForBody::Statement(inner) => {
+                collect_fcc_targets(inner, var_name, cursor_offset, content, best);
+            }
+            ForBody::ColonDelimited(body) => walk!(body.statements.iter()),
+        },
+        Statement::While(while_stmt) => match &while_stmt.body {
+            WhileBody::Statement(inner) => {
+                collect_fcc_targets(inner, var_name, cursor_offset, content, best);
+            }
+            WhileBody::ColonDelimited(body) => walk!(body.statements.iter()),
+        },
+        Statement::DoWhile(do_while) => {
+            collect_fcc_targets(do_while.statement, var_name, cursor_offset, content, best);
+        }
+        Statement::Try(try_stmt) => {
+            walk!(try_stmt.block.statements.iter());
+            for catch in try_stmt.catch_clauses.iter() {
+                walk!(catch.block.statements.iter());
+            }
+            if let Some(ref finally) = try_stmt.finally_clause {
+                walk!(finally.block.statements.iter());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check if an expression is an assignment to `var_name` with a
+/// `PartialApplication` RHS, and extract the callable target text.
+fn find_fcc_target_in_expr(
+    expr: &Expression<'_>,
+    var_name: &str,
+    cursor_offset: u32,
+    content: &str,
+) -> Option<String> {
+    if let Expression::Assignment(assignment) = expr {
+        // Only consider assignments that end before the cursor.
+        let assign_end = assignment.span().end.offset;
+        if assign_end > cursor_offset {
+            return None;
+        }
+
+        // Check the LHS is the variable we're looking for.
+        if let Expression::Variable(Variable::Direct(dv)) = assignment.lhs {
+            if dv.name != var_name {
+                return None;
+            }
+
+            // Check if the RHS is a PartialApplication.
+            if let Expression::PartialApplication(pa) = assignment.rhs {
+                return extract_callable_text_from_partial(pa, content);
+            }
+        }
+    }
+    None
+}
+
+/// Extract the callable target text from a `PartialApplication` AST
+/// node by reading the source text for the callee portion (everything
+/// before the argument list).
+fn extract_callable_text_from_partial(
+    pa: &partial_application::PartialApplication<'_>,
+    content: &str,
+) -> Option<String> {
+    let (callee_start, callee_end) = match pa {
+        partial_application::PartialApplication::Function(f) => {
+            let span = f.function.span();
+            (span.start.offset as usize, span.end.offset as usize)
+        }
+        partial_application::PartialApplication::Method(m) => {
+            let start = m.object.span().start.offset as usize;
+            let end = m.method.span().end.offset as usize;
+            (start, end)
+        }
+        partial_application::PartialApplication::StaticMethod(s) => {
+            let start = s.class.span().start.offset as usize;
+            let end = s.method.span().end.offset as usize;
+            (start, end)
+        }
+    };
+
+    let text = content.get(callee_start..callee_end)?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.to_string())
+}
+
 impl Backend {
     /// Handle a `textDocument/signatureHelp` request.
     ///
@@ -435,38 +645,33 @@ impl Backend {
             .map(ResolvedCallable::from)
     }
 
-    /// Scan backward from `cursor_offset` for an assignment like
-    /// `$fn = someTarget(...)` and return the callable target string
+    /// Find the callable target for a first-class callable assignment
+    /// like `$fn = someTarget(...)` and return the callable target string
     /// (e.g. `"makePen"`, `"$obj->method"`, `"ClassName::method"`).
     ///
     /// This enables signature help for first-class callable invocations:
     /// `$fn = makePen(...); $fn()` shows `makePen`'s parameters.
+    ///
+    /// Uses the AST to find assignments to `var_name` before
+    /// `cursor_offset` where the RHS is a `PartialApplication` node,
+    /// then extracts the callable portion from the source text.
     pub(crate) fn extract_callable_target_from_variable(
         var_name: &str,
         content: &str,
         cursor_offset: u32,
     ) -> Option<String> {
-        let search_area = content.get(..cursor_offset as usize)?;
-        let assign_prefix = format!("{} = ", var_name);
-        let assign_pos = search_area.rfind(&assign_prefix)?;
-        let rhs_start = assign_pos + assign_prefix.len();
-
-        // Find the terminating `;`.
-        let remaining = &content[rhs_start..];
-        let semi_pos = remaining.find(';')?;
-        let rhs_text = remaining[..semi_pos].trim();
-
-        // Must end with `(...)` — the first-class callable syntax marker.
-        let callable_text = rhs_text.strip_suffix("(...)")?.trim_end();
-        if callable_text.is_empty() {
-            return None;
-        }
-
-        // Return the target in the format `resolve_callable` expects:
-        //   - `$this->method` or `$obj->method` → instance method
-        //   - `ClassName::method` → static method
-        //   - `functionName` → standalone function
-        Some(callable_text.to_string())
+        crate::parser::with_parsed_program(
+            content,
+            "extract_callable_target",
+            |program, content| {
+                find_fcc_target_in_stmts(
+                    program.statements.iter(),
+                    var_name,
+                    cursor_offset,
+                    content,
+                )
+            },
+        )
     }
 
     /// Insert `);` at the cursor position so that an unclosed call

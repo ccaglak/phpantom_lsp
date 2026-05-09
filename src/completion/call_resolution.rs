@@ -2512,110 +2512,17 @@ impl Backend {
 
 /// Resolve an arbitrary expression to a [`PhpType`].
 ///
-/// Unlike [`super::resolver::resolve_target_classes`] (which returns
-/// class-bearing `ResolvedType` values and drops scalars), this function
-/// returns the *type* of the expression — including scalars like `string`,
-/// `int`, `bool`, etc.
-///
-/// Strategy:
-/// 1. Parse the expression with [`SubjectExpr::parse`].
-/// 2. For property chains (`$var->prop`), resolve the base to classes
-///    and look up the property's type hint directly.
-/// 3. For method calls (`$var->method()`), resolve the base and look
-///    up the method's return type.
-/// 4. For everything else, fall back to [`super::resolver::resolve_target_classes`]
-///    which handles variables, `$this`, `new …`, etc.
+/// Delegates to [`super::resolver::resolve_target_classes`] which
+/// handles all expression patterns (variables, property chains,
+/// method calls, static accesses, etc.) and preserves scalar types
+/// through the `type_string` field of [`ResolvedType`].
 fn resolve_expression_to_type(text: &str, ctx: &ResolutionCtx<'_>) -> Option<PhpType> {
-    let expr = SubjectExpr::parse(text);
-
-    match &expr {
-        // $var->prop or $this->prop — resolve base to classes, then
-        // look up the property's type hint (which preserves scalars).
-        SubjectExpr::PropertyChain { base, property } => {
-            let base_text = base.to_subject_text();
-            let base_classes = ResolvedType::into_arced_classes(
-                super::resolver::resolve_target_classes(&base_text, crate::AccessKind::Arrow, ctx),
-            );
-            for cls in &base_classes {
-                if let Some(hint) =
-                    crate::inheritance::resolve_property_type_hint(cls, property, ctx.class_loader)
-                {
-                    return Some(hint);
-                }
-            }
-            None
-        }
-
-        // $var->method() or $this->helper->getText() — resolve the
-        // full call expression to return-type classes first; if that
-        // yields nothing class-like, resolve the raw return type
-        // (which preserves scalars).
-        SubjectExpr::CallExpr { callee, args_text } => {
-            // Try class-bearing resolution first (handles non-scalar returns).
-            // Use the _with_hint variant to capture the raw return type
-            // (which preserves generic parameters like `ASTArtifactList<ASTClass>`).
-            // Without this, generic args are lost and downstream template
-            // substitution resolves to unsubstituted template params.
-            let mut return_hint: Option<PhpType> = None;
-            let classes = Backend::resolve_call_return_types_expr_with_hint(
-                callee,
-                args_text,
-                ctx,
-                Some(&mut return_hint),
-            );
-            if let Some(first) = classes.first() {
-                // Prefer the return type hint (preserves generics) over
-                // the bare class FQN.  Fall back to FQN when no hint
-                // was captured or when the hint is a raw template name.
-                if let Some(ref hint) = return_hint
-                    && !hint.is_untyped()
-                    && !hint.is_mixed()
-                {
-                    return Some(hint.clone());
-                }
-                return Some(PhpType::Named(first.fqn().to_string()));
-            }
-
-            // Fall back to raw return type for scalar returns.
-            if let SubjectExpr::MethodCall { base, method } = callee.as_ref() {
-                let base_text = base.to_subject_text();
-                let base_classes =
-                    ResolvedType::into_arced_classes(super::resolver::resolve_target_classes(
-                        &base_text,
-                        crate::AccessKind::Arrow,
-                        ctx,
-                    ));
-                for cls in &base_classes {
-                    if let Some(rt) = crate::inheritance::resolve_method_return_type(
-                        cls,
-                        method,
-                        ctx.class_loader,
-                    ) {
-                        return Some(rt);
-                    }
-                }
-            }
-            if let SubjectExpr::StaticMethodCall { class, method } = callee.as_ref()
-                && let Some(owner) = super::resolver::resolve_static_owner_class(class, ctx)
-                && let Some(rt) =
-                    crate::inheritance::resolve_method_return_type(&owner, method, ctx.class_loader)
-            {
-                return Some(rt);
-            }
-            None
-        }
-
-        // Everything else ($var, $this, ClassName, new X, etc.) —
-        // use the standard resolver which returns class-bearing types.
-        _ => {
-            let resolved =
-                super::resolver::resolve_target_classes(text, crate::types::AccessKind::Arrow, ctx);
-            if let Some(first) = resolved.first() {
-                return Some(first.type_string.clone());
-            }
-            None
-        }
+    let results =
+        super::resolver::resolve_target_classes(text, crate::types::AccessKind::Arrow, ctx);
+    if let Some(first) = results.first() {
+        return Some(first.type_string.clone());
     }
+    None
 }
 
 /// Resolve a `ClassName::Member` expression to a type.
