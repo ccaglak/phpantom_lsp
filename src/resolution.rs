@@ -118,7 +118,8 @@ impl Backend {
         // classes that don't follow PSR-4 conventions and aren't in the
         // Composer classmap — e.g. global-namespace classes like `Mockery`
         // that are loaded via Composer's `files` autoloading.
-        if let Some(file_uri) = self.class_index.read().get(class_name).cloned()
+        let class_index_uri = self.class_index.read().get(class_name).cloned();
+        if let Some(file_uri) = class_index_uri
             && let Some(file_path) = Url::parse(&file_uri)
                 .ok()
                 .and_then(|u| u.to_file_path().ok())
@@ -456,15 +457,21 @@ impl Backend {
         // thousands of vendor files.  See P13.
 
         // Populate the fqn_index so that `find_class_in_ast_map` can
-        // resolve these classes via O(1) hash lookup.
+        // resolve these classes via O(1) hash lookup.  Also populate
+        // class_index (FQN → URI) so that `find_class_file_content` can
+        // locate the source file even after the ast_map entry is cleared
+        // by didClose.  The class_index cost is negligible (one string
+        // pair per class).
         {
             let mut fqn_idx = self.fqn_index.write();
+            let mut class_idx = self.class_index.write();
             for cls in &arc_classes {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
                 }
                 let fqn = cls.fqn().to_string();
-                fqn_idx.insert(fqn, Arc::clone(cls));
+                fqn_idx.insert(fqn.clone(), Arc::clone(cls));
+                class_idx.entry(fqn).or_insert_with(|| uri.to_owned());
             }
         }
 

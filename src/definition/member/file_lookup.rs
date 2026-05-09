@@ -112,9 +112,24 @@ impl Backend {
                     .map(|(u, _)| u.clone())
             }
         }
-        // Fallback: the target file may have been closed (didClose clears
-        // ast_map).  Check class_index which survives close (issue #99).
-        .or_else(|| self.class_index.read().get(class_name).cloned())?;
+        .or_else(|| {
+            // Fallback: the target file may have been closed (didClose
+            // clears ast_map) or was never opened.  Check class_index
+            // which survives close.
+            self.class_index.read().get(class_name).cloned()
+        })
+        .or_else(|| {
+            // Last resort: resolve the class via PSR-4 mappings to get
+            // the file URI.  This handles classes that were loaded into
+            // fqn_index (via parse_and_cache_file) but whose ast_map
+            // entry was later cleared by didClose, and whose class_index
+            // entry was never created (parse_and_cache_content does not
+            // populate class_index).
+            let workspace_root = self.workspace_root.read().clone()?;
+            let mappings = self.psr4_mappings.read();
+            let file_path = crate::composer::resolve_class_path(&mappings, &workspace_root, class_name)?;
+            Some(crate::util::path_to_uri(&file_path))
+        })?;
 
         // Get the file content.
         let file_content = if uri == current_uri {
