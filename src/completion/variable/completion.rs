@@ -10,6 +10,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::symbol_map::SymbolMap;
+use crate::symbol_map::VarDefKind;
 use crate::util::position_to_byte_offset;
 
 impl Backend {
@@ -250,6 +251,26 @@ fn collect_variables_from_symbol_map(
         if visible_scopes.contains(&def.scope_start) && def.effective_from <= cursor_offset {
             vars.insert(format!("${}", def.name));
         }
+    }
+
+    // Remove variables whose most recent definition before cursor is an Unset.
+    let mut to_remove = Vec::new();
+    for var_name_with_dollar in &vars {
+        let name_without_dollar = &var_name_with_dollar[1..];
+        let last_def = map.var_defs.iter().rfind(|d| {
+            d.name == name_without_dollar
+                && visible_scopes.contains(&d.scope_start)
+                && d.effective_from <= cursor_offset
+        });
+        if let Some(d) = last_def
+            && d.kind == VarDefKind::Unset
+            && (d.block_end == u32::MAX || cursor_offset <= d.block_end)
+        {
+            to_remove.push(var_name_with_dollar.clone());
+        }
+    }
+    for name in to_remove {
+        vars.remove(&name);
     }
 
     // Add `$this` when inside a non-static method.  In PHP, `$this`

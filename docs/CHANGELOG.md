@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diagnostic code identifiers.** All diagnostic codes now use a consistent `snake_case` noun-phrase scheme: `unknown_variable`, `type_mismatch_argument`, `argument_count_mismatch`, `deprecated_usage`, `missing_implementation`. Users with editor filters matching on these codes will need to update them.
 - **Lower memory usage for lazily-loaded files.** Vendor and stub files no longer store per-file import tables and namespace maps after parsing, and go-to-implementation uses a dedicated reverse-inheritance index instead of scanning all parsed files.
 - **Lower memory usage for variable type tracking.**
+- **Faster variable name completion.** Variable name suggestions now use the precomputed symbol map instead of re-parsing the file. Foreach iteration variables correctly persist after the loop (matching PHP semantics), `@var` docblock variable names are included, and `unset()` removes variables from suggestions.
+- **Faster go-to-definition for variables.** Variable definition lookup no longer re-parses the file as a fallback; the precomputed symbol map handles all cases.
 - **Updated embedded phpstorm-stubs.**
 
 ### Fixed

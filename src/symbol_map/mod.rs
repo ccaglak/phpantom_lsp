@@ -405,6 +405,13 @@ pub(crate) enum VarDefKind {
     /// the pre-body offset to the correct function body scope for
     /// rename and find-references.
     DocblockParam,
+    /// A `@var Type $varName` mention in an inline docblock.  Recorded
+    /// so that the forward walker picks up the type annotation as a
+    /// variable definition site.
+    DocblockVar,
+    /// An `unset($var)` call.  Recorded so that variable completion can
+    /// suppress the variable after the unset point.
+    Unset,
 }
 
 /// Per-file symbol location index.

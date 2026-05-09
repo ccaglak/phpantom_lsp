@@ -214,34 +214,6 @@ Each item must include:
 
 # Outstanding items
 
-## Intentional overlap (reference, not actionable)
-
-These are parallel systems that exist for valid reasons. Documented here so
-they are factored into future design decisions.
-
-### `uri_classes_index` vs `fqn_class_index` vs `fqn_uri_index`
-
-Three maps storing overlapping class data:
-- `uri_classes_index`: URI → `Vec<Arc<ClassInfo>>` (needed for "all classes in this file")
-- `fqn_class_index`: FQN → `Arc<ClassInfo>` (O(1) FQN lookup)
-- `fqn_uri_index`: FQN → URI string (survives `didClose`, enables re-loading)
-
-Data is shared via `Arc`. Each serves a distinct query pattern.
-
-### PathBuf ↔ URI round-tripping
-
-The classmap scanner produces `PathBuf`, converts to URI strings for
-`fqn_uri_index`, then at lookup time parses back to `PathBuf` for file reading.
-A minor inefficiency, not a parallel system.
-
-### `find_class_in_ast_map` linear scan fallback
-
-`src/util.rs` L1436–1447: After the O(1) `fqn_class_index` lookup fails, falls
-back to linear scan of `uri_classes_index`. Covers race conditions during initial
-indexing. Legitimate safety net.
-
----
-
 ## Redundant backwards text walkers
 
 These functions in `src/completion/source/helpers.rs` scan backward with `rfind`
@@ -277,21 +249,6 @@ be indexed before resolution runs.
 The SymbolMap is built once per file in `update_ast_inner` and stores symbol
 spans, variable definitions, scope boundaries, and call sites. Several features
 re-parse the AST to extract information the SymbolMap already has.
-
-### Variable definition lookup
-
-The SymbolMap has `var_defs` with `find_var_definition()`, but
-`definition/variable/mod.rs` ignores it and does its own full AST walk via
-`find_variable_definition_in_program()`. The SymbolMap's `var_defs` are used
-elsewhere (hover, forward walk) but the go-to-definition feature duplicates
-the work.
-
-### Variables-in-scope collection
-
-`collect_variables_in_scope` in `completion.rs` re-parses the AST to find all
-variables visible at the cursor. The SymbolMap's `var_defs` already has every
-variable definition site with scope boundaries; this could be a filtered query
-on `var_defs` instead of a full AST walk.
 
 ### Scope boundary detection
 

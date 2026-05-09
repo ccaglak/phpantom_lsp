@@ -569,13 +569,9 @@ async fn test_unset_removes_variable_from_name_suggestions() {
     let items = complete_at(&backend, &uri, text, 6, 9).await;
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
-    // Note: The SymbolMap-based variable collector does not track
-    // unset() removal, so $user still appears in suggestions.
-    // This is acceptable because unset() does not remove the variable
-    // from PHP's scope — it just sets it to undefined.
     assert!(
-        labels.contains(&"$user"),
-        "$user should still be suggested (SymbolMap does not track unset), got: {:?}",
+        !labels.contains(&"$user"),
+        "$user should NOT be suggested after unset, got: {:?}",
         labels
     );
     assert!(
@@ -607,15 +603,14 @@ async fn test_unset_removes_multiple_variables_from_name_suggestions() {
     let items = complete_at(&backend, &uri, text, 7, 9).await;
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
-    // SymbolMap does not track unset() removal.
     assert!(
-        labels.contains(&"$alpha"),
-        "$alpha should still be suggested (SymbolMap does not track unset), got: {:?}",
+        !labels.contains(&"$alpha"),
+        "$alpha should NOT be suggested after unset, got: {:?}",
         labels
     );
     assert!(
-        labels.contains(&"$beta"),
-        "$beta should still be suggested (SymbolMap does not track unset), got: {:?}",
+        !labels.contains(&"$beta"),
+        "$beta should NOT be suggested after unset, got: {:?}",
         labels
     );
     assert!(
@@ -670,10 +665,9 @@ async fn test_unset_removes_variable_top_level() {
     let items = complete_at(&backend, &uri, text, 4, 1).await;
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
-    // SymbolMap does not track unset() removal.
     assert!(
-        labels.contains(&"$user"),
-        "$user should still be suggested (SymbolMap does not track unset), got: {:?}",
+        !labels.contains(&"$user"),
+        "$user should NOT be suggested after unset, got: {:?}",
         labels
     );
     assert!(

@@ -2109,12 +2109,9 @@ async fn test_var_docblock_variable_name_before_assignment() {
         .map(|i| i.label.as_str())
         .collect();
 
-    // Note: The SymbolMap-based variable collector does not currently
-    // emit VarDefSite entries for @var docblock variable names.
-    // The assignment `$x = ...` is the only VarDefSite here.
     assert!(
-        !var_labels.contains(&"$adminUser"),
-        "$adminUser not yet supported via SymbolMap @var extraction. Got: {:?}",
+        var_labels.contains(&"$adminUser"),
+        "$adminUser should be suggested from @var docblock. Got: {:?}",
         var_labels
     );
 }
@@ -2146,11 +2143,9 @@ async fn test_var_docblock_variable_name_in_method() {
         .map(|i| i.label.as_str())
         .collect();
 
-    // Note: The SymbolMap-based variable collector does not currently
-    // emit VarDefSite entries for @var docblock variable names.
     assert!(
-        !var_labels.contains(&"$myUser"),
-        "$myUser not yet supported via SymbolMap @var extraction. Got: {:?}",
+        var_labels.contains(&"$myUser"),
+        "$myUser should be suggested from @var docblock. Got: {:?}",
         var_labels
     );
 }
@@ -3539,10 +3534,9 @@ async fn test_completion_unset_removes_variable() {
         "$keep should still be visible after unset of another var. Got: {:?}",
         var_labels
     );
-    // SymbolMap does not track unset() removal.
     assert!(
-        var_labels.contains(&"$remove"),
-        "$remove should still be suggested (SymbolMap does not track unset). Got: {:?}",
+        !var_labels.contains(&"$remove"),
+        "$remove should NOT be suggested after unset. Got: {:?}",
         var_labels
     );
 }

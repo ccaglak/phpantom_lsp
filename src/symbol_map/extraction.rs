@@ -11,7 +11,7 @@ use mago_syntax::ast::*;
 
 use super::docblock::{
     class_ref_span, class_ref_span_ctx, extract_docblock_symbols, extract_param_var_spans,
-    get_docblock_text_with_offset, is_navigable_type,
+    extract_var_docblock_var_spans, get_docblock_text_with_offset, is_navigable_type,
 };
 use super::{
     CallSite, ClassRefContext, SelfStaticParentKind, SymbolKind, SymbolMap, SymbolSpan,
@@ -298,7 +298,7 @@ fn extract_from_statement<'a>(
             extract_from_use_statement(use_stmt, &mut ctx.spans);
         }
         Statement::Expression(expr_stmt) => {
-            extract_inline_docblock(expr_stmt, ctx);
+            extract_inline_docblock(expr_stmt, ctx, scope_start);
             // Detect `assert($var instanceof ...)` and record its offset
             // as a sequential narrowing boundary for the diagnostic cache.
             if is_assert_instanceof(expr_stmt.expression) {
@@ -309,14 +309,14 @@ fn extract_from_statement<'a>(
         }
         Statement::Return(ret) => {
             emit_keyword(&ret.r#return, ctx);
-            extract_inline_docblock(ret, ctx);
+            extract_inline_docblock(ret, ctx, scope_start);
             if let Some(val) = ret.value {
                 extract_from_expression(val, ctx, scope_start);
             }
         }
         Statement::Echo(echo) => {
             emit_keyword(&echo.echo, ctx);
-            extract_inline_docblock(echo, ctx);
+            extract_inline_docblock(echo, ctx, scope_start);
             for expr in echo.values.iter() {
                 extract_from_expression(expr, ctx, scope_start);
             }
@@ -535,6 +535,18 @@ fn extract_from_statement<'a>(
             emit_keyword(&unset_stmt.unset, ctx);
             for val in unset_stmt.values.iter() {
                 extract_from_expression(val, ctx, scope_start);
+                if let Expression::Variable(Variable::Direct(dv)) = val {
+                    let name = dv.name.strip_prefix('$').unwrap_or(dv.name).to_string();
+                    ctx.var_defs.push(VarDefSite {
+                        offset: dv.span.start.offset,
+                        name,
+                        kind: VarDefKind::Unset,
+                        scope_start,
+                        effective_from: unset_stmt.span().end.offset,
+                        nesting_depth: ctx.cond_nesting_depth,
+                        block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
+                    });
+                }
             }
         }
         Statement::Constant(constant) => {
@@ -1346,11 +1358,30 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
 /// These comments are stored as trivia preceding the statement token.
 /// Unlike class/method docblocks, inline `@var` annotations don't define
 /// template parameters — we only care about the type spans they contain.
-fn extract_inline_docblock(node: &impl HasSpan, ctx: &mut ExtractionCtx<'_>) {
+fn extract_inline_docblock(node: &impl HasSpan, ctx: &mut ExtractionCtx<'_>, scope_start: u32) {
     if let Some((doc_text, doc_offset)) =
         get_docblock_text_with_offset(ctx.trivias, ctx.content, node)
     {
         let _tpl = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
+
+        // Emit VarDefSite entries for `@var Type $varName` in inline docblocks.
+        for (name, file_offset) in extract_var_docblock_var_spans(doc_text, doc_offset) {
+            let name_len = name.len() as u32 + 1; // +1 for the `$` prefix
+            ctx.spans.push(SymbolSpan {
+                start: file_offset,
+                end: file_offset + name_len,
+                kind: SymbolKind::Variable { name: name.clone() },
+            });
+            ctx.var_defs.push(VarDefSite {
+                offset: file_offset,
+                name,
+                kind: VarDefKind::DocblockVar,
+                scope_start,
+                effective_from: file_offset,
+                nesting_depth: ctx.cond_nesting_depth,
+                block_end: ctx.cond_block_end_stack.last().copied().unwrap_or(u32::MAX),
+            });
+        }
     }
 }
 

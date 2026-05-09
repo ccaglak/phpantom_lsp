@@ -353,6 +353,62 @@ pub(super) fn extract_param_var_spans(docblock: &str, base_offset: u32) -> Vec<(
     results
 }
 
+/// Scan a docblock for `@var Type $varName` tokens and return
+/// `(name_without_dollar, file_byte_offset_of_dollar)` pairs.
+///
+/// These are used by the symbol-map extraction to emit
+/// [`VarDefSite`](super::VarDefSite) entries for inline `@var`
+/// docblocks so the forward walker treats them as variable definitions.
+pub(super) fn extract_var_docblock_var_spans(
+    docblock: &str,
+    base_offset: u32,
+) -> Vec<(String, u32)> {
+    let base_span = Span::new(
+        FileId::zero(),
+        Position::new(base_offset),
+        Position::new(base_offset + docblock.len() as u32),
+    );
+    let Some(info) = parse_docblock(docblock, base_span) else {
+        return Vec::new();
+    };
+
+    let mut results = Vec::new();
+
+    for tag in &info.tags {
+        let is_var = matches!(
+            tag.kind,
+            TagKind::Var | TagKind::PhpstanVar | TagKind::PsalmVar
+        );
+        if !is_var {
+            continue;
+        }
+
+        // The description is `TypeHint $varName desc` or just `$varName`.
+        // Find the `$` in the raw source covered by description_span so
+        // the file offset is accurate.
+        let desc_file_start = tag.description_span.start.offset;
+        let desc_in_doc_start = (desc_file_start - base_offset) as usize;
+        let desc_in_doc_end =
+            ((tag.description_span.end.offset - base_offset) as usize).min(docblock.len());
+        let raw_desc = &docblock[desc_in_doc_start..desc_in_doc_end];
+
+        if let Some(dollar_pos) = raw_desc.find('$') {
+            let rest = &raw_desc[dollar_pos..];
+            let name_end = rest[1..]
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|i| i + 1)
+                .unwrap_or(rest.len());
+            if name_end > 1 {
+                let name = rest[1..name_end].to_string();
+                let file_offset = desc_file_start + dollar_pos as u32;
+                results.push((name, file_offset));
+            }
+        }
+    }
+
+    results
+}
+
 // ─── Type span emission ─────────────────────────────────────────────────────
 
 /// Emit `SymbolSpan` entries for a type token, splitting unions and
