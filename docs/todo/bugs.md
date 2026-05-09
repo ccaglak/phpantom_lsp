@@ -22,20 +22,3 @@ handle this automatically.
 `tests/psalm_assertions/method_call.php` (out of scope until
 upstream stubs land).
 
-
-## B17. Double-`$` prefix in assignment dependency tracking
-
-`src/completion/variable/forward_walk.rs` L5972-5977
-(`collect_expr_assignment_deps`) and L5985-5987
-(`collect_rhs_variables`) use `format!("${}", dv.name)` to
-construct variable names. Since `dv.name` already includes the
-`$` prefix (e.g. `"$fn"`), this produces `"$$fn"`. The bug is
-latent because both the LHS key and the RHS set values are
-consistently double-prefixed, so dependency tracking still
-works. However, any code that compares these names against
-normally-prefixed variable names (single `$`) would fail to
-match.
-
-**Fix:** Remove the `format!("${}", ...)` wrapper and use
-`dv.name.to_string()` directly in both functions.
-

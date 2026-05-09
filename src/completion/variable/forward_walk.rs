@@ -5970,7 +5970,7 @@ fn collect_expr_assignment_deps(
     if let Expression::Assignment(assign) = expr
         && let Expression::Variable(Variable::Direct(dv)) = assign.lhs
     {
-        let lhs_name = format!("${}", dv.name);
+        let lhs_name = dv.name.to_string();
         let mut rhs_vars = HashSet::new();
         collect_rhs_variables(assign.rhs, &mut rhs_vars);
         deps.entry(lhs_name).or_default().extend(rhs_vars);
@@ -5983,7 +5983,7 @@ fn collect_rhs_variables(expr: &Expression<'_>, vars: &mut HashSet<String>) {
 
     match expr {
         Expression::Variable(Variable::Direct(dv)) => {
-            vars.insert(format!("${}", dv.name));
+            vars.insert(dv.name.to_string());
         }
         Expression::Binary(binary) => {
             collect_rhs_variables(binary.lhs, vars);
