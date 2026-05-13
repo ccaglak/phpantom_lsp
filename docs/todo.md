@@ -23,10 +23,9 @@ within the same impact tier.
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                                                                                    | Impact      | Effort      |
-| --- | ----------------------------------------------------------------------------------------------------------------------- | ----------- | ------ |
-| D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                                | Low         | Medium      |
-|     | **Release 0.8.0**                                                                                                       |             |             |
+| #   | Item              | Impact | Effort |
+| --- | ----------------- | ------ | ------ |
+|     | **Release 0.8.0** |        |        |
 
 > **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
 > (Implement interface methods), A9 (Auto import), D1 (Unknown class
@@ -42,6 +41,7 @@ within the same impact tier.
 | C2  | [`#[ArrayShape]` return shapes on stub functions](todo/completion.md#c2-arrayshape-return-shapes-on-stub-functions)   | Medium     | Medium |
 | A3  | Switch → match conversion                                                                                             | Low-Medium | Medium |
 | A10 | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                    | Low-Medium | Medium |
+| D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                              | Low        | Medium |
 
 ## Sprint 7 — 1.0 release & IDE extensions
 
@@ -61,16 +61,16 @@ within the same impact tier.
 
 ## Sprint 8 — Blade support
 
-| #   | Item                                                                                                           | Impact | Effort |
-| --- | -------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                                                                     | —      | —      |
-| BL1 | [Blade-aware code actions](todo/blade.md#8-blade-aware-code-actions)                                           | Medium | Medium |
-| BL2 | [Template and component file discovery](todo/blade.md#9-template-and-component-file-discovery)                  | High   | Medium |
+| #   | Item                                                                                                                      | Impact | Effort |
+| --- | ------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                                | —      | —      |
+| BL1 | [Blade-aware code actions](todo/blade.md#8-blade-aware-code-actions)                                                      | Medium | Medium |
+| BL2 | [Template and component file discovery](todo/blade.md#9-template-and-component-file-discovery)                            | High   | Medium |
 | BL3 | [Component tag parsing (`<x-...>`, `<livewire:...>`, `@props`)](todo/blade.md#10-x-component-tag-parsing-in-preprocessor) | High   | High   |
-| BL4 | [Component and view name completion](todo/blade.md#13-component-and-view-name-completion)                       | High   | Medium |
-| BL5 | [Go-to-definition for view names and components](todo/blade.md#15-go-to-definition-for-view-names-and-components) | Medium | Medium |
-| BL6 | [`@extends` signature merging and component class typing](todo/blade.md#16-signature-merging-for-extends)       | Medium | High   |
-| BL7 | [Blade directive completion](todo/blade.md#19-directive-name-completion)                                        | Medium | Low    |
+| BL4 | [Component and view name completion](todo/blade.md#13-component-and-view-name-completion)                                 | High   | Medium |
+| BL5 | [Go-to-definition for view names and components](todo/blade.md#15-go-to-definition-for-view-names-and-components)         | Medium | Medium |
+| BL6 | [`@extends` signature merging and component class typing](todo/blade.md#16-signature-merging-for-extends)                 | Medium | High   |
+| BL7 | [Blade directive completion](todo/blade.md#19-directive-name-completion)                                                  | Medium | Low    |
 
 # Backlog
 
@@ -92,19 +92,19 @@ unlikely to move the needle for most users.
 |     | **[Type Inference](todo/type-inference.md)**                                                                                                                                |             |             |
 | T20 | [Type narrowing reconciliation engine](todo/type-inference.md#t20-type-narrowing-reconciliation-engine) (CNF clause algebra, sure/sureNot tracking)                         | Medium-High | High        |
 | T27 | [Per-expression type caching during forward walk](todo/type-inference.md#t27-per-expression-type-caching-during-forward-walk)                                               | Medium-High | Medium      |
-| T28 | [Template inference depth priority (shallowest bound wins)](todo/type-inference.md#t28-template-inference-depth-priority-shallowest-bound-wins)                              | Medium      | Low-Medium  |
+| T28 | [Template inference depth priority (shallowest bound wins)](todo/type-inference.md#t28-template-inference-depth-priority-shallowest-bound-wins)                             | Medium      | Low-Medium  |
 | T29 | [Definite vs possible variable existence tracking](todo/type-inference.md#t29-definite-vs-possible-variable-existence-tracking)                                             | Medium      | Medium      |
 | T30 | [Literal type collapse limit](todo/type-inference.md#t30-literal-type-collapse-limit)                                                                                       | Low-Medium  | Low         |
 | T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                                      | Low-Medium  | Low-Medium  |
 | T13 | [Closure variables lose callable signature detail](todo/type-inference.md#t13-closure-variables-lose-callable-signature-detail)                                             | Low-Medium  | Medium      |
-| T26 | [Globbed constant unions (`Foo::BAR_*`)](todo/type-inference.md#t26-globbed-constant-unions-foobar_)                                                                         | Low-Medium  | Medium      |
+| T26 | [Globbed constant unions (`Foo::BAR_*`)](todo/type-inference.md#t26-globbed-constant-unions-foobar_)                                                                        | Low-Medium  | Medium      |
 | T4  | Non-empty-\* type narrowing and propagation                                                                                                                                 | Low         | Low         |
 | T5  | Fiber type resolution                                                                                                                                                       | Low         | Low         |
 | T9  | [Dead-code elimination after `never`-returning calls](todo/type-inference.md#t9-dead-code-elimination-after-never-returning-calls)                                          | Low         | Low-Medium  |
 | T10 | [Ternary expression as RHS of list destructuring](todo/type-inference.md#t10-ternary-expression-as-rhs-of-list-destructuring)                                               | Low         | Low-Medium  |
 | T11 | [Nested list destructuring](todo/type-inference.md#t11-nested-list-destructuring)                                                                                           | Low         | Low-Medium  |
 |     | **[Diagnostics](todo/diagnostics.md)**                                                                                                                                      |             |             |
-| D5  | [External tool diagnostic suppression actions](todo/diagnostics.md#d5-external-tool-diagnostic-suppression-actions)                                                    | Low         | Low         |
+| D5  | [External tool diagnostic suppression actions](todo/diagnostics.md#d5-external-tool-diagnostic-suppression-actions)                                                         | Low         | Low         |
 | D6  | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                                           | Low-Medium  | Low         |
 |     | **[Bug Fixes](todo/bugs.md)**                                                                                                                                               |             |             |
 |     | **[Code Actions](todo/actions.md)**                                                                                                                                         |             |             |
