@@ -36,7 +36,7 @@ Split Phase 3 into two sub-phases:
    only the paths that pass the filter along with their content.
 
 2. **Sequential parse.** For the (few) files that pass, call
-   `parse_and_cache_file` sequentially. This step mutates `ast_map`
+   `parse_and_cache_file` sequentially. This step mutates `uri_classes_index`
    and calls `class_loader`, which may re-lock shared state.
 
 The same pattern applies to Phase 5 (PSR-4 directory walk for files
@@ -166,12 +166,12 @@ not important and a plain `HashSet` suffices.
 
 ---
 
-## P8. `find_class_in_ast_map` linear fallback scan
+## P8. `find_class_in_uri_classes_index` linear fallback scan
 
 **Impact: Low · Effort: Low**
 
-The fast O(1) `fqn_index` lookup in `find_class_in_ast_map` covers
-the common case. The slow fallback iterates every file in `ast_map`
+The fast O(1) `fqn_index` lookup in `find_class_in_uri_classes_index` covers
+the common case. The slow fallback iterates every file in `uri_classes_index`
 linearly. The comment says this covers "race conditions during
 initial indexing" and anonymous classes.
 
@@ -385,7 +385,7 @@ The 630 phpstorm-stubs PHP files are embedded as raw source via
    classes extend built-in types.
 
 3. **Duplicate data.** After parsing, the `Arc<ClassInfo>` lives in
-   `ast_map` and `fqn_index`, but the raw PHP source stays resident
+   `uri_classes_index` and `fqn_index`, but the raw PHP source stays resident
    in `.rodata` forever. Both copies exist simultaneously.
 
 ### Indexing order: stubs → vendor → user
@@ -456,7 +456,7 @@ serializes as `Vec<T>` and deserializes into `SharedVec::from(vec)`.
 **What gets removed:**
 
 - The `STUB_FILES` array (raw PHP source embedding)
-- The `phpantom-stub://` URI scheme and associated `ast_map` entries
+- The `phpantom-stub://` URI scheme and associated `uri_classes_index` entries
 - The `parse_and_cache_content_versioned` path for stubs
 - The `is_stub_function_removed` / `is_stub_class_removed` byte
   scanners (replaced by version fields on deserialized structs)

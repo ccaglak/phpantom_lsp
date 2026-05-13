@@ -48,7 +48,7 @@ impl Backend {
     /// prevents short-name collisions when a child class and its parent
     /// share the same simple name but live in different namespaces.
     ///
-    /// Searches the `ast_map` (which includes files loaded via PSR-4 by
+    /// Searches the `uri_classes_index` (which includes files loaded via PSR-4 by
     /// `find_or_load_class`) and returns `(uri, content)`.
     pub(crate) fn find_class_file_content(
         &self,
@@ -63,7 +63,7 @@ impl Backend {
             None
         };
 
-        // Search the ast_map for the file containing this class.
+        // Search the uri_classes_index for the file containing this class.
         let uri = {
             let map = self.uri_classes_index.read();
             let nmap = self.file_namespaces.read();
@@ -114,17 +114,17 @@ impl Backend {
         }
         .or_else(|| {
             // Fallback: the target file may have been closed (didClose
-            // clears ast_map) or was never opened.  Check class_index
+            // clears uri_classes_index) or was never opened.  Check fqn_uri_index
             // which survives close.
             self.fqn_uri_index.read().get(class_name).cloned()
         })
         .or_else(|| {
             // Last resort: resolve the class via PSR-4 mappings to get
             // the file URI.  This handles classes that were loaded into
-            // fqn_index (via parse_and_cache_file) but whose ast_map
-            // entry was later cleared by didClose, and whose class_index
+            // fqn_index (via parse_and_cache_file) but whose uri_classes_index
+            // entry was later cleared by didClose, and whose fqn_uri_index
             // entry was never created (parse_and_cache_content does not
-            // populate class_index).
+            // populate fqn_uri_index).
             let workspace_root = self.workspace_root.read().clone()?;
             let mappings = self.psr4_mappings.read();
             let file_path =

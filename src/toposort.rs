@@ -83,7 +83,7 @@ struct DfsFrame {
 /// # Arguments
 ///
 /// * `classes` — iterator of `(FQN, &ClassInfo)` pairs covering every
-///   known class-like declaration (from `ast_map`, stubs, etc.).
+///   known class-like declaration (from `uri_classes_index`, stubs, etc.).
 ///
 /// # Returns
 ///
@@ -123,7 +123,7 @@ pub(crate) fn toposort_classes<'a>(
 
     // Sort the starting FQNs so that the DFS visitation order is
     // deterministic regardless of HashMap iteration order in the
-    // caller (e.g. `toposort_from_ast_map` iterates a HashMap whose
+    // caller (e.g. `toposort_from_uri_classes_index` iterates a HashMap whose
     // order varies between runs due to random hashing seeds).
     // Without this, classes at the same topological level can be
     // processed in different orders across runs, which causes the
@@ -196,12 +196,14 @@ pub(crate) fn toposort_classes<'a>(
 }
 
 /// Convenience wrapper that extracts `(FQN, &ClassInfo)` pairs from
-/// the ast_map structure used by `Backend`.
+/// the `uri_classes_index` structure used by `Backend`.
 ///
 /// Flattens the per-file `Vec<Arc<ClassInfo>>` into a single iterator
 /// of `(fqn, &ClassInfo)` pairs suitable for [`toposort_classes`].
-pub(crate) fn toposort_from_ast_map(ast_map: &HashMap<String, Vec<Arc<ClassInfo>>>) -> Vec<String> {
-    let iter = ast_map
+pub(crate) fn toposort_from_uri_classes_index(
+    uri_classes_index: &HashMap<String, Vec<Arc<ClassInfo>>>,
+) -> Vec<String> {
+    let iter = uri_classes_index
         .values()
         .flat_map(|classes| classes.iter())
         .map(|class| (class.fqn().to_string(), class.as_ref()));

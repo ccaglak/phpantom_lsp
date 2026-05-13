@@ -110,7 +110,7 @@ impl Backend {
     /// suggested.  The sources are:
     ///   1. PSR-4 mapping prefixes themselves (exploded to every level)
     ///   2. Namespace portions of FQNs from `namespace_map`,
-    ///      `class_index`, and `ast_map` — but only when
+    ///      `fqn_uri_index`, and `uri_classes_index` — but only when
     ///      they start with a PSR-4 prefix.
     ///   3. Namespace(s) inferred from the file's path relative to PSR-4
     ///      source directories (boosted to the top of the list).
@@ -214,7 +214,7 @@ impl Backend {
             }
         }
 
-        // ── 3. ast_map namespace portions ───────────────────────────
+        // ── 3. uri_classes_index namespace portions ───────────────────────────
         {
             let amap = self.uri_classes_index.read();
             for (_uri, classes) in amap.iter() {
@@ -229,7 +229,7 @@ impl Backend {
             }
         }
 
-        // ── 4. class_index namespace portions ───────────────────────
+        // ── 4. fqn_uri_index namespace portions ───────────────────────
         {
             let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {

@@ -10,7 +10,7 @@
 //! filtering — completion prevents inserting a wrong kind; this
 //! diagnostic catches wrong kinds already in the code.
 //!
-//! Only references where the target class is loaded (in `ast_map` or
+//! Only references where the target class is loaded (in `uri_classes_index` or
 //! stubs) are flagged.  Unknown classes are not reported here (that is
 //! the unknown-class diagnostic's job).
 

@@ -1,8 +1,8 @@
 /// AST update orchestration and name resolution.
 ///
 /// This module contains the `update_ast` method that performs a full
-/// parse of a PHP file and updates all the backend maps (ast_map,
-/// use_map, namespace_map, global_functions, global_defines, class_index,
+/// parse of a PHP file and updates all the backend maps (uri_classes_index,
+/// use_map, namespace_map, global_functions, global_defines, fqn_uri_index,
 /// symbol_maps) in a single pass.  It also contains the name resolution
 /// helpers (`resolve_parent_class_names`, `resolve_name`) used to convert
 /// short class names to fully-qualified names.
@@ -26,7 +26,7 @@ use crate::types::ClassInfo;
 use super::DocblockCtx;
 
 impl Backend {
-    /// Update the ast_map, use_map, and namespace_map for a given file URI
+    /// Update the uri_classes_index, use_map, and namespace_map for a given file URI
     /// by parsing its content.
     ///
     /// Returns `true` when at least one class signature in this file
@@ -135,7 +135,7 @@ impl Backend {
         // that contain multiple `namespace { }` blocks (e.g. example.php
         // places demo classes in `Demo` and Illuminate stubs in their own
         // namespace blocks).  The per-class namespace is used later when
-        // building the `class_index` and when resolving parent/trait names.
+        // building the `fqn_uri_index` and when resolving parent/trait names.
         let mut classes_with_ns: Vec<(ClassInfo, Option<String>)> = Vec::new();
         let mut use_map = HashMap::new();
         let mut namespace: Option<String> = None;
@@ -415,7 +415,7 @@ impl Backend {
 
         // Separate the classes from their namespace tags for storage,
         // stamping each ClassInfo with its namespace so that
-        // `find_class_in_ast_map` can distinguish classes with the same
+        // `find_class_in_uri_classes_index` can distinguish classes with the same
         // short name in different namespace blocks.
         let classes: Vec<ClassInfo> = classes_with_ns
             .iter()
@@ -428,7 +428,7 @@ impl Backend {
 
         let uri_string = uri.to_string();
 
-        // Collect old ClassInfo values (not just FQNs) before the ast_map
+        // Collect old ClassInfo values (not just FQNs) before the uri_classes_index
         // entry is overwritten.  These are compared against the new classes
         // using `signature_eq` to decide whether each FQN's cache entry
         // actually needs eviction (signature-level cache invalidation).
@@ -451,7 +451,7 @@ impl Backend {
             })
             .collect();
 
-        // Populate the class_index with FQN → URI mappings for every class
+        // Populate the fqn_uri_index with FQN → URI mappings for every class
         // found in this file.  This enables reliable lookup of classes that
         // don't follow PSR-4 conventions (e.g. classes defined in Composer
         // autoload_files.php entries).
@@ -467,7 +467,7 @@ impl Backend {
             // the previous namespace and pollute completions.
             //
             // Use targeted removes via old_fqns instead of a full
-            // retain() scan — O(old_classes) ≈ O(1) vs O(class_index).
+            // retain() scan — O(old_classes) ~ O(1) vs O(fqn_uri_index).
             for old_fqn in &old_fqns {
                 idx.remove(old_fqn);
                 fqn_idx.remove(old_fqn);
@@ -654,10 +654,10 @@ impl Backend {
         // ── ER4: Eagerly re-populate evicted classes ─────────────────
         if !evicted_fqns.is_empty() {
             // Toposort just the evicted subset using their current
-            // (just-parsed) ClassInfo from ast_map.
+            // (just-parsed) ClassInfo from uri_classes_index.
             let sorted = {
-                let ast_map = self.uri_classes_index.read();
-                let iter = ast_map
+                let uri_classes = self.uri_classes_index.read();
+                let iter = uri_classes
                     .values()
                     .flat_map(|classes| classes.iter())
                     .filter(|c| evicted_fqns.contains(&c.fqn().to_string()))

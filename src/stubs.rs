@@ -21,9 +21,9 @@
 ///    `HashMap`s for O(1) lookup.
 ///
 /// 3. `find_or_load_class` (in `util.rs`) consults the class index as a
-///    final fallback (Phase 3) after the `ast_map` and PSR-4 resolution.
+///    final fallback (Phase 3) after the `uri_classes_index` and PSR-4 resolution.
 ///    The stub PHP source is parsed lazily on first access and cached in
-///    the `ast_map` under a `phpantom-stub://` URI so subsequent lookups
+///    the `uri_classes_index` under a `phpantom-stub://` URI so subsequent lookups
 ///    are free.
 ///
 /// ## Updating stubs
@@ -48,7 +48,7 @@ pub const STUBS_VERSION: &str = env!("PHPANTOM_STUBS_VERSION");
 ///
 /// Called once during `Backend` construction.  The returned map is stored
 /// on the backend and consulted by `find_or_load_class` as a final
-/// fallback after the `ast_map` and PSR-4 resolution.
+/// fallback after the `uri_classes_index` and PSR-4 resolution.
 pub fn build_stub_class_index() -> HashMap<&'static str, &'static str> {
     STUB_CLASS_MAP
         .iter()

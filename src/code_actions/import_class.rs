@@ -340,7 +340,7 @@ impl Backend {
         let mut candidates = Vec::new();
         let name_lower = name.to_lowercase();
 
-        // ── 1. class_index ──────────────────────────────────────────────
+        // ── 1. fqn_uri_index ──────────────────────────────────────────────
         {
             let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
@@ -364,7 +364,7 @@ impl Backend {
             }
         }
 
-        // ── 3. ast_map (already-parsed files) ───────────────────────────
+        // ── 3. uri_classes_index (already-parsed files) ───────────────────────────
         {
             let amap = self.uri_classes_index.read();
             for (_file_uri, classes) in amap.iter() {
@@ -1460,7 +1460,7 @@ final class Foo extends Data
     // ── find_import_candidates smoke test ───────────────────────────────
 
     #[test]
-    fn find_candidates_from_class_index() {
+    fn find_candidates_from_fqn_uri_index() {
         let backend = crate::Backend::new_test();
         // Populate class index with a known class.
         {
@@ -1501,7 +1501,7 @@ final class Foo extends Data
     #[test]
     fn find_candidates_deduplicates() {
         let backend = crate::Backend::new_test();
-        // Add the same FQN to class_index — should only appear once.
+        // Add the same FQN to fqn_uri_index — should only appear once.
         {
             let mut idx = backend.fqn_uri_index.write();
             idx.insert("App\\Foo".to_string(), "file:///foo.php".to_string());
@@ -1999,19 +1999,19 @@ final class Foo extends Data
     }
 
     #[test]
-    fn import_action_offered_when_namespaced_class_in_ast_map() {
+    fn import_action_offered_when_namespaced_class_in_uri_classes_index() {
         // Reproduces issue #59: when a namespaced class like `Carbon\Carbon`
-        // is already parsed and in the ast_map, `find_or_load_class("Carbon")`
+        // is already parsed and in the uri_classes_index, `find_or_load_class("Carbon")`
         // must NOT match it — the bare name `"Carbon"` is a global-scope
         // lookup and should not resolve to `Carbon\Carbon`.
         //
-        // Without the fix, `find_class_in_ast_map("Carbon")` ignores the
+        // Without the fix, `find_class_in_uri_classes_index("Carbon")` ignores the
         // namespace filter when `expected_ns` is `None`, so ANY class with
         // short name `Carbon` matches.  The import action then skips it
         // thinking "this class resolves in global scope".
         let backend = crate::Backend::new_test();
 
-        // Parse the dependency file so Carbon\Carbon is in the ast_map.
+        // Parse the dependency file so Carbon\Carbon is in the uri_classes_index.
         let uri_dep = "file:///vendor/carbon.php";
         let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
         backend.update_ast(uri_dep, content_dep);
@@ -2052,7 +2052,7 @@ final class Foo extends Data
                     false
                 }
             }),
-            "expected an import action for Carbon\\Carbon when the namespaced class is in ast_map, got: {:?}",
+            "expected an import action for Carbon\\Carbon when the namespaced class is in uri_classes_index, got: {:?}",
             actions
                 .iter()
                 .map(|a| match a {

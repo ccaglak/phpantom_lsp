@@ -373,7 +373,7 @@ impl LanguageServer for Backend {
 
         // Clear the negative class-resolution cache.  During startup,
         // `did_open` may have triggered `update_ast` → `find_or_load_class`
-        // before the classmap / class_index was fully populated, caching
+        // before the fqn_uri_index was fully populated, caching
         // "not found" for classes that are now resolvable.  Without this
         // clear, those stale entries cause false-positive "Class not found"
         // diagnostics even though hover and go-to-definition (which run
@@ -1905,7 +1905,7 @@ impl Backend {
                     }
                 }
 
-                // Populate class_index so find_or_load_class can
+                // Populate fqn_uri_index so find_or_load_class can
                 // lazily parse these classes later.
                 {
                     let mut idx = self.fqn_uri_index.write();
@@ -1950,7 +1950,7 @@ impl Backend {
     }
 
     /// Parse a `.phar` archive and register its PHP classes in the
-    /// classmap and class index for lazy loading.
+    /// fqn_uri_index for lazy loading.
     ///
     /// The phar's raw bytes are read from disk, parsed by
     /// [`phar::PharArchive`], and stored in
@@ -1959,12 +1959,11 @@ impl Backend {
     /// [`find_classes`](classmap_scanner::find_classes) byte scanner,
     /// and discovered classes are registered in:
     ///
-    /// - `classmap` — with a sentinel path like
+    /// - `fqn_uri_index` — with a sentinel path like
     ///   `/path/to/phpstan.phar!src/Type/Type.php` (the `!` separator
     ///   tells [`parse_and_cache_file`](crate::Backend::parse_and_cache_file)
     ///   to extract content from the phar instead of reading from disk)
-    /// - `class_index` — with a `phar://` URI for completions and
-    ///   workspace symbols
+    ///   and a `phar://` URI for completions and workspace symbols
     fn scan_phar_archive(&self, phar_path: &Path) {
         // Avoid scanning the same phar twice.
         if self.phar_archives.read().contains_key(phar_path) {
@@ -1993,7 +1992,7 @@ impl Backend {
             .collect();
 
         let mut classmap_entries: Vec<(String, PathBuf)> = Vec::new();
-        let mut class_index_entries: Vec<(String, String)> = Vec::new();
+        let mut fqn_uri_entries: Vec<(String, String)> = Vec::new();
 
         for internal_path in &php_files {
             if let Some(content) = archive.read_file(internal_path) {
@@ -2004,21 +2003,21 @@ impl Backend {
                         PathBuf::from(format!("{}!{}", phar_path.display(), internal_path));
                     let phar_uri = format!("phar://{}/{}", phar_path.display(), internal_path);
                     classmap_entries.push((fqn.clone(), sentinel));
-                    class_index_entries.push((fqn, phar_uri));
+                    fqn_uri_entries.push((fqn, phar_uri));
                 }
             }
         }
 
         let class_count = classmap_entries.len();
 
-        // Register classes in the classmap and class_index.
+        // Register classes in the fqn_uri_index.
         {
             let mut idx = self.fqn_uri_index.write();
             for (fqn, path) in classmap_entries {
                 idx.entry(fqn)
                     .or_insert_with(|| crate::util::path_to_uri(&path));
             }
-            for (fqn, uri) in class_index_entries {
+            for (fqn, uri) in fqn_uri_entries {
                 idx.entry(fqn).or_insert(uri);
             }
         }

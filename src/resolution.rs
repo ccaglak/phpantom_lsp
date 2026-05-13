@@ -11,7 +11,7 @@
 ///
 ///   0. **Class index** — direct FQN → URI lookup (covers non-PSR-4 classes
 ///      and Composer classmap entries)
-///   1. **ast_map scan** — search all already-parsed files by short name,
+///   1. **uri_classes_index scan** — search all already-parsed files by short name,
 ///      with namespace verification when a qualified name is requested
 ///   2. **PSR-4 resolution** — convert namespace to file path and parse
 ///   3. **Embedded stubs** — built-in PHP classes/interfaces bundled in
@@ -45,7 +45,7 @@ use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
 
 impl Backend {
-    /// Try to find a class by name across all cached files in the ast_map,
+    /// Try to find a class by name across all cached files in the uri_classes_index,
     /// and if not found, attempt PSR-4 resolution to load the class from disk.
     ///
     /// The `class_name` can be:
@@ -102,15 +102,15 @@ impl Backend {
 
         // ── Phase 0: Search all already-parsed files ────────────
         // O(1) lookup via `fqn_index` (populated by `update_ast` and
-        // `parse_and_cache_content`), with a linear `ast_map` fallback
+        // `parse_and_cache_content`), with a linear `uri_classes_index` fallback
         // for edge cases.  This is the fastest path — no disk I/O, no
         // parsing — so it runs before any file-based resolution.
-        if let Some(cls) = self.find_class_in_ast_map(class_name) {
+        if let Some(cls) = self.find_class_in_uri_classes_index(class_name) {
             return Some(cls);
         }
 
-        // ── Phase 1: Try the class_index (FQN → URI) ───────────
-        // The class_index is populated by `scan_autoload_files` (Composer
+        // ── Phase 1: Try the fqn_uri_index (FQN → URI) ───────────
+        // The fqn_uri_index is populated by `scan_autoload_files` (Composer
         // `autoload_files.php` entries and their `require_once` chains),
         // by `update_ast` for every opened/changed file, and by the
         // workspace full-scan for non-Composer projects.  It covers
@@ -150,7 +150,7 @@ impl Backend {
         // ── Phase 3: Try embedded PHP stubs ──
         // Stubs are bundled in the binary for built-in classes/interfaces
         // (e.g. UnitEnum, BackedEnum, BcMath\Number).  Parse on first
-        // access and cache in the ast_map under a `phpantom-stub://` URI
+        // access and cache in the uri_classes_index under a `phpantom-stub://` URI
         // so subsequent lookups hit Phase 1 and skip parsing entirely.
         //
         // Two lookup strategies:
@@ -202,7 +202,7 @@ impl Backend {
     /// Try to load a class from the embedded stub index only.
     ///
     /// This is the in-memory-only counterpart of [`find_or_load_class`].
-    /// It checks the `ast_map` first (O(1) via the FQN index), and if
+    /// It checks the `uri_classes_index` first (O(1) via the FQN index), and if
     /// the class hasn't been parsed yet, looks it up in the in-memory
     /// `stub_index`.  When found there, it parses and caches the stub
     /// under a `phpantom-stub://` URI so subsequent lookups are free.
@@ -214,7 +214,7 @@ impl Backend {
         let last_segment = short_name(class_name);
 
         // Fast path: already parsed and cached.
-        if let Some(cls) = self.find_class_in_ast_map(class_name) {
+        if let Some(cls) = self.find_class_in_uri_classes_index(class_name) {
             return Some(cls);
         }
 
@@ -295,7 +295,7 @@ impl Backend {
     }
 
     /// Spin-wait for another thread to finish parsing a file and return
-    /// the cached result from `ast_map`.
+    /// the cached result from `uri_classes_index`.
     fn wait_for_cached_result(&self, uri: &str) -> Option<Vec<Arc<ClassInfo>>> {
         for _ in 0..200 {
             // Check if parsing is complete (URI removed from inflight set).
@@ -305,12 +305,12 @@ impl Backend {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         // Timeout: the other thread is still parsing.  Return whatever is
-        // in ast_map (may be stale or None).
+        // in uri_classes_index (may be stale or None).
         self.uri_classes_index.read().get(uri).cloned()
     }
 
     /// Parse PHP source text, cache the results in
-    /// `ast_map`/`use_map`/`namespace_map`, and return the extracted
+    /// `uri_classes_index`/`use_map`/`namespace_map`, and return the extracted
     /// classes.
     ///
     /// This is the single canonical implementation of the "parse → cache"
@@ -335,7 +335,7 @@ impl Backend {
     ///
     /// # Consistency model
     ///
-    /// The five maps (`ast_map`, `use_map`, `namespace_map`, `fqn_index`,
+    /// The five maps (`uri_classes_index`, `use_map`, `namespace_map`, `fqn_index`,
     /// `resolved_class_cache`) are written sequentially, not under a
     /// single lock.  A concurrent reader could briefly observe a state
     /// where some maps reflect the new parse while others still hold
@@ -430,7 +430,7 @@ impl Backend {
         // Record that this URI has been parsed.
         self.parsed_uris.write().insert(uri.to_owned());
 
-        // Store in ast_map for wait_for_cached_result (concurrent
+        // Store in uri_classes_index for wait_for_cached_result (concurrent
         // parse deduplication) and for consumers that iterate classes
         // by URI.  The memory cost is negligible (just Arc pointers).
         self.uri_classes_index
@@ -442,11 +442,11 @@ impl Backend {
         // update_ast_inner).  Skipping them reduces memory usage across
         // thousands of vendor files.  See P13.
 
-        // Populate the fqn_index so that `find_class_in_ast_map` can
+        // Populate the fqn_index so that `find_class_in_uri_classes_index` can
         // resolve these classes via O(1) hash lookup.  Also populate
-        // class_index (FQN → URI) so that `find_class_file_content` can
-        // locate the source file even after the ast_map entry is cleared
-        // by didClose.  The class_index cost is negligible (one string
+        // fqn_uri_index (FQN -> URI) so that `find_class_file_content` can
+        // locate the source file even after the uri_classes_index entry is cleared
+        // by didClose.  The fqn_uri_index cost is negligible (one string
         // pair per class).
         {
             let mut fqn_idx = self.fqn_class_index.write();
@@ -493,7 +493,7 @@ impl Backend {
         // classes defined in this file.
         //
         // This function is only reached when the class was NOT found
-        // in ast_map (find_class_in_ast_map / fqn_index returned None).
+        // in uri_classes_index (find_class_in_uri_classes_index / fqn_index returned None).
         // That means the class has never been parsed — so it cannot
         // have a direct entry in the resolved-class cache.
         //
@@ -505,7 +505,7 @@ impl Backend {
         // total analysis time.
         //
         // Instead, only evict when the URI was already present in
-        // ast_map (i.e. a re-parse of a previously loaded file, which
+        // uri_classes_index (i.e. a re-parse of a previously loaded file, which
         // can happen in the LSP editing path).  For first-time loads
         // the cost/benefit is strongly negative.
         if was_already_parsed {

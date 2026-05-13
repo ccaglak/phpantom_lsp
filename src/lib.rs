@@ -26,7 +26,7 @@
 //!   merge logic for members synthesized from `@method`/`@property` tags,
 //!   `@mixin` classes, and framework-specific patterns (e.g. Laravel)
 //! - `resolution` — Class and function lookup / name resolution (multi-phase:
-//!   class_index → PSR-4 → stubs)
+//!   fqn_uri_index → PSR-4 → stubs)
 //! - `subject_extraction` — Shared helpers for extracting the left-hand side of
 //!   `->`, `?->`, and `::` access operators (used by both completion and definition)
 //! - `highlight` — Document highlighting (`textDocument/documentHighlight`).
@@ -308,15 +308,15 @@ pub struct Backend {
     /// their parsed `ClassInfo`.
     ///
     /// This turns every Phase 1 lookup in [`find_or_load_class`] into an
-    /// O(1) hash lookup instead of scanning all files in `ast_map`.
-    /// Maintained alongside `class_index` in `update_ast_inner` and
+    /// O(1) hash lookup instead of scanning all files in `uri_classes_index`.
+    /// Maintained alongside `fqn_uri_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
     pub(crate) fqn_class_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
     /// Negative-result cache for [`find_or_load_class`].
     ///
     /// Stores fully-qualified class names that have been looked up and
-    /// confirmed not to exist in any resolution phase (fqn_index,
-    /// classmap, PSR-4, stubs).  Subsequent lookups for the same name
+    /// confirmed not to exist in any resolution phase (fqn_class_index,
+    /// fqn_uri_index, PSR-4, stubs).  Subsequent lookups for the same name
     /// short-circuit with `None` instead of repeating the full
     /// multi-phase search.
     ///
@@ -331,7 +331,7 @@ pub struct Backend {
     /// references a `.phar` archive (e.g. PHPStan's `bootstrap.php`).
     /// Used by [`parse_and_cache_file`](Self::parse_and_cache_file) to
     /// extract PHP source files from inside the archive when the
-    /// classmap contains a phar-based path (detected by a `!` separator,
+    /// fqn_uri_index contains a phar-based path (detected by a `!` separator,
     /// e.g. `/path/to/phpstan.phar!src/Type/Type.php`).
     pub(crate) phar_archives: Arc<RwLock<HashMap<PathBuf, phar::PharArchive>>>,
     /// Set of file URIs that have been fully parsed at least once.
@@ -347,7 +347,7 @@ pub struct Backend {
     /// Used by [`parse_and_cache_file`](Self::parse_and_cache_file) to avoid
     /// redundant concurrent parses of the same file.  Before parsing, the URI
     /// is inserted; if it was already present, the calling thread waits for
-    /// the result to appear in `ast_map` instead of re-parsing.
+    /// the result to appear in `uri_classes_index` instead of re-parsing.
     pub(crate) parse_inflight: Arc<Mutex<HashSet<String>>>,
     /// Embedded PHP stubs for built-in classes/interfaces (e.g. `UnitEnum`,
     /// `BackedEnum`, `Iterator`, `Countable`, …).
@@ -357,8 +357,8 @@ pub struct Backend {
     /// Filtered at startup via [`set_php_version`](Self::set_php_version) to
     /// remove stubs that do not exist in the target PHP version.
     /// Consulted by `find_or_load_class` as a final fallback after the
-    /// `ast_map` and PSR-4 resolution.  Stub files are parsed lazily on
-    /// first access and cached in `ast_map` under `phpantom-stub://` URIs.
+    /// `uri_classes_index` and PSR-4 resolution.  Stub files are parsed lazily on
+    /// first access and cached in `uri_classes_index` under `phpantom-stub://` URIs.
     pub(crate) stub_index: RwLock<HashMap<&'static str, &'static str>>,
     /// Cache of fully-resolved classes (inheritance + virtual members).
     ///
@@ -380,7 +380,7 @@ pub struct Backend {
     /// For each class/interface/trait, maps the FQNs of its parents
     /// (parent_class, interfaces, used_traits) to the child's FQN.
     /// Used by `find_implementors` for O(1) lookup of direct children
-    /// instead of scanning all `ast_map` entries.
+    /// instead of scanning all `uri_classes_index` entries.
     ///
     /// Populated incrementally in `update_ast_inner` and
     /// `parse_and_cache_content_versioned` as files are parsed.

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 /// 2. **Identify the target type** — resolve the symbol to a `ClassInfo` and
 ///    check whether it is a non-final class or interface.
 /// 3. **Scan for implementors** — walk all classes known to the server
-///    (`ast_map`, `class_index`, PSR-4 directories) and collect
+///    (`uri_classes_index`, `fqn_uri_index`, PSR-4 directories) and collect
 ///    those whose `interfaces` list or `parent_class` matches the target type.
 /// 4. **Return locations** — for class-level requests, return the class
 ///    declaration position; for method-level requests, return the method
@@ -156,7 +156,7 @@ impl Backend {
 
         let target_short = target.name;
         // Compute target FQN from the class's own namespace (most
-        // reliable), then fall back to class_index, then to the FQN we
+        // reliable), then fall back to fqn_uri_index, then to the FQN we
         // resolved from the use-map, and finally to the short name.
         let target_fqn = {
             let from_class = crate::util::build_fqn(&target.name, target.file_namespace.as_deref());
@@ -594,8 +594,8 @@ impl Backend {
     /// Find all classes that implement or extend the target.
     ///
     /// Scans:
-    /// 1. All classes already in `ast_map` (open files + autoload-discovered)
-    /// 2. All classes loadable via `class_index`
+    /// 1. All classes already in `uri_classes_index` (open files + autoload-discovered)
+    /// 2. All classes loadable via `fqn_uri_index`
     /// 3. Class index files not yet loaded — string pre-filter then parse
     /// 4. Embedded PHP stubs — string pre-filter then lazy parse
     /// 5. User PSR-4 directories — walk for `.php` files not covered by
@@ -673,7 +673,7 @@ impl Backend {
             }
         }
 
-        // ── Phase 2: scan class_index for classes not yet in ast_map ────
+        // ── Phase 2: scan fqn_uri_index for classes not yet in uri_classes_index ────
         let index_entries: Vec<(String, String)> = {
             let idx = self.fqn_uri_index.read();
             idx.iter()
@@ -705,7 +705,7 @@ impl Backend {
         // ── Phase 3: scan class index files with string pre-filter ────────
         // Collect unique file paths from the class index (one file may define
         // multiple classes, so we de-duplicate by path and scan each file
-        // at most once).  Files already present in ast_map were covered by
+        // at most once).  Files already present in uri_classes_index were covered by
         // Phase 1 and can be skipped.
         let index_paths: HashSet<PathBuf> = self
             .fqn_uri_index
@@ -757,7 +757,7 @@ impl Backend {
         // ── Phase 4: scan embedded stubs with string pre-filter ─────────
         // Stubs are static strings baked into the binary.  A cheap text
         // search for the target name narrows candidates before we parse.
-        // Parsing is lazy and cached in ast_map, so subsequent lookups
+        // Parsing is lazy and cached in uri_classes_index, so subsequent lookups
         // hit Phase 1.
         let stub_idx = self.stub_index.read();
         for (&stub_name, &stub_source) in &*stub_idx {
@@ -1096,7 +1096,7 @@ impl Backend {
     }
 
     /// Get the FQN for a class given its short name, by looking it up in
-    /// the `class_index`.
+    /// the `fqn_uri_index`.
     fn class_fqn_for_short(&self, target_short: &str) -> Option<String> {
         let idx = self.fqn_uri_index.read();
         // Look for an entry whose short name matches.

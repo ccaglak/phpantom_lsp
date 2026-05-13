@@ -29,9 +29,9 @@ instantly instead of blocking until every source has been scanned.
 `find_implementors` already runs five sequential phases (see
 `docs/ARCHITECTURE.md` § Go-to-Implementation):
 
-1. **Phase 1 — ast_map** (already-parsed classes in memory) — essentially
+1. **Phase 1 — uri_classes_index** (already-parsed classes in memory) — essentially
    free. Flush results immediately.
-2. **Phase 2 — class_index** (FQN → URI entries not yet in ast_map) —
+2. **Phase 2 — fqn_uri_index** (FQN → URI entries not yet in uri_classes_index) —
    loads individual files. Flush after each batch.
 3. **Phase 3 — classmap files** (Composer classmap, user + vendor mixed)
    — iterates unique file paths, applies string pre-filter, parses

@@ -6,7 +6,7 @@
 //!
 //! The handler builds the tree from two data sources:
 //!
-//! 1. **`ast_map`** — provides `ClassInfo` records for every class,
+//! 1. **`uri_classes_index`** — provides `ClassInfo` records for every class,
 //!    interface, trait, and enum in the file. Each class's methods,
 //!    properties, and constants become child symbols.
 //!

@@ -3,7 +3,7 @@
 //! Walk the precomputed [`SymbolMap`] for a file and flag every
 //! `ClassReference` that cannot be resolved through any of PHPantom's
 //! resolution phases (use-map → local classes → same-namespace →
-//! class_index → classmap → PSR-4 → stubs).
+//! fqn_uri_index → PSR-4 → stubs).
 //!
 //! Diagnostics use `Severity::Warning` because the code may still run
 //! (e.g. the class exists but hasn't been indexed yet), but the user
@@ -161,8 +161,8 @@ impl Backend {
                 continue;
             }
 
-            // 2. find_or_load_class covers: class_index → ast_map →
-            //    classmap → PSR-4 → stubs
+            // 2. find_or_load_class covers: fqn_uri_index → uri_classes_index →
+            //    fqn_uri_index → PSR-4 → stubs
             if self.find_or_load_class(&fqn).is_some() {
                 continue;
             }
@@ -458,7 +458,7 @@ class Panel {}
         let backend = Backend::new_test();
 
         // Register the dependency class in a separate file so that
-        // find_or_load_class can resolve it via the class_index + ast_map.
+        // find_or_load_class can resolve it via the fqn_uri_index + uri_classes_index.
         let dep_uri = "file:///vendor/laravel/Request.php";
         let dep_content = "<?php\nnamespace Illuminate\\Http;\n\nclass Request {}\n";
         backend.update_ast(dep_uri, dep_content);
@@ -533,7 +533,7 @@ class Panel {}
         let content_dep = "<?php\nnamespace App;\n\nclass Helper {}\n";
         backend.update_ast(uri_dep, content_dep);
 
-        // Register in class_index so same-namespace lookup works.
+        // Register in fqn_uri_index so same-namespace lookup works.
         {
             let mut idx = backend.fqn_uri_index.write();
             idx.insert("App\\Helper".to_string(), uri_dep.to_string());
@@ -1126,15 +1126,15 @@ class Panel {}
     // ── No-namespace file tests ─────────────────────────────────────────
 
     #[test]
-    fn diagnostic_when_namespaced_class_in_ast_map() {
+    fn diagnostic_when_namespaced_class_in_uri_classes_index() {
         // Reproduces issue #59: when `Carbon\Carbon` is already parsed
-        // and in the ast_map, `find_or_load_class("Carbon")` must NOT
+        // and in the uri_classes_index, `find_or_load_class("Carbon")` must NOT
         // match it — the bare name is a global-scope lookup.  Without
         // the fix the no-namespace fallback at step 3 resolves the bare
         // name to the namespaced class, suppressing the diagnostic.
         let backend = Backend::new_test();
 
-        // Parse the dependency so Carbon\Carbon is in the ast_map.
+        // Parse the dependency so Carbon\Carbon is in the uri_classes_index.
         let uri_dep = "file:///vendor/carbon.php";
         let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
         backend.update_ast(uri_dep, content_dep);
@@ -1149,7 +1149,7 @@ class Panel {}
         let diags = collect(&backend, uri, content);
         assert!(
             diags.iter().any(|d| d.message.contains("Carbon")),
-            "expected unknown-class diagnostic for Carbon even when Carbon\\Carbon is in ast_map, got: {:?}",
+            "expected unknown-class diagnostic for Carbon even when Carbon\\Carbon is in uri_classes_index, got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
@@ -1214,10 +1214,10 @@ class Panel {}
     }
 
     #[test]
-    fn no_diagnostic_for_global_class_via_class_index_lazy_load() {
+    fn no_diagnostic_for_global_class_via_fqn_uri_index_lazy_load() {
         // A global-namespace class (like Mockery) that is discovered by
-        // `scan_autoload_files` and placed in class_index — but NOT yet
-        // parsed into ast_map — should be lazily loaded via Phase 0 of
+        // `scan_autoload_files` and placed in fqn_uri_index — but NOT yet
+        // parsed into uri_classes_index — should be lazily loaded via Phase 0 of
         // find_or_load_class and suppress the diagnostic.
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let dep_path = dir.path().join("Mockery.php");
@@ -1226,7 +1226,7 @@ class Panel {}
 
         let backend = Backend::new_test();
 
-        // Only populate class_index (simulating scan_autoload_files).
+        // Only populate fqn_uri_index (simulating scan_autoload_files).
         // Do NOT call update_ast for the dependency — it must be lazily
         // parsed by find_or_load_class Phase 0.
         {
@@ -1251,7 +1251,7 @@ class Panel {}
         let diags = collect(&backend, uri, content);
         assert!(
             !diags.iter().any(|d| d.message.contains("Mockery")),
-            "should not flag Mockery resolved via class_index lazy load, got: {:?}",
+            "should not flag Mockery resolved via fqn_uri_index lazy load, got: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

@@ -1723,7 +1723,7 @@ async fn rename_class_from_reference_site_renames_file() {
 
 #[tokio::test]
 async fn rename_class_no_file_rename_for_non_namespaced() {
-    // Non-namespaced class — class_index uses bare name as FQN.
+    // Non-namespaced class — fqn_uri_index uses bare name as FQN.
     // File rename should still work if filename matches.
     let backend = Backend::new_test();
     backend
@@ -1740,7 +1740,7 @@ async fn rename_class_no_file_rename_for_non_namespaced() {
 
     let ws = edit.unwrap();
 
-    // Non-namespaced classes are stored in class_index with just
+    // Non-namespaced classes are stored in fqn_uri_index with just
     // the short name, so should_rename_file should still find it.
     let rf = extract_rename_file(&ws);
     assert!(

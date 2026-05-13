@@ -581,13 +581,13 @@ fn unmark_resolving(fqn: &str) {
 /// previously caused stack overflow on large codebases.
 ///
 /// This function should be called once after initial indexing is complete
-/// (all files parsed into `ast_map`) and again incrementally when files
+/// (all files parsed into `uri_classes_index`) and again incrementally when files
 /// change (see ER4 in `docs/todo/eager-resolution.md`).
 ///
 /// # Arguments
 ///
 /// * `sorted_fqns` — class FQNs in topological (dependency-first) order,
-///   e.g. from [`crate::toposort::toposort_from_ast_map`].
+///   e.g. from [`crate::toposort::toposort_from_uri_classes_index`].
 /// * `cache` — the [`ResolvedClassCache`] to populate (typically
 ///   `Backend.resolved_class_cache`).
 /// * `class_loader` — a closure that resolves a class FQN to its raw
@@ -773,7 +773,7 @@ fn resolve_class_fully_inner(
     //
     // To prevent this, always try to reload the raw (un-substituted)
     // class from the class_loader.  The class_loader returns the
-    // parsed ClassInfo from ast_map/stubs, which has unsubstituted
+    // parsed ClassInfo from uri_classes_index/stubs, which has unsubstituted
     // template parameters.  Fall back to the passed-in `class` only
     // when the loader cannot find it (e.g. anonymous classes).
     let raw_class_arc = class_loader(fqn.as_str());

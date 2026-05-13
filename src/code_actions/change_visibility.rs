@@ -258,7 +258,7 @@ impl Backend {
         cursor_offset: u32,
         member_kind: &MemberKind,
     ) -> Option<u8> {
-        // Find the enclosing ClassInfo from the ast_map.
+        // Find the enclosing ClassInfo from the uri_classes_index.
         let local_classes: Vec<Arc<ClassInfo>> = self
             .uri_classes_index
             .read()

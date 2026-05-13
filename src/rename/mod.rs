@@ -246,7 +246,7 @@ impl Backend {
 
         let old_short = crate::util::short_name(old_fqn);
 
-        // Find the definition file URI from the class_index.
+        // Find the definition file URI from the fqn_uri_index.
         let def_uri_str = self.fqn_uri_index.read().get(old_fqn).cloned()?;
 
         let def_url = Url::parse(&def_uri_str).ok()?;
@@ -591,7 +591,7 @@ impl Backend {
             SymbolKind::MemberAccess { is_method_call, .. } => !is_method_call,
             SymbolKind::MemberDeclaration { .. } => {
                 // A MemberDeclaration is a property if it is NOT a method
-                // and NOT a class constant.  We check the ast_map to see
+                // and NOT a class constant.  We check the uri_classes_index to see
                 // whether the offset matches a method or constant name.
                 let is_method = self
                     .get_classes_for_uri(uri)

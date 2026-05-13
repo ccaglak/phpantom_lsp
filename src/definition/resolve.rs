@@ -317,7 +317,7 @@ impl Backend {
 
     /// Resolve a `ClassReference` symbol to its definition.
     ///
-    /// Tries same-file lookup (ast_map), then cross-file via PSR-4.
+    /// Tries same-file lookup (uri_classes_index), then cross-file via PSR-4.
     /// When `is_fqn` is `true`, the name is already fully-qualified
     /// (the original PHP source used a leading `\`) and should be used
     /// as-is without namespace resolution.
@@ -348,20 +348,21 @@ impl Backend {
 
         // Same-file lookup.
         for fqn in &candidates {
-            if let Some(location) = self.find_definition_in_ast_map(fqn, content, uri) {
+            if let Some(location) = self.find_definition_in_uri_classes_index(fqn, content, uri) {
                 return Some(location);
             }
         }
 
-        // Cross-file lookup via class_index + ast_map.
+        // Cross-file lookup via fqn_uri_index + uri_classes_index.
         //
         // Classes discovered during autoload scanning (opened files,
         // previously navigated-to vendor files) live in
-        // class_index (FQN → URI) and ast_map (URI → [ClassInfo]).
+        // fqn_uri_index (FQN → URI) and uri_classes_index (URI → [ClassInfo]).
         for fqn in &candidates {
             let target_uri = self.fqn_uri_index.read().get(fqn.as_str()).cloned();
             if let Some(ref target_uri) = target_uri
-                && let Some(location) = self.find_definition_in_ast_map_cross_file(fqn, target_uri)
+                && let Some(location) =
+                    self.find_definition_in_uri_classes_index_cross_file(fqn, target_uri)
             {
                 return Some(location);
             }
@@ -625,8 +626,8 @@ impl Backend {
 
     /// Resolve a class definition in a file on disk.
     ///
-    /// This is the cross-file counterpart of [`find_definition_in_ast_map`].
-    /// It ensures the target file is parsed and cached in `ast_map`, then
+    /// This is the cross-file counterpart of [`find_definition_in_uri_classes_index`].
+    /// It ensures the target file is parsed and cached in `uri_classes_index`, then
     /// uses the stored `keyword_offset` to produce a precise `Location`
     /// without text searching.
     pub(super) fn resolve_class_in_file(
@@ -647,16 +648,16 @@ impl Backend {
         }
 
         // Use AST-based lookup (keyword_offset).
-        self.find_definition_in_ast_map_cross_file(fqn, &target_uri_string)
+        self.find_definition_in_uri_classes_index_cross_file(fqn, &target_uri_string)
     }
 
-    /// Like [`find_definition_in_ast_map`] but for cross-file jumps where
+    /// Like [`find_definition_in_uri_classes_index`] but for cross-file jumps where
     /// we know the target file's URI (not the current file).
     ///
     /// Reads the file content and class list from the caches, finds the
     /// matching `ClassInfo`, and returns a `Location` using the stored
     /// `keyword_offset`.
-    fn find_definition_in_ast_map_cross_file(
+    fn find_definition_in_uri_classes_index_cross_file(
         &self,
         fqn: &str,
         target_uri: &str,
@@ -678,7 +679,7 @@ impl Backend {
         };
 
         // Match by short name + namespace, same logic as
-        // `find_definition_in_ast_map`.
+        // `find_definition_in_uri_classes_index`.
         let class_info = classes.iter().find(|c| {
             if c.name != sn {
                 return false;
@@ -699,8 +700,8 @@ impl Backend {
     }
 
     /// Try to find the definition of a class in the current file by checking
-    /// the ast_map.
-    pub(super) fn find_definition_in_ast_map(
+    /// the uri_classes_index.
+    pub(super) fn find_definition_in_uri_classes_index(
         &self,
         fqn: &str,
         content: &str,
@@ -790,7 +791,7 @@ impl Backend {
 
         // Try to find the parent class in the current file first.
         // Use keyword_offset when available (the parent class is in the
-        // same file's ast_map entry).
+        // same file's uri_classes_index entry).
         let parent_in_file = classes.iter().find(|c| c.name == *parent_name);
         let parent_pos = parent_in_file
             .filter(|pc| pc.keyword_offset > 0)
@@ -805,10 +806,10 @@ impl Backend {
 
         let fqn = ctx.resolve_name_at(parent_name, cursor_offset);
 
-        // Try class_index / ast_map lookup via find_class_file_content.
+        // Try fqn_uri_index / uri_classes_index lookup via find_class_file_content.
         if let Some((class_uri, class_content)) = self.find_class_file_content(&fqn, uri, content) {
-            // Use keyword_offset from the ast_map entry for the cross-file class.
-            let cross_class = self.find_class_in_ast_map(&fqn);
+            // Use keyword_offset from the uri_classes_index entry for the cross-file class.
+            let cross_class = self.find_class_in_uri_classes_index(&fqn);
             if let Some(ref cc) = cross_class
                 && cc.keyword_offset > 0
                 && let Ok(parsed_uri) = Url::parse(&class_uri)

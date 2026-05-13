@@ -58,9 +58,9 @@ supports glob patterns like `**/vendor/composer/autoload_*.php`.
 
 - On change notification, re-run the same parsing logic from
   `initialized` for the affected artifact.
-- Invalidate `class_index` entries that came from vendor files (their
+- Invalidate `fqn_uri_index` entries that came from vendor files (their
   parsed AST may have changed).
-- Clear and re-populate `classmap` from the new `autoload_classmap.php`.
+- Clear and re-populate `fqn_uri_index` from the new `autoload_classmap.php`.
 - Log the reload to the output panel so the user knows it happened.
 - Debounce rapid changes (Composer writes multiple files in sequence)
   with a short delay (e.g. 500ms) to avoid redundant reloads.

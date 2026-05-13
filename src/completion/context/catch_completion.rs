@@ -374,7 +374,7 @@ fn find_try_block_body(_content: &str, before_catch: &str) -> Option<String> {
 
 impl Backend {
     /// Check whether a class is a confirmed `\Throwable` descendant using
-    /// only already-loaded data from the `ast_map`.
+    /// only already-loaded data from the `uri_classes_index`.
     ///
     /// Returns `true` only when the full parent chain can be walked to
     /// one of the three Throwable root types (`Throwable`, `Exception`,
@@ -384,7 +384,7 @@ impl Backend {
     /// This is a strict check: the caller should only include the class
     /// when this returns `true`.
     ///
-    /// This never triggers disk I/O; it only consults `ast_map`.
+    /// This never triggers disk I/O; it only consults `uri_classes_index`.
     fn is_throwable_descendant(&self, class_name: &str, depth: u32) -> bool {
         if depth > 20 {
             return false; // prevent infinite loops
@@ -397,8 +397,8 @@ impl Backend {
             return true;
         }
 
-        // Look up ClassInfo from ast_map (no disk I/O).
-        match self.find_class_in_ast_map(class_name) {
+        // Look up ClassInfo from uri_classes_index (no disk I/O).
+        match self.find_class_in_uri_classes_index(class_name) {
             Some(ci) => {
                 // Walk the parent class chain first.
                 if let Some(parent) = &ci.parent_class
@@ -528,7 +528,7 @@ impl Backend {
         let classify = |fqn: &str, sn: &str| -> Option<(char, bool)> {
             // Check if loaded as a class or interface so we can verify
             // Throwable ancestry.
-            let loaded_info = self.find_class_in_ast_map(fqn);
+            let loaded_info = self.find_class_in_uri_classes_index(fqn);
             let is_loaded_class_or_interface = loaded_info
                 .as_ref()
                 .is_some_and(|c| matches!(c.kind, ClassLikeKind::Class | ClassLikeKind::Interface));

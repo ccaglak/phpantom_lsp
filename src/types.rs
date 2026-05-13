@@ -1607,7 +1607,7 @@ pub struct ClassInfo {
     /// For files with a single namespace (the common PSR-4 case) this
     /// matches the file-level namespace.  For files with multiple
     /// namespace blocks (e.g. `example.php` with inline stubs) each class
-    /// carries its own namespace so that `find_class_in_ast_map` can
+    /// carries its own namespace so that `find_class_in_uri_classes_index` can
     /// distinguish two classes with the same short name in different
     /// namespace blocks (e.g. `Illuminate\Database\Eloquent\Builder` vs
     /// `Illuminate\Database\Query\Builder`).
@@ -2257,7 +2257,7 @@ impl ResolvedType {
 /// lock-and-unwrap boilerplate that was duplicated across completion,
 /// definition, and implementation handlers.
 pub(crate) struct FileContext {
-    /// Classes extracted from the file's AST (from `ast_map`).
+    /// Classes extracted from the file's AST (from `uri_classes_index`).
     pub classes: Vec<Arc<ClassInfo>>,
     /// Import table mapping short names to fully-qualified names
     /// (from `use_map`).

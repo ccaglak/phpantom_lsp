@@ -1419,7 +1419,7 @@ pub(crate) fn find_brace_match_line(
 
 impl Backend {
     /// Look up a class by its (possibly namespace-qualified) name in the
-    /// in-memory `ast_map`, without triggering any disk I/O.
+    /// in-memory `uri_classes_index`, without triggering any disk I/O.
     ///
     /// The `class_name` can be:
     ///   - A simple name like `"Customer"`
@@ -1431,7 +1431,10 @@ impl Backend {
     /// prevents `"Demo\\PDO"` from matching the global `PDO` stub.
     ///
     /// Returns a shared `Arc<ClassInfo>` if found, or `None`.
-    pub(crate) fn find_class_in_ast_map(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
+    pub(crate) fn find_class_in_uri_classes_index(
+        &self,
+        class_name: &str,
+    ) -> Option<Arc<ClassInfo>> {
         // ── Fast path: O(1) lookup via fqn_index ──
         // For namespace-qualified names the FQN is the normalized name
         // itself.  For bare names (no backslash) the FQN equals the
@@ -1440,7 +1443,7 @@ impl Backend {
             return Some(Arc::clone(cls));
         }
 
-        // ── Slow fallback: linear scan of ast_map ──
+        // ── Slow fallback: linear scan of uri_classes_index ──
         // Covers edge cases where the fqn_index has not been populated
         // yet (e.g. anonymous classes, or race conditions during initial
         // indexing).
@@ -1547,7 +1550,7 @@ impl Backend {
         std::fs::read_to_string(path).ok().map(Arc::new)
     }
 
-    /// Public helper for tests: get the ast_map for a given URI.
+    /// Public helper for tests: get the uri_classes_index entry for a given URI.
     pub fn get_classes_for_uri(&self, uri: &str) -> Option<Vec<ClassInfo>> {
         self.uri_classes_index
             .read()
@@ -1561,7 +1564,7 @@ impl Backend {
     /// duplicated across the completion handler, definition resolver,
     /// member definition, implementation resolver, and variable definition
     /// modules.  Each of those sites used to have three nearly-identical
-    /// blocks acquiring `ast_map`, `use_map`, and `namespace_map` locks
+    /// blocks acquiring `uri_classes_index`, `use_map`, and `namespace_map` locks
     /// and extracting the entry for a given URI.
     pub(crate) fn file_context(&self, uri: &str) -> FileContext {
         let classes = self
@@ -1686,24 +1689,24 @@ impl Backend {
             .unwrap_or_default()
     }
 
-    /// Remove a file's entries from `ast_map`, `use_map`, and `namespace_map`.
+    /// Remove a file's entries from `uri_classes_index`, `use_map`, and `namespace_map`.
     ///
     /// This is the mirror of [`file_context`](Self::file_context): where that
     /// method *reads* the three maps, this method *clears* them for a given URI.
     /// Called from `did_close` to clean up state when a file is closed.
     pub(crate) fn clear_file_maps(&self, uri: &str) {
         // Drop per-file maps that are only needed while the file is
-        // open.  ast_map is redundant with fqn_index once indexing is
-        // complete — GTD falls back to fqn_index + parse_and_cache_file
-        // when the ast_map entry is missing.
+        // open.  uri_classes_index is redundant with fqn_class_index once indexing is
+        // complete — GTD falls back to fqn_uri_index + parse_and_cache_file
+        // when the uri_classes_index entry is missing.
         self.uri_classes_index.write().remove(uri);
         self.symbol_maps.write().remove(uri);
         self.file_imports.write().remove(uri);
         self.resolved_names.write().remove(uri);
         self.file_namespaces.write().remove(uri);
-        // NOTE: We intentionally keep class_index and fqn_index intact.
-        // class_index maps FQN → URI so GTD can locate the file, and
-        // fqn_index keeps the full ClassInfo for cross-file resolution.
+        // NOTE: We intentionally keep fqn_uri_index and fqn_class_index intact.
+        // fqn_uri_index maps FQN → URI so GTD can locate the file, and
+        // fqn_class_index keeps the full ClassInfo for cross-file resolution.
         // The file will be re-parsed from disk on next access via
         // parse_and_cache_file when needed (issue #99).
     }

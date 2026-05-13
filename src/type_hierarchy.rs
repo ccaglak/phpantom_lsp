@@ -152,7 +152,7 @@ impl Backend {
     }
 
     /// Build a `TypeHierarchyItem` for a class, looking up its file
-    /// content from `open_files` / `ast_map` / disk so that byte
+    /// content from `open_files` / `uri_classes_index` / disk so that byte
     /// offsets can be converted to LSP positions correctly.
     fn build_hierarchy_item_for_class(
         &self,
@@ -161,14 +161,14 @@ impl Backend {
     ) -> TypeHierarchyItem {
         // Locate the file that contains this class.  We try
         // find_class_file_content first with a dummy current URI so
-        // it searches all files in the ast_map.  If that fails, fall
+        // it searches all files in the uri_classes_index.  If that fails, fall
         // back to get_file_content for files that might be open or on
         // disk.
         let (class_uri, class_content) = self
             .find_class_file_content(fqn, "", "")
             .or_else(|| self.find_class_file_content(&class_info.name, "", ""))
             .unwrap_or_else(|| {
-                // Last resort: try to find the URI from the class_index
+                // Last resort: try to find the URI from the fqn_uri_index
                 // and read from disk / open_files.
                 let uri = self
                     .fqn_uri_index

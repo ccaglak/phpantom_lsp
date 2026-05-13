@@ -49,7 +49,7 @@ impl Backend {
                 _ => continue,
             };
 
-            // Find the matching ClassInfo in the ast_map.
+            // Find the matching ClassInfo in the uri_classes_index.
             let class_info = match ctx
                 .classes
                 .iter()
@@ -139,7 +139,7 @@ impl Backend {
     /// Check if a ClassInfo's fully-qualified name matches the given name.
     ///
     /// The symbol map stores the short class name, but classes in the
-    /// ast_map may have their FQN stored differently.  This handles the
+    /// uri_classes_index may have their FQN stored differently.  This handles the
     /// common case where the class name is unqualified.
     fn class_fqn_matches(
         &self,

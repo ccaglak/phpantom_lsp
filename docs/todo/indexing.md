@@ -93,7 +93,7 @@ editing `composer.json` dependencies.
 
 Background-parse every PHP file in the project. Uses Composer data to
 guide file discovery when available, falls back to scanning all PHP
-files in the workspace when it is not. Populates the ast_map,
+files in the workspace when it is not. Populates the uri_classes_index,
 symbol_maps, and all derived indices. Enables workspace symbols, fast
 find-references without on-demand scanning, and rich hover on
 completion items. Memory usage grows proportionally to project size.
@@ -157,7 +157,7 @@ join before the function returns). The thread count is capped at
 cores). Batches of 2 or fewer files skip threading overhead.
 
 Transient entry eviction after GTI and find references has been
-removed. Parsed files stay cached in `ast_map`, `symbol_maps`,
+removed. Parsed files stay cached in `uri_classes_index`, `symbol_maps`,
 `use_map`, and `namespace_map` so that subsequent operations benefit
 from the work already done. This trades a small amount of memory for
 faster repeat queries and simpler code.
@@ -235,7 +235,7 @@ user scrolls.
 ### Approach: "what's already discovered"
 
 Use `completionItem/resolve` to populate `detail` and
-`documentation` fields. If the class is already in the ast_map (parsed
+`documentation` fields. If the class is already in the uri_classes_index (parsed
 during a prior resolution), return the full signature and docblock.
 If not, return just the item label with no extra detail.
 
@@ -282,7 +282,7 @@ Full mode is not a separate discovery system. It works exactly like
    name completion and O(1) file lookup.
 2. **Second pass:** Iterate every file path in the now-populated
    in-memory classmap and call `update_ast` on each one at Low
-   priority. This populates ast_map, symbol_maps, class_index,
+   priority. This populates uri_classes_index, symbol_maps, fqn_uri_index,
    global_functions, and global_defines.
 
 No new file discovery logic is needed. The classmap from the first
@@ -329,14 +329,14 @@ sizes over time. The aim is to stay under 512 MB for a full project.
 
 The performance prerequisites above (P1 `Arc<ClassInfo>`,
 `Arc<String>`, `Arc<SymbolMap>`) directly reduce memory usage by
-sharing data across the ast_map, caches, and snapshot copies instead
+sharing data across the uri_classes_index, caches, and snapshot copies instead
 of deep-cloning each. These should be measured before and after to
 validate the 512 MB target.
 
 ### Workspace symbols
 
 With the full index populated, `workspace/symbol` becomes a simple
-filter over the ast_map and global_functions maps. No additional
+filter over the uri_classes_index and global_functions maps. No additional
 infrastructure needed.
 
 In other modes, workspace symbols still works but only returns results
@@ -370,7 +370,7 @@ three areas:
 3. **Go to Implementation and Find References.** These report
    begin/end only. The underlying scans (`find_implementors`,
    `find_member_references`, `find_class_references`) iterate over
-   classmap files, ast_map entries, and PSR-4 directories, all of
+   classmap files, uri_classes_index entries, and PSR-4 directories, all of
    which have known or discoverable totals.
 
 ### Design
@@ -498,10 +498,10 @@ better.
 **Impact: Medium · Effort: Medium**
 
 The current lazy-loading design provides an implicit recency signal:
-classes in `ast_map` were loaded because the developer interacted with
+classes in `uri_classes_index` were loaded because the developer interacted with
 their file during this session (hovered, navigated, completed). Source
 tiers 0 (use-imported) and 1 (same-namespace) already capture this
-for the current file's neighborhood. The `class_index` source captures
+for the current file's neighborhood. The `fqn_uri_index` source captures
 cross-file interactions (go-to-definition, hover, or completion that
 triggered a load).
 

@@ -133,7 +133,7 @@ fn strip_snippet_parens(items: Vec<CompletionItem>) -> Vec<CompletionItem> {
 /// When writing a `use` statement it makes no sense to import a class
 /// from the file you are already in.  The `detail` field of each item
 /// carries the FQN, which is matched against the FQNs of classes in the
-/// file's `ctx.classes` (from the ast_map).
+/// file's `ctx.classes` (from the uri_classes_index).
 fn filter_current_file_classes(
     items: Vec<CompletionItem>,
     ctx: &FileContext,
@@ -1260,7 +1260,7 @@ impl Backend {
     /// When there is no `->` or `::` operator, check whether the user is
     /// typing a class name, constant, or function name and offer
     /// completions from all known sources (use-imports, same namespace,
-    /// stubs, class_index, global_defines, stub_constant_index,
+    /// stubs, fqn_uri_index, global_defines, stub_constant_index,
     /// global_functions, stub_function_index).
     ///
     /// Returns `None` when the cursor is not at an identifier position or

@@ -163,13 +163,13 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // ── 4. Two-phase parallel analysis ──────────────────────────────
     //
     // Phase 1 — **Parse**: run `update_ast` on every user file so that
-    // `fqn_index`, `ast_map`, `symbol_maps`, `use_map`, `namespace_map`
-    // and `class_index` are fully populated for the entire project.
+    // `fqn_index`, `uri_classes_index`, `symbol_maps`, `use_map`, `namespace_map`
+    // and `fqn_uri_index` are fully populated for the entire project.
     //
     // Phase 2 — **Diagnose**: collect diagnostics for every file.
     // Because all user classes are already in `fqn_index`, cross-file
     // references resolve via an O(1) hash lookup instead of falling
-    // through to classmap / PSR-4 lazy loading (which takes write
+    // through to fqn_uri_index / PSR-4 lazy loading (which takes write
     // locks and serialises threads).
     //
     // Splitting the work this way also means the diagnostic phase
@@ -247,12 +247,12 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // cached — eliminating the unbounded mutual recursion in
     // resolve_class_fully_inner that previously caused stack overflow.
     //
-    // We snapshot the toposorted FQN list while holding the ast_map
+    // We snapshot the toposorted FQN list while holding the uri_classes_index
     // read lock, then drop the lock before resolving.  Resolution may
-    // call find_or_load_class which takes write locks on ast_map.
+    // call find_or_load_class which takes write locks on uri_classes_index.
     let sorted_fqns = {
-        let ast_map = backend.uri_classes_index.read();
-        crate::toposort::toposort_from_ast_map(&ast_map)
+        let uri_classes_index = backend.uri_classes_index.read();
+        crate::toposort::toposort_from_uri_classes_index(&uri_classes_index)
     };
     // Run eager population on a large-stack thread.  `resolve_class_fully_inner`
     // can nest deeply when the toposort misses dependencies (stubs, dynamically

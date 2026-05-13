@@ -10,7 +10,7 @@
 //! **Cross-file references** iterate every `SymbolMap` stored in
 //! `self.symbol_maps` (one per opened / parsed file).  For files that
 //! are in the workspace but have not been opened yet, we lazily parse
-//! them on demand (via the classmap, PSR-4, and workspace scan).
+//! them on demand (via the fqn_uri_index, PSR-4, and workspace scan).
 //!
 //! **Variable references** (including `$this`) are strictly scoped to
 //! the enclosing function / method / closure body within the current
@@ -132,7 +132,7 @@ impl Backend {
                     // MemberAccess spans at their usage sites with
                     // is_static=true, but the declaration-site Variable
                     // span doesn't encode static-ness.  Check the
-                    // ast_map to determine the correct flag.
+                    // uri_classes_index to determine the correct flag.
                     let is_static = self
                         .get_classes_for_uri(uri)
                         .iter()
@@ -918,7 +918,7 @@ impl Backend {
 
             // Property declarations use Variable spans (not
             // MemberDeclaration) because GTD relies on the Variable
-            // kind to jump to the type hint.  Scan the ast_map to
+            // kind to jump to the type hint.  Scan the uri_classes_index to
             // pick up property declaration sites.
             if include_declaration && let Some(classes) = self.get_classes_for_uri(file_uri) {
                 for class in &classes {
@@ -1376,8 +1376,7 @@ impl Backend {
     ///
     /// This lazily parses files that are in the workspace directory but
     /// have not been opened or indexed yet.  It also covers files known
-    /// via the classmap and class_index.  The vendor directory (read from
-    /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
+    /// via the fqn_uri_index.  The vendor directory (read from
     /// skipped during the filesystem walk.
     pub(crate) fn ensure_workspace_indexed(&self) {
         let start = std::time::Instant::now();
@@ -1385,11 +1384,11 @@ impl Backend {
         let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
         // Build the vendor URI prefixes so we can skip vendor files in
-        // Phase 1 (class_index may contain vendor URIs from prior
+        // Phase 1 (fqn_uri_index may contain vendor URIs from prior
         // resolution, but we only need symbol maps for user files).
         let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
 
-        // ── Phase 1: class_index files (user only) ─────────────────────
+        // ── Phase 1: fqn_uri_index files (user only) ─────────────────────
         let index_uris: Vec<String> = self.fqn_uri_index.read().values().cloned().collect();
 
         let phase1_uris: Vec<&String> = index_uris

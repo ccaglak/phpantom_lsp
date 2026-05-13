@@ -54,7 +54,7 @@
 //!
 //! - **Unknown class diagnostics** — report `ClassReference` spans that
 //!   cannot be resolved through any resolution phase (use-map, local
-//!   classes, same-namespace, class_index, classmap, PSR-4, stubs).
+//!   classes, same-namespace, fqn_uri_index, PSR-4, stubs).
 //! - **Unknown member diagnostics** — report `MemberAccess` spans where
 //!   the member does not exist on the resolved class after full
 //!   resolution (inheritance + virtual member providers).  Suppressed

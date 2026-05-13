@@ -108,7 +108,7 @@ fn patch_range(func: &mut FunctionInfo) {
 ///
 /// Called from [`parse_and_cache_content_versioned`](crate::resolution)
 /// after a `ClassInfo` is parsed from embedded phpstorm-stubs, before it
-/// is cached in `ast_map` and `fqn_index`.  Only classes with known
+/// is cached in `uri_classes_index` and `fqn_index`.  Only classes with known
 /// deficiencies are patched; all others pass through unchanged.
 ///
 /// This is the class-level counterpart of [`apply_function_stub_patches`].

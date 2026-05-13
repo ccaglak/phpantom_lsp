@@ -6,7 +6,7 @@
 //!
 //! The handler builds the list from five data sources:
 //!
-//! 1. **`ast_map`** — provides `ClassInfo` records for every class,
+//! 1. **`uri_classes_index`** — provides `ClassInfo` records for every class,
 //!    interface, trait, and enum across all indexed files.  Class members
 //!    (methods, properties, constants) are also emitted with
 //!    `container_name` set to the owning class FQN.
@@ -17,11 +17,11 @@
 //! 3. **`global_defines`** — provides `DefineInfo` records for
 //!    `define()` / top-level `const` declarations.
 //!
-//! 4. **`class_index`** — maps fully-qualified class names to file URIs
+//! 4. **`fqn_uri_index`** — maps fully-qualified class names to file URIs
 //!    for classes discovered during parsing but not necessarily open.
 //!    Paired with `fqn_index` for rich metadata when available.
 //!
-//! 5. **`class_index`** — maps fully-qualified class names to file URIs,
+//! 5. **`fqn_uri_index`** — maps fully-qualified class names to file URIs,
 //!    covering vendor classes from Composer's classmap and other sources.
 
 use std::collections::HashSet;
@@ -103,10 +103,10 @@ impl Backend {
     /// Searches classes, interfaces, traits, enums, their members
     /// (methods, properties, class constants), standalone functions,
     /// and global constants across all indexed files plus vendor classes
-    /// from the class index.  The `query` string
+    /// from the fqn_uri_index.  The `query` string
     /// is matched as a case-insensitive substring against symbol names.
     /// An empty query returns symbols from parsed files only (not the
-    /// full class_index) to avoid flooding the picker.
+    /// full fqn_uri_index) to avoid flooding the picker.
     ///
     /// Results are sorted by relevance: exact matches first, then prefix
     /// matches, then substring matches. Within each tier, symbols are
@@ -116,15 +116,15 @@ impl Backend {
         let query_lower = query.to_lowercase();
         let mut ranked: Vec<RankedSymbol> = Vec::new();
 
-        // Track FQNs already emitted so that class_index doesn't
-        // produce duplicates for classes already in the ast_map.
+        // Track FQNs already emitted so that fqn_uri_index doesn't
+        // produce duplicates for classes already in the uri_classes_index.
         let mut seen_fqns: HashSet<String> = HashSet::new();
 
-        // ── Classes, interfaces, traits, enums (from ast_map) ───────
+        // ── Classes, interfaces, traits, enums (from uri_classes_index) ───────
         // Also emits methods, properties, and class constants.
         {
-            let ast_map = self.uri_classes_index.read();
-            for (file_uri, classes) in ast_map.iter() {
+            let uri_classes = self.uri_classes_index.read();
+            for (file_uri, classes) in uri_classes.iter() {
                 for class in classes {
                     // Skip anonymous classes (empty name or name starting with
                     // "anonymous@" which the parser uses for anonymous classes).
@@ -385,7 +385,7 @@ impl Backend {
             }
         }
 
-        // ── class_index (discovered classes not yet in ast_map) ─────
+        // ── fqn_uri_index (discovered classes not yet in uri_classes_index) ─────
         // Only searched when the user has typed a query — an empty query
         // would dump thousands of vendor classes into the picker.
         if !query_lower.is_empty() {

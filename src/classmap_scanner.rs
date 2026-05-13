@@ -21,7 +21,7 @@
 //!    directly (not by this module).  Functions and constants from
 //!    `autoload_files.php` are discovered by the full-scan during
 //!    initialization, populating `autoload_function_index`,
-//!    `autoload_constant_index`, and `class_index`.  Lazy
+//!    `autoload_constant_index`, and `fqn_uri_index`.  Lazy
 //!    `update_ast` on first access provides complete details.
 //!
 //! 2. **Composer self-scan** — the PSR-4 scanner builds a classmap

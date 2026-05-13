@@ -1415,7 +1415,7 @@ impl Backend {
 
     /// Load the `__construct` parameters for a class, if available.
     ///
-    /// Tries `load_stub_class` (which checks `ast_map` first, then
+    /// Tries `load_stub_class` (which checks `uri_classes_index` first, then
     /// in-memory stubs) to avoid disk I/O.  Returns `None` when the
     /// class cannot be found or has no constructor.
     fn ctor_params_for(&self, class_name: &str) -> Option<Vec<ParameterInfo>> {
@@ -1435,8 +1435,8 @@ impl Backend {
     ///
     /// Searches five sources in priority order:
     ///   1. File's `use` imports (already imported)
-    ///   2. Same-namespace classes (from `ast_map`)
-    ///   3. `class_index` (discovered / interacted-with classes)
+    ///   2. Same-namespace classes (from `uri_classes_index`)
+    ///   3. `fqn_uri_index` (discovered / interacted-with classes)
     ///   4. Class index (all autoloaded classes)
     ///   5. Built-in PHP stubs
     ///
@@ -1606,7 +1606,7 @@ impl Backend {
             items.push(ctx.build_item(texts, fqn, '0', demoted, ctor.as_deref(), false));
         }
 
-        // ── 2. Same-namespace classes (from ast_map) ────────────────
+        // ── 2. Same-namespace classes (from uri_classes_index) ────────────────
         // Skip in UseImport context: same-namespace classes don't need
         // a `use` statement (PHP auto-resolves them), so offering them
         // in `use |` completion is not useful.
@@ -1691,7 +1691,7 @@ impl Backend {
             }
         }
 
-        // ── 3. class_index (discovered / interacted-with classes) ───
+        // ── 3. fqn_uri_index (discovered / interacted-with classes) ───
         {
             let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
@@ -2002,7 +2002,7 @@ impl Backend {
     fn is_likely_namespace_not_class(&self, fqn: &str) -> bool {
         // If the FQN is a known class, it's definitely not just a
         // namespace — even if classes also exist under it.
-        if self.find_class_in_ast_map(fqn).is_some() {
+        if self.find_class_in_uri_classes_index(fqn).is_some() {
             return false;
         }
         if self.fqn_uri_index.read().contains_key(fqn) {
@@ -2063,7 +2063,7 @@ impl Backend {
     /// [`ClassNameContext::likely_mismatch`]), and include on
     /// `Some(true)` without demotion.
     fn check_context_match(&self, class_name: &str, context: ClassNameContext) -> Option<bool> {
-        // load_stub_class checks ast_map first, then parses in-memory
+        // load_stub_class checks uri_classes_index first, then parses in-memory
         // stubs if needed.  No disk I/O.
         if let Some(cls) = self.load_stub_class(class_name) {
             return Some(context.matches(&cls));
@@ -2072,14 +2072,14 @@ impl Backend {
         None
     }
 
-    /// Check whether `class_name` exists in any class source (ast_map,
-    /// class_index, or stub_index).
+    /// Check whether `class_name` exists in any class source (uri_classes_index,
+    /// fqn_uri_index, or stub_index).
     ///
     /// Used to reject use-map entries in narrow contexts (e.g.
     /// `TraitUse`, `Implements`) where showing an unverifiable FQN is
     /// worse than hiding it.
     fn is_known_class_like(&self, class_name: &str) -> bool {
-        if self.find_class_in_ast_map(class_name).is_some() {
+        if self.find_class_in_uri_classes_index(class_name).is_some() {
             return true;
         }
         if self.stub_index.read().contains_key(class_name) {
