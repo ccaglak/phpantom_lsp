@@ -63,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`throw new` completion missing vendor classes.** Classes whose Throwable ancestry could not be immediately verified (e.g. vendor classes not yet parsed) were silently excluded from `throw new` and `catch` completion, even though later heuristic-based sections should have included them.
 - **Stale mixin members after editing.** Mixin class resolution (e.g. `@mixin Builder`) is now invalidated when any file changes, so newly added or removed methods on mixin targets appear immediately without restarting the server.
 - **Version-gated stub constants now filtered.** Constants with `@removed` tags (e.g. `MCRYPT_ENCRYPT`, removed in PHP 7.2) are now excluded from completion and resolution when the project targets a newer PHP version. Previously only classes and functions were filtered.
 - **Go-to-definition.** Fixed a potential deadlock when navigating to a vendor class that hadn't been parsed yet.

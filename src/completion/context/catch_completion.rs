@@ -29,7 +29,7 @@ use crate::util::{short_name, strip_fqn_prefix};
 
 use super::class_completion::{
     ClassItemCtx, ClassItemTexts, build_affinity_table, class_edit_texts, expand_alias_prefix,
-    is_anonymous_class, matches_class_prefix,
+    matches_class_prefix,
 };
 use crate::completion::builder::analyze_use_block;
 use crate::completion::source::comment_position::position_to_byte_offset;
@@ -420,55 +420,21 @@ impl Backend {
         }
     }
 
-    /// Check whether the class identified by `class_name` is a class or
-    /// interface in the `ast_map` (i.e. not a trait or enum).
+    /// Build completion items for class names suitable for `throw new`
+    /// and `catch` contexts.
     ///
-    /// Used by catch-clause completion to allow both concrete classes,
-    /// abstract classes, and interfaces (e.g. `\Throwable` itself is an
-    /// interface, and `catch (\Throwable $e)` is idiomatic PHP).
+    /// Every matching class from `fqn_uri_index` and `stub_index` is
+    /// included exactly once.  Sort priority is determined by:
     ///
-    /// Returns `false` for traits, enums, and classes that are not
-    /// currently loaded.  This never triggers disk I/O.
-    fn is_class_or_interface_in_ast_map(&self, class_name: &str) -> bool {
-        self.find_class_in_ast_map(class_name)
-            .is_some_and(|c| matches!(c.kind, ClassLikeKind::Class | ClassLikeKind::Interface))
-    }
-
-    /// Collect the FQN of every class that is currently loaded in the
-    /// `ast_map`.  Used by `build_catch_class_name_completions` so that
-    /// class index / stub sources can skip classes we already evaluated.
-    fn collect_loaded_fqns(&self) -> HashSet<String> {
-        let mut loaded = HashSet::new();
-        let amap = self.uri_classes_index.read();
-        for (_uri, classes) in amap.iter() {
-            for cls in classes {
-                let fqn = match &cls.file_namespace {
-                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
-                    _ => cls.name.to_string(),
-                };
-                loaded.insert(fqn);
-            }
-        }
-        loaded
-    }
-
-    /// Build completion items for class names, filtered for Throwable
-    /// descendants.  Used as the catch clause fallback when no specific
-    /// `@throws` types were discovered in the try block, and for
-    /// `throw new` completion.
+    /// - **Source tier `'0'`** — use-imported and confirmed Throwable.
+    /// - **Source tier `'1'`** — same namespace (or sub-namespace) and
+    ///   confirmed Throwable.
+    /// - **Source tier `'2'`** — everything else (confirmed Throwable
+    ///   from other namespaces, or unloaded classes).
     ///
-    /// The logic follows this priority:
-    ///
-    /// 1. **Loaded classes and interfaces** (use-imports, same-namespace,
-    ///    class_index): only classes and interfaces (not traits/enums)
-    ///    whose parent/interface chain is fully walkable to `\Throwable`
-    ///    / `\Exception` / `\Error`.
-    /// 2. **Class index** entries (not yet parsed) whose short name ends
-    ///    with `Exception` — filtered to exclude already-loaded FQNs.
-    /// 3. **Stub** entries whose short name ends with `Exception` —
-    ///    filtered to exclude already-loaded FQNs.
-    /// 4. **Class index** entries that do *not* end with `Exception`.
-    /// 5. **Stub** entries that do *not* end with `Exception`.
+    /// Within tier `'2'`, classes whose short name does *not* end with
+    /// `Exception`, `Error`, or `Throwable` are demoted so that likely
+    /// exception classes sort first.
     pub(crate) fn build_catch_class_name_completions(
         &self,
         ctx: &crate::types::FileContext,
@@ -538,133 +504,62 @@ impl Backend {
             uri,
         };
 
-        // Build the set of every FQN currently in the ast_map so that
-        // class index / stub sources can exclude already-evaluated classes.
-        let loaded_fqns = self.collect_loaded_fqns();
+        // Build a reverse lookup from FQN → use-import short name so we
+        // can detect use-imported classes in O(1).
+        let use_imported_fqns: HashSet<&String> = file_use_map.values().collect();
 
-        // ── 1a. Use-imported classes/interfaces (must be Throwable) ─
-        for (short_name, fqn) in file_use_map {
-            if !matches_class_prefix(
-                short_name,
-                fqn,
-                &prefix_lower,
-                is_fqn_prefix,
-                expanded_prefix_lower,
-            ) {
-                continue;
-            }
-            if !seen_fqns.insert(fqn.clone()) {
-                continue;
-            }
-            // Only classes and interfaces (not traits/enums)
-            if !self.is_class_or_interface_in_ast_map(fqn) {
-                continue;
-            }
-            // Strict check: only include if confirmed Throwable descendant
-            if !self.is_throwable_descendant(fqn, 0) {
-                continue;
-            }
-            let (base_name, filter, _use_import) = class_edit_texts(
-                short_name,
-                fqn,
-                is_fqn_prefix,
-                has_leading_backslash,
-                file_namespace,
-            );
-            let texts = ClassItemTexts {
-                base_name,
-                filter,
-                use_import: None,
-            };
-            items.push(ctx.build_item(texts, fqn, '0', false, None, false));
-        }
+        // Namespace prefix for "same namespace or sub-namespace" check.
+        // For namespace `App\Models`, both `App\Models\User` and
+        // `App\Models\Concerns\HasFactory` are considered same-or-sub.
+        let ns_prefix = file_namespace.as_ref().map(|ns| format!("{}\\", ns));
 
-        // ── 1b. Same-namespace classes (must be concrete + Throwable)
-        // Collect candidates while holding the lock, then drop the lock
-        // before calling `is_throwable_descendant` (which re-locks
-        // `ast_map` internally — Rust's Mutex is not re-entrant).
-        {
-            let nmap = self.file_namespaces.read();
-            let same_ns_uris: Vec<String> = nmap
-                .iter()
-                .filter_map(|(uri, spans)| {
-                    let has_ns = spans
-                        .iter()
-                        .any(|s| s.namespace.as_deref() == file_namespace.as_deref());
-                    if has_ns { Some(uri.clone()) } else { None }
-                })
-                .collect();
-            drop(nmap);
+        // ── Helper: classify a FQN into a source tier and demotion ───
+        //
+        // Returns `Some((source_tier, demoted))` or `None` to exclude.
+        //   '0' = use-imported + confirmed Throwable
+        //   '1' = same/sub namespace + confirmed Throwable
+        //   '2' = everything else
+        // `demoted` is true only in tier '2' when the short name doesn't
+        // look like an exception class.
+        //
+        // Loaded classes that are confirmed NOT Throwable (class/interface
+        // with a fully walkable chain that doesn't reach Throwable) are
+        // excluded.  Unloaded classes pass through with heuristic demotion.
+        let classify = |fqn: &str, sn: &str| -> Option<(char, bool)> {
+            // Check if loaded as a class or interface so we can verify
+            // Throwable ancestry.
+            let loaded_info = self.find_class_in_ast_map(fqn);
+            let is_loaded_class_or_interface = loaded_info
+                .as_ref()
+                .is_some_and(|c| matches!(c.kind, ClassLikeKind::Class | ClassLikeKind::Interface));
 
-            // Phase 1: collect candidate (name, fqn, deprecation_message)
-            // tuples under the ast_map lock — classes and interfaces only.
-            let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
-            {
-                let amap = self.uri_classes_index.read();
-                for uri in &same_ns_uris {
-                    if let Some(classes) = amap.get(uri) {
-                        for cls in classes {
-                            if is_anonymous_class(&cls.name) {
-                                continue;
-                            }
-                            if !matches!(cls.kind, ClassLikeKind::Class | ClassLikeKind::Interface)
-                            {
-                                continue;
-                            }
-                            let cls_fqn = match file_namespace {
-                                Some(ns) => format!("{}\\{}", ns, cls.name),
-                                None => cls.name.to_string(),
-                            };
-                            if !matches_class_prefix(
-                                &cls.name,
-                                &cls_fqn,
-                                &prefix_lower,
-                                is_fqn_prefix,
-                                expanded_prefix_lower,
-                            ) {
-                                continue;
-                            }
-                            if !seen_fqns.insert(cls_fqn.clone()) {
-                                continue;
-                            }
-                            candidates.push((
-                                cls.name.to_string(),
-                                cls_fqn,
-                                cls.deprecation_message.clone(),
-                            ));
-                        }
+            if is_loaded_class_or_interface {
+                if self.is_throwable_descendant(fqn, 0) {
+                    // Confirmed Throwable — assign tier by proximity.
+                    if use_imported_fqns.contains(&fqn.to_string()) {
+                        return Some(('0', false));
                     }
+                    let in_same_or_sub_ns = match &ns_prefix {
+                        Some(pfx) => fqn.starts_with(pfx.as_str()),
+                        None => !fqn.contains('\\'),
+                    };
+                    if in_same_or_sub_ns {
+                        return Some(('1', false));
+                    }
+                    return Some(('2', false));
                 }
+                // Loaded as class/interface but NOT Throwable — exclude.
+                return None;
             }
-            // Phase 2: filter by Throwable ancestry without holding locks.
-            for (name, fqn, deprecation_message) in candidates {
-                if !self.is_throwable_descendant(&fqn, 0) {
-                    continue;
-                }
-                let (base_name, filter, _use_import) = class_edit_texts(
-                    &name,
-                    &fqn,
-                    is_fqn_prefix,
-                    has_leading_backslash,
-                    file_namespace,
-                );
-                let texts = ClassItemTexts {
-                    base_name,
-                    filter,
-                    use_import: None,
-                };
-                items.push(ctx.build_item(
-                    texts,
-                    &fqn,
-                    '1',
-                    false,
-                    None,
-                    deprecation_message.is_some(),
-                ));
-            }
-        }
 
-        // ── 1c. class_index (must be class/interface + Throwable) ───
+            // Not loaded (or loaded as trait/enum which we skip) —
+            // include with heuristic demotion.
+            let demoted =
+                !sn.ends_with("Exception") && !sn.ends_with("Error") && !sn.ends_with("Throwable");
+            Some(('2', demoted))
+        };
+
+        // ── Pass 1: fqn_uri_index (project + vendor classes) ────────
         {
             let idx = self.fqn_uri_index.read();
             for fqn in idx.keys() {
@@ -681,12 +576,9 @@ impl Backend {
                 if !seen_fqns.insert(fqn.clone()) {
                     continue;
                 }
-                if !self.is_class_or_interface_in_ast_map(fqn) {
+                let Some((source_tier, demoted)) = classify(fqn, sn) else {
                     continue;
-                }
-                if !self.is_throwable_descendant(fqn, 0) {
-                    continue;
-                }
+                };
                 let (base_name, filter, use_import) = class_edit_texts(
                     sn,
                     fqn,
@@ -700,21 +592,14 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-                items.push(ctx.build_item(texts, fqn, '2', false, None, false));
+                items.push(ctx.build_item(texts, fqn, source_tier, demoted, None, false));
             }
         }
 
-        // ── 2. Class index — names ending with "Exception" ───────────
-        // ── 4. Class index — names NOT ending with "Exception" ───────
-        // We collect both buckets in a single pass over the class index
-        // and assign different sort_text prefixes so "Exception" entries
-        // appear first.
+        // ── Pass 2: stub_index (built-in PHP classes) ───────────────
         {
-            let cmap = self.fqn_uri_index.read();
-            for fqn in cmap.keys() {
-                if loaded_fqns.contains(fqn) {
-                    continue;
-                }
+            let stub_idx = self.stub_index.read();
+            for &fqn in stub_idx.keys() {
                 let sn = short_name(fqn);
                 if !matches_class_prefix(
                     sn,
@@ -725,10 +610,12 @@ impl Backend {
                 ) {
                     continue;
                 }
-                if !seen_fqns.insert(fqn.clone()) {
+                if !seen_fqns.insert(fqn.to_string()) {
                     continue;
                 }
-                let demoted = !sn.ends_with("Exception") && !sn.ends_with("Error");
+                let Some((source_tier, demoted)) = classify(fqn, sn) else {
+                    continue;
+                };
                 let (base_name, filter, use_import) = class_edit_texts(
                     sn,
                     fqn,
@@ -742,46 +629,8 @@ impl Backend {
                     use_import,
                 };
                 ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-                items.push(ctx.build_item(texts, fqn, '2', demoted, None, false));
+                items.push(ctx.build_item(texts, fqn, source_tier, demoted, None, false));
             }
-        }
-
-        // ── 3. Stubs — names ending with "Exception" ────────────────
-        // ── 5. Stubs — names NOT ending with "Exception" ────────────
-        let stub_idx = self.stub_index.read();
-        for &name in stub_idx.keys() {
-            if loaded_fqns.contains(name) {
-                continue;
-            }
-            let sn = short_name(name);
-            if !matches_class_prefix(
-                sn,
-                name,
-                &prefix_lower,
-                is_fqn_prefix,
-                expanded_prefix_lower,
-            ) {
-                continue;
-            }
-            if !seen_fqns.insert(name.to_string()) {
-                continue;
-            }
-
-            let demoted = !sn.ends_with("Exception") && !sn.ends_with("Error");
-            let (base_name, filter, use_import) = class_edit_texts(
-                sn,
-                name,
-                is_fqn_prefix,
-                has_leading_backslash,
-                file_namespace,
-            );
-            let mut texts = ClassItemTexts {
-                base_name,
-                filter,
-                use_import,
-            };
-            ctx.apply_import_fixups(&mut texts.base_name, &mut texts.use_import, false);
-            items.push(ctx.build_item(texts, name, '2', demoted, None, false));
         }
 
         let is_incomplete = items.len() > Self::MAX_CLASS_COMPLETIONS;
