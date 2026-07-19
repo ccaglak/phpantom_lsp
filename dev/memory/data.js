@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784001413086,
+  "lastUpdate": 1784433036099,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -67,6 +67,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 63.8,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cdwhite3@pm.me",
+            "name": "Caleb White",
+            "username": "calebdw"
+          },
+          "committer": {
+            "email": "cdwhite3@pm.me",
+            "name": "Caleb White",
+            "username": "calebdw"
+          },
+          "distinct": true,
+          "id": "ec64d3bada6bd175bb30a1fd0c065f52c653a22c",
+          "message": "fix: infer configured date factory class",
+          "timestamp": "2026-07-18T22:01:53-05:00",
+          "tree_id": "acf32ef59d2a34bcce0c49793b9b6839c7a11829",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/ec64d3bada6bd175bb30a1fd0c065f52c653a22c"
+        },
+        "date": 1784433035319,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 44.5,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 74.3,
             "unit": "MiB"
           }
         ]
