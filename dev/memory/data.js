@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785647111267,
+  "lastUpdate": 1785984846584,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -193,6 +193,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/ccaglak/phpantom_lsp/commit/b9d0da90554862fe867d6e3b3ca00139f53856cf"
         },
         "date": 1785647110372,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 33.9,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 72,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "658dbb8230cbdcafbe813311b95968aa6797c582",
+          "message": "A plain function body resolves class names against the file's namespace",
+          "timestamp": "2026-08-06T02:50:01+02:00",
+          "tree_id": "c4726fa7c48637f8ed8a3ea68ea07dfee92273f4",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/658dbb8230cbdcafbe813311b95968aa6797c582"
+        },
+        "date": 1785984846277,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
