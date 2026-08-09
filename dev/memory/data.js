@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785984846584,
+  "lastUpdate": 1786244934871,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -237,6 +237,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 72,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "86201b0c9b71c75ec85abc22c692421fef375b38",
+          "message": "A template's signature is held to the layouts it renders through",
+          "timestamp": "2026-08-09T04:49:21+02:00",
+          "tree_id": "48bc2e5d2089636a24fc94667c205c90dd54bf2e",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/86201b0c9b71c75ec85abc22c692421fef375b38"
+        },
+        "date": 1786244934123,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 35.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 71.2,
             "unit": "MiB"
           }
         ]
