@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786244934871,
+  "lastUpdate": 1786334841839,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -271,6 +271,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 71.2,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "a4f75f34ecaed5a14b9093ae6f9537a90087c385",
+          "message": "A Blade partial learns its variables from the templates that render it",
+          "timestamp": "2026-08-10T05:32:36+02:00",
+          "tree_id": "b8d08c492e7cc4141685a4d31998add79c5f6cff",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/a4f75f34ecaed5a14b9093ae6f9537a90087c385"
+        },
+        "date": 1786334840810,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 34.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 74.4,
             "unit": "MiB"
           }
         ]
