@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786506499801,
+  "lastUpdate": 1786590488162,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -339,6 +339,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 76.9,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "9f2441424f475743635d4a9a360fb995de799b46",
+          "message": "A docblock that contradicts its own signature",
+          "timestamp": "2026-08-13T04:17:51+02:00",
+          "tree_id": "b68e336db3b7dd2b52ad52e86810396c3f1061c1",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/9f2441424f475743635d4a9a360fb995de799b46"
+        },
+        "date": 1786590487666,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 34.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 71.6,
             "unit": "MiB"
           }
         ]
