@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788237431746,
+  "lastUpdate": 1788581981653,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -679,6 +679,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 72.7,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "88db8ec3deec2958ad29482b87df07425c037a9f",
+          "message": "Renames and moves reach Blade templates",
+          "timestamp": "2026-09-05T03:51:21+02:00",
+          "tree_id": "a52998de92429c1d2cc6e71c39c7b8b19da1ac54",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/88db8ec3deec2958ad29482b87df07425c037a9f"
+        },
+        "date": 1788581981040,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 36.7,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 74,
             "unit": "MiB"
           }
         ]
