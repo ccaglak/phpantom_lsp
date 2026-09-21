@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789447536365,
+  "lastUpdate": 1789960560301,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -815,6 +815,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 76.3,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "4f438fd9a2fd3ab8b00e49f4f25fd74ec79a589f",
+          "message": "Replace reference inlay with reference overlay",
+          "timestamp": "2026-09-21T04:07:52+02:00",
+          "tree_id": "8d529097c8a3c73c0a2b49aac47fb759d297b0f7",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/4f438fd9a2fd3ab8b00e49f4f25fd74ec79a589f"
+        },
+        "date": 1789960559191,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 37.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 73.7,
             "unit": "MiB"
           }
         ]
