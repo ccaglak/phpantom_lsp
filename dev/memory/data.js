@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789960560301,
+  "lastUpdate": 1790126607924,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -849,6 +849,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 73.7,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "49e4ea2095c86d70984c41ad50411ddbc3d3e794",
+          "message": "A quote inside `@verbatim` no longer leaks into the lowered PHP",
+          "timestamp": "2026-09-23T03:03:22+02:00",
+          "tree_id": "a40dc0bd9dde40fdfacc3e020ea8dfbfc393d5d9",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/49e4ea2095c86d70984c41ad50411ddbc3d3e794"
+        },
+        "date": 1790126606737,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 37.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 80.9,
             "unit": "MiB"
           }
         ]
