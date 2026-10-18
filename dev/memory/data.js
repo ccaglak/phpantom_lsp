@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792217516276,
+  "lastUpdate": 1792287383062,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -1155,6 +1155,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 80.4,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "d51dcede267056080cef75dea698182a541fe27c",
+          "message": "Template variables passed from constants and config values",
+          "timestamp": "2026-10-18T02:33:34+02:00",
+          "tree_id": "353d82ef9f42b49133dd5c45a84425c5a88d06d2",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/d51dcede267056080cef75dea698182a541fe27c"
+        },
+        "date": 1792287382122,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 39.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 79.3,
             "unit": "MiB"
           }
         ]
