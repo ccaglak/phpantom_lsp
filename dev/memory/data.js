@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792287383062,
+  "lastUpdate": 1792353179270,
   "repoUrl": "https://github.com/ccaglak/phpantom_lsp",
   "entries": {
     "PHPantom Memory Usage": [
@@ -1189,6 +1189,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "memory_laravel_model",
             "value": 79.3,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "committer": {
+            "email": "anders@jenbo.dk",
+            "name": "Anders Jenbo",
+            "username": "AJenbo"
+          },
+          "distinct": true,
+          "id": "05ec6439d4d5e44cfad9c8a2d49e80e1c53f6f33",
+          "message": "Return-type quick fixes edit the closure they were offered for",
+          "timestamp": "2026-10-18T14:48:23+02:00",
+          "tree_id": "6d3576e2d32692a2878f6e082ce5acc33dddca24",
+          "url": "https://github.com/ccaglak/phpantom_lsp/commit/05ec6439d4d5e44cfad9c8a2d49e80e1c53f6f33"
+        },
+        "date": 1792353178243,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "memory_hello_world",
+            "value": 43,
+            "unit": "MiB"
+          },
+          {
+            "name": "memory_laravel_model",
+            "value": 77.7,
             "unit": "MiB"
           }
         ]
